@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mixy</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/app.css?v=5" />
   </head>
   <body>
     <main>
@@ -15,6 +15,24 @@
       <section id="status">
         <p>API: <span id="health">checking…</span></p>
         <p>Device: <span id="device-name">…</span></p>
+        <p>Cached audio: <strong id="cache-count">…</strong></p>
+      </section>
+      <section id="cache">
+        <h2>Cache</h2>
+        <p class="muted">
+          Audio on this device for its assigned hours. Creating or updating an intent fills
+          automatically; use the button to retry. On a metered link, origin downloads stay at the
+          current mix plus one ahead per intent; peer copies still fill.
+        </p>
+        <div class="controls">
+          <label class="metered-toggle">
+            <input type="checkbox" id="metered-toggle" />
+            Metered link (simulated)
+          </label>
+          <button type="button" id="fill-btn">Fill caches</button>
+        </div>
+        <p id="fill-status" class="muted" role="status"></p>
+        <ul id="file-list"></ul>
       </section>
       <section id="pairing">
         <h2>Pair</h2>
@@ -90,6 +108,55 @@
         <p id="artists-status" class="muted" role="status"></p>
         <ul id="mix-list"></ul>
       </section>
+      <section id="intents">
+        <h2>Intents</h2>
+        <p class="muted">
+          A plan is a tag filter and star mix. Set hours per device; both share one seeded
+          sequence, and the smaller budget is the opening stretch.
+        </p>
+        <form id="intent-form">
+          <input id="intent-edit-id" type="hidden" value="" />
+          <label>
+            Name
+            <input id="intent-name" type="text" required placeholder="Deep house commute" />
+          </label>
+          <label>
+            Tags (AND; leave empty for untagged only)
+            <input id="intent-tags" type="text" placeholder="deep, house" autocomplete="off" />
+          </label>
+          <fieldset class="hours-fields">
+            <legend>Device hours</legend>
+            <div id="intent-hours"></div>
+          </fieldset>
+          <details id="intent-chances">
+            <summary>Star chances (must sum to 100%)</summary>
+            <div class="chance-grid">
+              <label>
+                5★
+                <input id="chance-five" type="number" min="0" max="100" step="1" value="40" />
+              </label>
+              <label>
+                4★
+                <input id="chance-four" type="number" min="0" max="100" step="1" value="30" />
+              </label>
+              <label>
+                3★
+                <input id="chance-three" type="number" min="0" max="100" step="1" value="20" />
+              </label>
+              <label>
+                Rest
+                <input id="chance-rest" type="number" min="0" max="100" step="1" value="10" />
+              </label>
+            </div>
+          </details>
+          <div class="controls">
+            <button type="submit" id="intent-submit">Create intent</button>
+            <button type="button" id="intent-cancel" hidden>Cancel edit</button>
+          </div>
+        </form>
+        <p id="intent-status" class="muted" role="status"></p>
+        <ul id="intent-list"></ul>
+      </section>
       <section>
         <h2>Demo player</h2>
         <p>
@@ -103,6 +170,6 @@
         </div>
       </section>
     </main>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=5"></script>
   </body>
 </html>

@@ -84,6 +84,9 @@ class DeviceAgent:
         self._peer_urls: dict[UUID, str] = {}
         self._seen_event_ids: set[UUID] = set()
         self._local_files: dict[UUID, bytes] = {}
+        # Local-only (not events): simulated link mode and now-playing for metered cap.
+        self._metered = False
+        self._current_mix_id: UUID | None = None
         self.data_dir = self.catalog.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,15 +181,56 @@ class DeviceAgent:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def fill_caches(self) -> None:
-        """Fill this device's assignments from peers or origin (unmetered)."""
+    def is_metered(self) -> bool:
+        return self._metered
+
+    def set_metered(self, metered: bool) -> None:
+        """Simulate a metered link (demo switch; no SIM required)."""
+        self._metered = bool(metered)
+
+    def current_mix(self) -> UUID | None:
+        return self._current_mix_id
+
+    def set_current_mix(self, mix_id: UUID | None) -> None:
+        """Mark the mix in progress (including a resumed one) for the metered cap."""
+        if mix_id is not None and mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        self._current_mix_id = mix_id
+
+    def fill_caches(self, *, override_intent_id: UUID | None = None) -> int:
+        """Fill this device's assignments from peers or origin.
+
+        When metered, origin fetches are limited to the current mix plus one
+        ahead per intent, unless ``override_intent_id`` is that intent (Fill now).
+        Peer copies always ignore the metered cap. Files already local stay.
+
+        Returns the number of mixes with local audio after the pass. Per-mix
+        fetch failures are skipped so one bad URL does not abort the fill.
+        """
         for intent in self.intents():
             assignment = self.assignment(intent.id)
             if assignment is None:
                 continue
             for mix_id in assignment.mix_ids:
-                self._ensure_local_file(intent.id, mix_id)
+                try:
+                    self._ensure_local_file(
+                        intent.id,
+                        mix_id,
+                        override_intent_id=override_intent_id,
+                    )
+                except Exception as exc:
+                    # yt-dlp and platform errors vary; one bad URL must not abort the fill.
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    continue
         self._refresh_intent_folders()
+        return len(self.files())
+
+    def fill_now(self, intent_id: UUID) -> int:
+        """One-shot origin fill of one intent to full device hours, then the cap returns."""
+        if intent_id not in self.catalog.intents:
+            raise KeyError(f"unknown intent {intent_id}")
+        return self.fill_caches(override_intent_id=intent_id)
 
     def add_artists(
         self,
@@ -443,8 +487,16 @@ class DeviceAgent:
             if peer_id not in trusted_ids:
                 continue
             self.ingest_events(self._http_fetch_events(url))
+        # Unmetered standing fill after catalog catches up with peers.
+        self.fill_caches()
 
-    def _ensure_local_file(self, intent_id: UUID, mix_id: UUID) -> None:
+    def _ensure_local_file(
+        self,
+        intent_id: UUID,
+        mix_id: UUID,
+        *,
+        override_intent_id: UUID | None = None,
+    ) -> None:
         if mix_id in self._local_files:
             return
         mix = self.catalog.mixes.get(mix_id)
@@ -452,6 +504,7 @@ class DeviceAgent:
             return
 
         # Prefer a copy from any reachable peer that already has the bytes.
+        # Peer / USB copies ignore the metered cap.
         for peer in self._reachable:
             if not self._trusts_public_key(peer.public_key_pem):
                 continue
@@ -462,6 +515,8 @@ class DeviceAgent:
 
         preferred = self._preferred_origin_agent(intent_id, mix_id)
         if preferred is self:
+            if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
+                return
             data = self.source.fetch_bytes(mix.url)
             self._store_local_file(mix_id, data)
             return
@@ -469,8 +524,38 @@ class DeviceAgent:
             # Preferred peer is reachable but does not have the file yet — wait.
             return
         # Preferred unreachable (or no other assignee): fetch our own hours.
+        if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
+            return
         data = self.source.fetch_bytes(mix.url)
         self._store_local_file(mix_id, data)
+
+    def _origin_fetch_allowed(
+        self,
+        intent_id: UUID,
+        mix_id: UUID,
+        override_intent_id: UUID | None,
+    ) -> bool:
+        if not self._metered:
+            return True
+        if override_intent_id is not None and intent_id == override_intent_id:
+            return True
+        return mix_id in self._metered_origin_allowlist(intent_id)
+
+    def _metered_origin_allowlist(self, intent_id: UUID) -> set[UUID]:
+        """Current mix (or assignment head) plus one mix ahead for this intent."""
+        assignment = self.assignment(intent_id)
+        if assignment is None or not assignment.mix_ids:
+            return set()
+        mix_ids = assignment.mix_ids
+        current = self._current_mix_id
+        if current is not None and current in mix_ids:
+            index = mix_ids.index(current)
+        else:
+            index = 0
+        allowed = {mix_ids[index]}
+        if index + 1 < len(mix_ids):
+            allowed.add(mix_ids[index + 1])
+        return allowed
 
     def _preferred_origin_agent(
         self, intent_id: UUID, mix_id: UUID
@@ -545,6 +630,11 @@ class DeviceAgent:
         if payload.get("short_code") and payload["short_code"].upper() != expected:
             raise ValueError("short code does not match public key")
         existing = self.catalog.devices.get(peer_id)
+        if existing is None:
+            existing = next(
+                (d for d in self.catalog.devices.values() if d.public_key_pem == public_key_pem),
+                None,
+            )
         if existing is not None:
             peer = existing
         else:
@@ -563,7 +653,7 @@ class DeviceAgent:
                     "priority": peer.priority,
                 },
             )
-            peer = self.catalog.devices[peer_id]
+            peer = self.catalog.devices[peer.id]
         if url := payload.get("url"):
             self._peer_urls[peer.id] = url
         return peer
@@ -636,15 +726,19 @@ class DeviceAgent:
             device_id = UUID(payload["id"])
             if device_id == self.device.id:
                 return
-            if device_id not in self.catalog.devices:
-                self.catalog.add_device(
-                    Device(
-                        id=device_id,
-                        name=payload["name"],
-                        public_key_pem=payload["public_key_pem"],
-                        priority=int(payload.get("priority", 100)),
-                    )
+            public_key_pem = payload["public_key_pem"]
+            if device_id in self.catalog.devices:
+                return
+            if any(d.public_key_pem == public_key_pem for d in self.catalog.devices.values()):
+                return
+            self.catalog.add_device(
+                Device(
+                    id=device_id,
+                    name=payload["name"],
+                    public_key_pem=public_key_pem,
+                    priority=int(payload.get("priority", 100)),
                 )
+            )
             return
         if event.type is EventType.ARTIST_ADDED:
             artist_id = UUID(payload["id"])

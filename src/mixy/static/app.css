@@ -55,6 +55,15 @@ section {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+  align-items: center;
+}
+
+.metered-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  cursor: pointer;
 }
 
 button {
@@ -84,13 +93,19 @@ button:disabled {
   margin: 0.75rem 0;
 }
 
-#pairing label {
+#pairing label,
+#catalog label,
+#intents label {
   display: block;
   margin: 0.75rem 0;
 }
 
 #pairing input,
-#pairing textarea {
+#pairing textarea,
+#catalog input,
+#catalog textarea,
+#intents input,
+#intents textarea {
   display: block;
   width: 100%;
   margin-top: 0.35rem;
@@ -100,6 +115,54 @@ button:disabled {
   background: var(--bg);
   color: var(--fg);
   font: inherit;
+}
+
+#intents fieldset {
+  border: 1px solid var(--muted);
+  border-radius: 8px;
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.85rem 0.85rem;
+}
+
+#intents legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+}
+
+.chance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.chance-grid label {
+  margin: 0.35rem 0;
+}
+
+#intent-list {
+  list-style: none;
+  padding: 0;
+}
+
+#intent-list > li {
+  border-top: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  padding: 0.85rem 0;
+}
+
+#intent-list > li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+#intent-list h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+#intent-list .seq-list,
+#intent-list .asg-list {
+  margin: 0.35rem 0 0;
+  padding-left: 1.25rem;
 }
 
 #pairing pre {
@@ -113,6 +176,12 @@ button:disabled {
 #peer-list,
 #mix-list {
   padding-left: 1.25rem;
+}
+
+#catalog label input[type="number"],
+#intents .chance-grid input,
+#intent-hours input {
+  max-width: 8rem;
 }
 
 #sync-btn {
