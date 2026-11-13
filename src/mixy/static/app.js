@@ -40,6 +40,13 @@ async function refreshPeers() {
   }
 }
 
+function formatDuration(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 async function refreshMixes() {
   const res = await fetch("/api/mixes");
   const data = await res.json();
@@ -54,7 +61,7 @@ async function refreshMixes() {
   }
   for (const mix of data.mixes) {
     const li = document.createElement("li");
-    li.textContent = mix.title;
+    li.textContent = `${mix.title} · ${formatDuration(mix.duration_seconds)}`;
     list.appendChild(li);
   }
 }
@@ -91,6 +98,36 @@ document.getElementById("pair-form").addEventListener("submit", async (event) =>
     await refreshPeers();
   } catch (err) {
     status.textContent = "Pair request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("artists-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("artists-status");
+  const raw = document.getElementById("artist-urls").value;
+  const urls = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const minutes = Number(document.getElementById("min-duration-minutes").value);
+  const min_duration_seconds = Number.isFinite(minutes) ? Math.max(0, Math.round(minutes * 60)) : 1200;
+  status.textContent = "Adding artists…";
+  try {
+    const res = await fetch("/api/artists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls, min_duration_seconds }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.detail || "Add artists failed";
+      return;
+    }
+    status.textContent = `Added ${data.added} mixes · ${data.artists} artists`;
+    await refreshMixes();
+  } catch (err) {
+    status.textContent = "Add artists request failed";
     console.error(err);
   }
 });

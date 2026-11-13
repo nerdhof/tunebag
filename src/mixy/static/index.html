@@ -66,6 +66,28 @@
       </section>
       <section id="catalog">
         <h2>Catalog</h2>
+        <form id="artists-form">
+          <label>
+            Artist URLs (SoundCloud or hearthis.at, one per line)
+            <textarea
+              id="artist-urls"
+              rows="4"
+              placeholder="https://soundcloud.com/…&#10;https://hearthis.at/…/"
+            ></textarea>
+          </label>
+          <label>
+            Min duration (minutes)
+            <input
+              id="min-duration-minutes"
+              type="number"
+              min="0"
+              step="1"
+              value="20"
+            />
+          </label>
+          <button type="submit">Add artists</button>
+        </form>
+        <p id="artists-status" class="muted" role="status"></p>
         <ul id="mix-list"></ul>
       </section>
       <section>

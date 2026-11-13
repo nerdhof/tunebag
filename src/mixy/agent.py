@@ -30,6 +30,11 @@ from mixy.pairing import (
 from mixy.pairing import (
     pairing_payload as build_pairing_payload,
 )
+from mixy.source import (
+    DEFAULT_MIN_DURATION_SECONDS,
+    Source,
+    default_source,
+)
 
 _HTTP_TIMEOUT = 5.0
 
@@ -42,6 +47,7 @@ class DeviceAgent:
         priority: int = 100,
         base_url: str | None = None,
         identity: DeviceIdentity | None = None,
+        source: Source | None = None,
     ) -> None:
         self._identity = identity or generate_identity(name)
         self._private_key = _load_private_key(self._identity.private_key_pem)
@@ -51,6 +57,7 @@ class DeviceAgent:
             priority=priority,
         )
         self.base_url = base_url
+        self.source = source if source is not None else default_source()
         self.catalog = Catalog()
         self.catalog.local_device_id = self.device.id
         self.catalog.add_device(self.device)
@@ -58,6 +65,7 @@ class DeviceAgent:
         self._reachable: list[DeviceAgent] = []
         self._peer_urls: dict[UUID, str] = {}
         self._seen_event_ids: set[UUID] = set()
+        self._local_files: dict[UUID, bytes] = {}
 
     @property
     def device_id(self) -> UUID:
@@ -101,6 +109,69 @@ class DeviceAgent:
 
     def mixes(self) -> list[Mix]:
         return self.catalog.mixes_list()
+
+    def artists(self) -> list[Artist]:
+        return list(self.catalog.artists.values())
+
+    def files(self) -> list[Mix]:
+        """Mixes that have local audio bytes on this device."""
+        return [
+            self.catalog.mixes[mix_id]
+            for mix_id in self._local_files
+            if mix_id in self.catalog.mixes
+        ]
+
+    def add_artists(
+        self,
+        urls: list[str],
+        *,
+        min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS,
+    ) -> list[Mix]:
+        """List own uploads for each artist URL and write catalog rows only."""
+        added: list[Mix] = []
+        for url in urls:
+            listing = self.source.list_uploads(url)
+            artist = Artist(
+                platform=listing.platform,
+                platform_id=listing.platform_id,
+                name=listing.name,
+                url=listing.url,
+            )
+            self._append_and_apply(
+                EventType.ARTIST_ADDED,
+                {
+                    "id": str(artist.id),
+                    "platform": artist.platform.value,
+                    "platform_id": artist.platform_id,
+                    "name": artist.name,
+                    "url": artist.url,
+                },
+            )
+            for upload in listing.uploads:
+                if upload.duration_seconds < min_duration_seconds:
+                    continue
+                mix = Mix(
+                    artist_id=artist.id,
+                    platform=upload.platform,
+                    platform_id=upload.platform_id,
+                    title=upload.title,
+                    url=upload.url,
+                    duration_seconds=upload.duration_seconds,
+                )
+                self._append_and_apply(
+                    EventType.MIX_ADDED,
+                    {
+                        "id": str(mix.id),
+                        "artist_id": str(mix.artist_id),
+                        "platform": mix.platform.value,
+                        "platform_id": mix.platform_id,
+                        "title": mix.title,
+                        "url": mix.url,
+                        "duration_seconds": mix.duration_seconds,
+                    },
+                )
+                added.append(self.catalog.mixes[mix.id])
+        return added
 
     def pair(self, payload: dict[str, Any]) -> Device:
         peer = self._trust_payload(payload)

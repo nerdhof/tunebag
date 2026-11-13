@@ -6,7 +6,7 @@ Show these at the end of the hackathon demo. Not in the build.
 
 - **Bandcamp albums** as an alternative listening primitive. One album = one item; duration = sum of tracks; played = past 75% of the album as a whole.
 - **OR tag filters** on intents (e.g. `tribal OR relaxing`). Own sequence per filter. A mix may appear in multiple intents; deletes wait until no remaining intent on that device wants the file.
-- **Library import** from the laptop: match on-disk files to `~/.music-snd-downloaded.txt` (SoundCloud, hearthis.at, and Bandcamp ids), seed the laptop cache, mark archive ids with no remaining file as already seen so artist polls do not resurrect old deletes.
+- **Library import** from the laptop: match on-disk files to `~/.music-snd-downloaded.txt` (SoundCloud, hearthis.at, and Bandcamp ids), seed the laptop cache, mark archive ids with no remaining file as already seen. Artist refresh itself is hackathon issue 09 (re-list known artists; do not resurrect committed rejects or old deletes).
 - **Profile import**: SoundCloud and hearthis.at follow lists.
 - **Artist reposts** in addition to own uploads.
 - **Search** across the catalog (and later across platforms) by tag, artist, title.

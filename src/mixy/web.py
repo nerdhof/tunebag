@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from mixy import __version__
 from mixy.agent import DeviceAgent
 from mixy.pairing import payload_to_qr_text
+from mixy.source import DEFAULT_MIN_DURATION_SECONDS
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -28,6 +29,11 @@ class PairBody(BaseModel):
 
 class AcceptPairBody(BaseModel):
     payload: dict[str, Any]
+
+
+class AddArtistsBody(BaseModel):
+    urls: list[str]
+    min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS
 
 
 def create_app(agent: DeviceAgent) -> FastAPI:
@@ -120,11 +126,47 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 {
                     "id": str(mix.id),
                     "title": mix.title,
+                    "url": mix.url,
                     "duration_seconds": mix.duration_seconds,
                     "tags": mix.tags,
                 }
                 for mix in agent.mixes()
             ]
+        }
+
+    @app.get("/api/artists")
+    def artists() -> dict:
+        return {
+            "artists": [
+                {
+                    "id": str(artist.id),
+                    "name": artist.name,
+                    "url": artist.url,
+                    "platform": artist.platform.value,
+                }
+                for artist in agent.artists()
+            ]
+        }
+
+    @app.post("/api/artists")
+    def add_artists(body: AddArtistsBody) -> dict:
+        urls = [u.strip() for u in body.urls if u.strip()]
+        if not urls:
+            raise HTTPException(status_code=400, detail="provide at least one artist URL")
+        try:
+            mixes = agent.add_artists(
+                urls,
+                min_duration_seconds=body.min_duration_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"source fetch failed: {exc}") from exc
+        return {
+            "ok": True,
+            "added": len(mixes),
+            "mixes": len(agent.mixes()),
+            "artists": len(agent.artists()),
         }
 
     @app.get("/api/tags")
