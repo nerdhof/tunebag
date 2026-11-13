@@ -5,16 +5,18 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import httpx
 import qrcode
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mixy import __version__
 from mixy.agent import DeviceAgent
+from mixy.domain import StarDistribution
 from mixy.pairing import payload_to_qr_text
 from mixy.source import DEFAULT_MIN_DURATION_SECONDS
 
@@ -34,6 +36,19 @@ class AcceptPairBody(BaseModel):
 class AddArtistsBody(BaseModel):
     urls: list[str]
     min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS
+
+
+class DeviceHoursBody(BaseModel):
+    device_id: UUID
+    budget_seconds: int = Field(gt=0)
+
+
+class CreateIntentBody(BaseModel):
+    name: str
+    tags: list[str] = Field(default_factory=list)
+    distribution: StarDistribution | None = None
+    seed: int | None = None
+    device_hours: list[DeviceHoursBody] = Field(default_factory=list)
 
 
 def create_app(agent: DeviceAgent) -> FastAPI:
@@ -174,6 +189,69 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         if q:
             return {"tags": agent.catalog.suggest_tags(q)}
         return {"tags": agent.catalog.all_tags()}
+
+    @app.get("/api/intents")
+    def intents() -> dict:
+        return {
+            "intents": [
+                {
+                    "id": str(intent.id),
+                    "name": intent.name,
+                    "tags": intent.tags,
+                    "distribution": intent.distribution.model_dump(),
+                    "seed": intent.seed,
+                    "device_hours": [
+                        {
+                            "device_id": str(dh.device_id),
+                            "budget_seconds": dh.budget_seconds,
+                        }
+                        for dh in intent.device_hours
+                    ],
+                }
+                for intent in agent.intents()
+            ]
+        }
+
+    @app.post("/api/intents")
+    def create_intent(body: CreateIntentBody) -> dict:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        intent = agent.create_intent(
+            name,
+            tags=body.tags,
+            distribution=body.distribution,
+            seed=body.seed,
+            device_hours=[(dh.device_id, dh.budget_seconds) for dh in body.device_hours],
+        )
+        return {"ok": True, "intent": {"id": str(intent.id), "name": intent.name}}
+
+    @app.get("/api/intents/{intent_id}/sequence")
+    def intent_sequence(intent_id: UUID) -> dict:
+        sequence = agent.sequence(intent_id)
+        if sequence is None:
+            raise HTTPException(status_code=404, detail="sequence not found")
+        assignment = agent.assignment(intent_id)
+        return {
+            "intent_id": str(sequence.intent_id),
+            "entries": [
+                {
+                    "mix_id": str(entry.mix_id),
+                    "position": entry.position,
+                    "bucket": entry.bucket.value,
+                }
+                for entry in sequence.entries
+            ],
+            "assignment": (
+                {
+                    "device_id": str(assignment.device_id),
+                    "mix_ids": [str(mix_id) for mix_id in assignment.mix_ids],
+                    "budget_seconds": assignment.budget_seconds,
+                }
+                if assignment is not None
+                else None
+            ),
+        }
 
     return app
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import json
+import random
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -20,7 +22,20 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from mixy.catalog import Catalog
-from mixy.domain import Artist, Device, Mix, Platform
+from mixy.domain import (
+    Artist,
+    Assignment,
+    Device,
+    DeviceHours,
+    Intent,
+    Mix,
+    Platform,
+    Sequence,
+    SequenceEntry,
+    StarBucket,
+    StarDistribution,
+    Stars,
+)
 from mixy.events import Event, EventLog, EventType
 from mixy.pairing import (
     DeviceIdentity,
@@ -30,6 +45,7 @@ from mixy.pairing import (
 from mixy.pairing import (
     pairing_payload as build_pairing_payload,
 )
+from mixy.sequence import assign_by_budget, build_sequence
 from mixy.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
@@ -112,6 +128,18 @@ class DeviceAgent:
 
     def artists(self) -> list[Artist]:
         return list(self.catalog.artists.values())
+
+    def intents(self) -> list[Intent]:
+        return list(self.catalog.intents.values())
+
+    def sequence(self, intent_id: UUID) -> Sequence | None:
+        return self.catalog.sequences.get(intent_id)
+
+    def assignment(
+        self, intent_id: UUID, device_id: UUID | None = None
+    ) -> Assignment | None:
+        target = device_id if device_id is not None else self.device.id
+        return self.catalog.assignments.get((intent_id, target))
 
     def files(self) -> list[Mix]:
         """Mixes that have local audio bytes on this device."""
@@ -209,6 +237,72 @@ class DeviceAgent:
     def ingest_events(self, events: list[Event]) -> None:
         for event in events:
             self._ingest(event)
+
+    def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
+        if mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        self._append_and_apply(
+            EventType.MIX_TAGGED,
+            {"mix_id": str(mix_id), "tags": list(tags)},
+        )
+        return self.catalog.mixes[mix_id]
+
+    def rate_mix(self, mix_id: UUID, stars: Stars) -> Mix:
+        if mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        self._append_and_apply(
+            EventType.MIX_RATED,
+            {"mix_id": str(mix_id), "stars": int(stars)},
+        )
+        return self.catalog.mixes[mix_id]
+
+    def reject_mix(self, mix_id: UUID) -> Mix:
+        """Commit a reject immediately (undo window is issue 07)."""
+        if mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        self._append_and_apply(
+            EventType.MIX_REJECTED,
+            {"mix_id": str(mix_id)},
+        )
+        return self.catalog.mixes[mix_id]
+
+    def create_intent(
+        self,
+        name: str,
+        *,
+        tags: list[str] | None = None,
+        distribution: StarDistribution | None = None,
+        seed: int | None = None,
+        device_hours: list[tuple[UUID, int]] | None = None,
+    ) -> Intent:
+        hours = [
+            DeviceHours(device_id=device_id, budget_seconds=budget)
+            for device_id, budget in (device_hours or [])
+        ]
+        intent = Intent(
+            name=name,
+            tags=list(tags or []),
+            distribution=distribution or StarDistribution(),
+            device_hours=hours,
+            seed=seed if seed is not None else random.randrange(1 << 31),
+        )
+        self._upsert_intent_and_rebuild(intent)
+        return self.catalog.intents[intent.id]
+
+    def set_device_hours(
+        self,
+        intent_id: UUID,
+        device_id: UUID,
+        budget_seconds: int,
+    ) -> Intent:
+        intent = self.catalog.intents.get(intent_id)
+        if intent is None:
+            raise KeyError(f"unknown intent {intent_id}")
+        hours = [dh for dh in intent.device_hours if dh.device_id != device_id]
+        hours.append(DeviceHours(device_id=device_id, budget_seconds=budget_seconds))
+        updated = intent.model_copy(update={"device_hours": hours})
+        self._upsert_intent_and_rebuild(updated)
+        return self.catalog.intents[intent_id]
 
     def add_mix(
         self,
@@ -334,6 +428,43 @@ class DeviceAgent:
         self._log.append(event)
         self._apply(event)
 
+    def _upsert_intent_and_rebuild(self, intent: Intent) -> None:
+        self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))
+        sequence = build_sequence(intent, self.catalog.mixes_list())
+        self._append_and_apply(
+            EventType.SEQUENCE_BUILT,
+            {
+                "intent_id": str(sequence.intent_id),
+                "entries": [
+                    {
+                        "mix_id": str(entry.mix_id),
+                        "position": entry.position,
+                        "bucket": entry.bucket.value,
+                    }
+                    for entry in sequence.entries
+                ],
+            },
+        )
+        duration_by_mix = {
+            mix_id: mix.duration_seconds for mix_id, mix in self.catalog.mixes.items()
+        }
+        for device_hours in intent.device_hours:
+            mix_ids = assign_by_budget(
+                sequence,
+                device_hours.device_id,
+                device_hours.budget_seconds,
+                duration_by_mix,
+            )
+            self._append_and_apply(
+                EventType.ASSIGNMENT_SET,
+                {
+                    "intent_id": str(intent.id),
+                    "device_id": str(device_hours.device_id),
+                    "mix_ids": [str(mix_id) for mix_id in mix_ids],
+                    "budget_seconds": device_hours.budget_seconds,
+                },
+            )
+
     def _apply(self, event: Event) -> None:
         payload = event.payload
         if event.type is EventType.DEVICE_PAIRED:
@@ -378,6 +509,51 @@ class DeviceAgent:
                     )
                 )
             return
+        if event.type is EventType.MIX_TAGGED:
+            mix = self.catalog.mixes.get(UUID(payload["mix_id"]))
+            if mix is not None:
+                self.catalog.add_mix(mix.model_copy(update={"tags": list(payload["tags"])}))
+            return
+        if event.type is EventType.MIX_RATED:
+            mix = self.catalog.mixes.get(UUID(payload["mix_id"]))
+            if mix is not None:
+                self.catalog.add_mix(
+                    mix.model_copy(update={"stars": Stars(int(payload["stars"]))})
+                )
+            return
+        if event.type is EventType.MIX_REJECTED:
+            mix = self.catalog.mixes.get(UUID(payload["mix_id"]))
+            if mix is not None:
+                self.catalog.add_mix(mix.model_copy(update={"rejected": True}))
+            return
+        if event.type is EventType.INTENT_UPSERTED:
+            self.catalog.upsert_intent(_intent_from_payload(payload))
+            return
+        if event.type is EventType.SEQUENCE_BUILT:
+            self.catalog.set_sequence(
+                Sequence(
+                    intent_id=UUID(payload["intent_id"]),
+                    entries=[
+                        SequenceEntry(
+                            mix_id=UUID(entry["mix_id"]),
+                            position=int(entry["position"]),
+                            bucket=StarBucket(entry["bucket"]),
+                        )
+                        for entry in payload["entries"]
+                    ],
+                )
+            )
+            return
+        if event.type is EventType.ASSIGNMENT_SET:
+            self.catalog.set_assignment(
+                Assignment(
+                    intent_id=UUID(payload["intent_id"]),
+                    device_id=UUID(payload["device_id"]),
+                    mix_ids=[UUID(mix_id) for mix_id in payload["mix_ids"]],
+                    budget_seconds=int(payload["budget_seconds"]),
+                )
+            )
+            return
 
     def _sign(self, event: Event) -> str:
         signature = self._private_key.sign(_event_bytes(event))
@@ -413,6 +589,57 @@ class DeviceAgent:
             response.raise_for_status()
             raw_events = response.json().get("events", [])
         return [Event.model_validate(raw) for raw in raw_events]
+
+
+def _intent_payload(intent: Intent) -> dict[str, Any]:
+    return {
+        "id": str(intent.id),
+        "name": intent.name,
+        "tags": list(intent.tags),
+        "distribution": {
+            "five": intent.distribution.five,
+            "four": intent.distribution.four,
+            "three": intent.distribution.three,
+            "rest": intent.distribution.rest,
+        },
+        "device_hours": [
+            {
+                "device_id": str(dh.device_id),
+                "budget_seconds": dh.budget_seconds,
+                "expires_at": dh.expires_at.isoformat() if dh.expires_at else None,
+            }
+            for dh in intent.device_hours
+        ],
+        "seed": intent.seed,
+    }
+
+
+def _intent_from_payload(payload: dict[str, Any]) -> Intent:
+    dist = payload.get("distribution") or {}
+    return Intent(
+        id=UUID(payload["id"]),
+        name=payload["name"],
+        tags=list(payload.get("tags") or []),
+        distribution=StarDistribution(
+            five=float(dist.get("five", 0.4)),
+            four=float(dist.get("four", 0.3)),
+            three=float(dist.get("three", 0.2)),
+            rest=float(dist.get("rest", 0.1)),
+        ),
+        device_hours=[
+            DeviceHours(
+                device_id=UUID(dh["device_id"]),
+                budget_seconds=int(dh["budget_seconds"]),
+                expires_at=(
+                    datetime.fromisoformat(dh["expires_at"])
+                    if dh.get("expires_at")
+                    else None
+                ),
+            )
+            for dh in payload.get("device_hours") or []
+        ],
+        seed=int(payload["seed"]),
+    )
 
 
 def _event_bytes(event: Event) -> bytes:
