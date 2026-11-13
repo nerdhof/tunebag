@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mixy</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main>
+      <h1>mixy</h1>
+      <p class="lede">
+        Distributed music cache. Companion player for play, stars, reject, tags, and playhead.
+      </p>
+      <section id="status">
+        <p>API: <span id="health">checking…</span></p>
+        <p>Device: <span id="device-name">…</span></p>
+      </section>
+      <section id="pairing">
+        <h2>Pair</h2>
+        <p class="muted">
+          Scan the QR on the other device, or enter its short code and URL when the camera is not
+          used.
+        </p>
+        <p>Short code: <strong id="short-code">…</strong></p>
+        <img id="qr" alt="Pairing QR code" width="180" height="180" />
+        <details>
+          <summary>QR payload</summary>
+          <pre id="pairing-payload"></pre>
+        </details>
+        <form id="pair-form">
+          <label>
+            Peer URL
+            <input
+              id="peer-url"
+              name="peer_url"
+              type="url"
+              placeholder="http://127.0.0.1:8787"
+              autocomplete="off"
+            />
+          </label>
+          <label>
+            Short code
+            <input
+              id="pair-code"
+              name="short_code"
+              type="text"
+              maxlength="8"
+              placeholder="ABCDEF"
+              autocomplete="off"
+            />
+          </label>
+          <label>
+            Or paste full payload
+            <textarea id="pair-payload" rows="4" placeholder='{"v":1,"name":"…"}'></textarea>
+          </label>
+          <button type="submit">Pair</button>
+        </form>
+        <p id="pair-status" class="muted" role="status"></p>
+      </section>
+      <section id="peers">
+        <h2>Peers</h2>
+        <ul id="peer-list"></ul>
+        <button type="button" id="sync-btn">Sync catalog</button>
+        <p id="sync-status" class="muted" role="status"></p>
+      </section>
+      <section id="catalog">
+        <h2>Catalog</h2>
+        <ul id="mix-list"></ul>
+      </section>
+      <section>
+        <h2>Demo player</h2>
+        <p>
+          Intent folders and audio controls land next. This shell is the signal surface for the
+          hackathon demo.
+        </p>
+        <div class="controls" aria-label="Player controls">
+          <button type="button" disabled>Play</button>
+          <button type="button" disabled>Mark played</button>
+          <button type="button" disabled>Reject (20s undo)</button>
+        </div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
