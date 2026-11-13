@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from mixy.domain import Platform
-from mixy.ytdlp_fetch import AudioFetcher, fetch_audio_bytes
+from mixy.ytdlp_fetch import AudioFetcher, ProgressCallback, fetch_audio_bytes
 
 DEFAULT_MIN_DURATION_SECONDS = 20 * 60
 
@@ -40,7 +40,12 @@ class ArtistListing:
 class Source(Protocol):
     def list_uploads(self, artist_url: str) -> ArtistListing: ...
 
-    def fetch_bytes(self, source_url: str) -> bytes: ...
+    def fetch_bytes(
+        self,
+        source_url: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> bytes: ...
 
 
 @dataclass
@@ -60,11 +65,19 @@ class FakeSource:
             raise ValueError(f"unknown artist URL: {artist_url}")
         return self.listings[key]
 
-    def fetch_bytes(self, source_url: str) -> bytes:
+    def fetch_bytes(
+        self,
+        source_url: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> bytes:
         self.fetch_calls.append(source_url)
         if source_url not in self.bytes_by_url:
             raise ValueError(f"no bytes for {source_url}")
-        return self.bytes_by_url[source_url]
+        data = self.bytes_by_url[source_url]
+        if on_progress is not None:
+            on_progress(len(data), len(data))
+        return data
 
 
 class HearthisSource:
@@ -123,8 +136,17 @@ class HearthisSource:
             uploads=uploads,
         )
 
-    def fetch_bytes(self, source_url: str) -> bytes:
-        return fetch_audio_bytes(source_url, fetcher=self._audio_fetcher)
+    def fetch_bytes(
+        self,
+        source_url: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> bytes:
+        return fetch_audio_bytes(
+            source_url,
+            fetcher=self._audio_fetcher,
+            on_progress=on_progress,
+        )
 
 
 class SoundCloudSource:
@@ -219,8 +241,17 @@ class SoundCloudSource:
             uploads=uploads,
         )
 
-    def fetch_bytes(self, source_url: str) -> bytes:
-        return fetch_audio_bytes(source_url, fetcher=self._audio_fetcher)
+    def fetch_bytes(
+        self,
+        source_url: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> bytes:
+        return fetch_audio_bytes(
+            source_url,
+            fetcher=self._audio_fetcher,
+            on_progress=on_progress,
+        )
 
 
 class CompositeSource:
@@ -238,8 +269,16 @@ class CompositeSource:
     def list_uploads(self, artist_url: str) -> ArtistListing:
         return self._for_url(artist_url).list_uploads(artist_url)
 
-    def fetch_bytes(self, source_url: str) -> bytes:
-        return self._for_url(source_url).fetch_bytes(source_url)
+    def fetch_bytes(
+        self,
+        source_url: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> bytes:
+        return self._for_url(source_url).fetch_bytes(
+            source_url,
+            on_progress=on_progress,
+        )
 
     def _for_url(self, url: str) -> Source:
         host = urlparse(url).netloc.lower().removeprefix("www.")

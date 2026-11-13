@@ -32,8 +32,10 @@ class _Stub:
             ],
         )
 
-    def fetch_bytes(self, source_url: str) -> bytes:
+    def fetch_bytes(self, source_url: str, *, on_progress=None) -> bytes:
         self.fetched.append(source_url)
+        if on_progress is not None:
+            on_progress(len(b"x"), len(b"x"))
         return b"x"
 
 

@@ -326,52 +326,109 @@ button:disabled {
   margin-top: 0.5rem;
 }
 
-#file-list {
-  list-style: none;
-  padding: 0;
-  margin: 0.75rem 0 0;
-}
-
-#file-list .cache-intent-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.75rem;
-  align-items: baseline;
-  cursor: pointer;
-  padding: 0.55rem 0.65rem;
-  margin: 0.35rem 0 0;
+#cache-table-wrap {
+  max-height: 24rem;
+  overflow: auto;
+  margin-top: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--muted) 12%, var(--card));
 }
 
-#file-list .cache-intent-header:hover {
-  background: color-mix(in srgb, var(--muted) 20%, var(--card));
-}
-
-#file-list .cache-intent-header[data-expanded="true"] {
-  background: color-mix(in srgb, var(--accent) 12%, var(--card));
-}
-
-#file-list .cache-intent-toggle {
-  display: inline-block;
-  width: 1rem;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-
-#file-list .cache-intent-name {
-  font-weight: 600;
-}
-
-#file-list .cache-intent-overview {
-  flex: 1 1 12rem;
+#cache-table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 0.9rem;
 }
 
-#file-list .cache-mix-row {
-  padding: 0.35rem 0.65rem 0.35rem 1.65rem;
+#cache-table th,
+#cache-table td {
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
-#file-list .cache-mix-row[hidden] {
+#cache-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  z-index: 1;
+  font-weight: 600;
+}
+
+#cache-table .cache-intent-header {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--muted) 12%, var(--card));
+}
+
+#cache-table .cache-intent-header:hover {
+  background: color-mix(in srgb, var(--muted) 20%, var(--card));
+}
+
+#cache-table .cache-intent-header[data-expanded="true"] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+}
+
+#cache-table .cache-intent-toggle {
+  display: inline-block;
+  width: 1rem;
+  margin-right: 0.35rem;
+  color: var(--muted);
+}
+
+#cache-table .cache-intent-name {
+  font-weight: 600;
+  margin-right: 0.75rem;
+}
+
+#cache-table .cache-intent-overview {
+  font-size: 0.9rem;
+}
+
+#cache-table .cache-mix-row[hidden] {
   display: none;
+}
+
+#cache-table .cache-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 8rem;
+  max-width: 12rem;
+}
+
+#cache-table .cache-progress-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#cache-table .cache-progress-track {
+  position: relative;
+  height: 0.45rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--muted) 30%, var(--bg));
+}
+
+#cache-table .cache-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s ease-out;
+}
+
+#cache-table .cache-progress-track.indeterminate .cache-progress-fill {
+  width: 35%;
+  animation: cache-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes cache-progress-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
 }

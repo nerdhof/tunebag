@@ -716,15 +716,18 @@ async function refreshFiles() {
   if (countEl) {
     countEl.textContent = String(data.files.length);
   }
-  const list = document.getElementById("file-list");
-  list.innerHTML = "";
+  const body = document.getElementById("cache-body");
+  body.innerHTML = "";
   const groups = Array.isArray(data.groups) ? data.groups : [];
   if (!groups.length) {
-    const li = document.createElement("li");
-    li.textContent =
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.className = "muted";
+    td.textContent =
       "No assigned audio yet — create an intent with hours, or press Fill caches";
-    li.className = "muted";
-    list.appendChild(li);
+    tr.appendChild(td);
+    body.appendChild(tr);
     return;
   }
 
@@ -732,60 +735,72 @@ async function refreshFiles() {
     const groupKey = cacheGroupKey(group);
     const expanded = expandedCacheIntents.has(groupKey);
 
-    const headerLi = document.createElement("li");
-    headerLi.className = "cache-intent-header";
-    headerLi.dataset.groupId = groupKey;
-    headerLi.dataset.expanded = expanded ? "true" : "false";
-    headerLi.setAttribute("aria-expanded", expanded ? "true" : "false");
-    headerLi.tabIndex = 0;
-    headerLi.setAttribute("role", "button");
+    const header = document.createElement("tr");
+    header.className = "cache-intent-header";
+    header.dataset.groupId = groupKey;
+    header.dataset.expanded = expanded ? "true" : "false";
+    header.setAttribute("aria-expanded", expanded ? "true" : "false");
+    header.tabIndex = 0;
+    header.setAttribute("role", "button");
 
+    const intentCell = document.createElement("td");
+    intentCell.colSpan = 5;
     const toggle = document.createElement("span");
     toggle.className = "cache-intent-toggle";
     toggle.setAttribute("aria-hidden", "true");
     toggle.textContent = expanded ? "▼" : "▶";
-    headerLi.appendChild(toggle);
-
+    intentCell.appendChild(toggle);
     const heading = document.createElement("span");
     heading.className = "cache-intent-name";
     heading.textContent = group.name || "Intent";
-    headerLi.appendChild(heading);
-
+    intentCell.appendChild(heading);
     const overview = document.createElement("span");
     overview.className = "cache-intent-overview muted";
     overview.textContent = formatCacheOverview(group.overview);
-    headerLi.appendChild(overview);
+    intentCell.appendChild(overview);
+    header.appendChild(intentCell);
 
     const toggleGroup = () => {
-      setCacheGroupExpanded(groupKey, headerLi.dataset.expanded !== "true");
+      setCacheGroupExpanded(groupKey, header.dataset.expanded !== "true");
     };
-    headerLi.addEventListener("click", toggleGroup);
-    headerLi.addEventListener("keydown", (event) => {
+    header.addEventListener("click", toggleGroup);
+    header.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         toggleGroup();
       }
     });
-    list.appendChild(headerLi);
+    body.appendChild(header);
 
     for (const file of group.mixes || []) {
-      const li = document.createElement("li");
-      li.className = "cache-mix-row";
-      li.dataset.groupId = groupKey;
-      li.hidden = !expanded;
+      const tr = document.createElement("tr");
+      tr.className = "cache-mix-row";
+      tr.dataset.groupId = groupKey;
+      tr.hidden = !expanded;
 
-      const row = document.createElement("div");
-      row.className = "controls";
-      const label = document.createElement("span");
-      label.style.flex = "1";
+      const blankIntent = document.createElement("td");
+      blankIntent.textContent = "";
+      tr.appendChild(blankIntent);
+
+      const title = document.createElement("td");
+      title.textContent = file.title || "";
+      tr.appendChild(title);
+
+      const length = document.createElement("td");
+      length.textContent = formatDuration(file.duration_seconds || 0);
+      tr.appendChild(length);
+
+      const statusCell = document.createElement("td");
       const isCurrent = currentMixId === file.id;
-      const statusLabel = file.status ? ` · ${file.status}` : "";
-      label.textContent =
-        `${file.title} · ${formatDuration(file.duration_seconds)}` +
-        statusLabel +
-        (isCurrent ? " · current" : "");
-      row.appendChild(label);
+      if (file.status === "loading") {
+        statusCell.appendChild(renderDownloadProgress(file));
+      } else {
+        statusCell.textContent =
+          (file.status || "") + (isCurrent ? " · current" : "");
+      }
+      tr.appendChild(statusCell);
 
+      const actionCell = document.createElement("td");
       if (file.status === "cached") {
         const currentBtn = document.createElement("button");
         currentBtn.type = "button";
@@ -799,12 +814,12 @@ async function refreshFiles() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ mix_id: isCurrent ? null : file.id }),
             });
-            const body = await res.json().catch(() => ({}));
+            const bodyJson = await res.json().catch(() => ({}));
             if (!res.ok) {
-              status.textContent = body.detail || "Could not set current mix";
+              status.textContent = bodyJson.detail || "Could not set current mix";
               return;
             }
-            currentMixId = body.current_mix_id || null;
+            currentMixId = bodyJson.current_mix_id || null;
             status.textContent = currentMixId
               ? `Current mix set · metered cap uses this + one ahead`
               : "Current mix cleared · metered cap uses assignment head";
@@ -814,11 +829,10 @@ async function refreshFiles() {
             console.error(err);
           }
         });
-        row.appendChild(currentBtn);
+        actionCell.appendChild(currentBtn);
       }
-
-      li.appendChild(row);
-      list.appendChild(li);
+      tr.appendChild(actionCell);
+      body.appendChild(tr);
     }
   }
 }
