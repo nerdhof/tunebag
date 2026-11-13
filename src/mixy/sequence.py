@@ -46,7 +46,8 @@ def eligible_by_bucket(mixes: list[Mix], tags: list[str]) -> dict[StarBucket, li
         if matches_filter(mix, tags):
             buckets[bucket_for(mix)].append(mix)
     for bucket in buckets:
-        buckets[bucket].sort(key=lambda m: (m.title.lower(), str(m.id)))
+        # Unplayed first; played mixes sit at the back of the pool.
+        buckets[bucket].sort(key=lambda m: (m.played, m.title.lower(), str(m.id)))
     return buckets
 
 

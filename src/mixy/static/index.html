@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mixy</title>
-    <link rel="stylesheet" href="/static/app.css?v=5" />
+    <link rel="stylesheet" href="/static/app.css?v=6" />
   </head>
   <body>
     <main>
@@ -157,19 +157,53 @@
         <p id="intent-status" class="muted" role="status"></p>
         <ul id="intent-list"></ul>
       </section>
-      <section>
-        <h2>Demo player</h2>
-        <p>
-          Intent folders and audio controls land next. This shell is the signal surface for the
-          hackathon demo.
+      <section id="player">
+        <h2>Player</h2>
+        <p class="muted">
+          The agent plays from its local cache. Closing this page does not stop playback. Rate and
+          tag here or from the catalog list.
         </p>
+        <label>
+          Intent
+          <select id="player-intent"></select>
+        </label>
+        <p id="player-now" class="muted">Nothing playing</p>
         <div class="controls" aria-label="Player controls">
-          <button type="button" disabled>Play</button>
-          <button type="button" disabled>Mark played</button>
-          <button type="button" disabled>Reject (20s undo)</button>
+          <button type="button" id="player-play">Play</button>
+          <button type="button" id="player-stop">Stop</button>
+          <button type="button" id="player-mark">Mark played</button>
+        </div>
+        <label>
+          Playhead (seconds)
+          <input id="player-position" type="number" min="0" step="1" value="0" />
+        </label>
+        <button type="button" id="player-seek">Report playhead</button>
+        <label>
+          Stars
+          <select id="player-stars">
+            <option value="">—</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+        <button type="button" id="player-rate">Rate</button>
+        <label>
+          Tags
+          <input id="player-tags" type="text" list="tag-suggestions" placeholder="tribal, deep" />
+          <datalist id="tag-suggestions"></datalist>
+        </label>
+        <button type="button" id="player-tag">Save tags</button>
+        <p id="player-status" class="muted" role="status"></p>
+        <div id="later-panel" hidden>
+          <h3>Planned later</h3>
+          <p class="muted">Not built in this demo. Player closed.</p>
+          <ul id="later-list"></ul>
         </div>
       </section>
     </main>
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=6"></script>
   </body>
 </html>

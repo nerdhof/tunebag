@@ -55,6 +55,7 @@ class Mix(BaseModel):
     tags: list[str] = Field(default_factory=list)
     stars: Stars | None = None
     rejected: bool = False
+    played: bool = False
     added_at: datetime = Field(default_factory=datetime.utcnow)
 
     @field_validator("tags")

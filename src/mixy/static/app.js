@@ -169,10 +169,130 @@ async function refreshMixes() {
   }
   for (const mix of data.mixes) {
     const li = document.createElement("li");
-    const tags = mix.tags?.length ? ` · ${mix.tags.join(", ")}` : "";
-    li.textContent = `${mix.title} · ${formatDuration(mix.duration_seconds)}${tags}`;
+    const meta = document.createElement("div");
+    const stars = mix.stars != null ? ` · ${mix.stars}★` : "";
+    const played = mix.played ? " · played" : "";
+    meta.textContent = `${mix.title} · ${formatDuration(mix.duration_seconds)}${stars}${played}`;
+    li.appendChild(meta);
+    const row = document.createElement("div");
+    row.className = "controls";
+    const tagInput = document.createElement("input");
+    tagInput.type = "text";
+    tagInput.setAttribute("list", "tag-suggestions");
+    tagInput.placeholder = "tags";
+    tagInput.value = (mix.tags || []).join(", ");
+    tagInput.style.flex = "1";
+    row.appendChild(tagInput);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save tags";
+    saveBtn.addEventListener("click", async () => {
+      const tags = tagInput.value
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+      const res = await fetch(`/api/mixes/${mix.id}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tags }),
+      });
+      if (res.ok) {
+        await refreshMixes();
+        await refreshTagSuggestions();
+      }
+    });
+    row.appendChild(saveBtn);
+    li.appendChild(row);
     list.appendChild(li);
   }
+  await refreshTagSuggestions();
+}
+
+async function refreshTagSuggestions() {
+  const res = await fetch("/api/tags");
+  const data = await res.json();
+  const datalist = document.getElementById("tag-suggestions");
+  if (!datalist) return;
+  datalist.innerHTML = "";
+  for (const tag of data.tags || []) {
+    const option = document.createElement("option");
+    option.value = tag;
+    datalist.appendChild(option);
+  }
+}
+
+async function refreshPlayerIntents() {
+  const res = await fetch("/api/intents");
+  const data = await res.json();
+  const select = document.getElementById("player-intent");
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = "";
+  if (!data.intents.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No intents";
+    select.appendChild(option);
+    return;
+  }
+  for (const intent of data.intents) {
+    const option = document.createElement("option");
+    option.value = intent.id;
+    option.textContent = intent.name;
+    select.appendChild(option);
+  }
+  if (previous && [...select.options].some((o) => o.value === previous)) {
+    select.value = previous;
+  }
+}
+
+async function refreshPlayer() {
+  const res = await fetch("/api/player");
+  const data = await res.json();
+  const now = document.getElementById("player-now");
+  if (!now) return;
+  if (!data.current_mix_id) {
+    now.textContent = "Nothing playing";
+    return;
+  }
+  const state = data.playing ? "Playing" : "Paused/stopped";
+  const pos = Math.round(data.position_seconds || 0);
+  now.textContent = `${state}: ${data.title} @ ${pos}s / ${formatDuration(data.duration_seconds || 0)}`;
+  document.getElementById("player-position").value = String(pos);
+  document.getElementById("player-stars").value =
+    data.stars != null ? String(data.stars) : "";
+  document.getElementById("player-tags").value = (data.tags || []).join(", ");
+}
+
+async function showLaterFeatures(features) {
+  const panel = document.getElementById("later-panel");
+  const list = document.getElementById("later-list");
+  if (!panel || !list) return;
+  list.innerHTML = "";
+  for (const feature of features || []) {
+    const li = document.createElement("li");
+    li.textContent = feature;
+    list.appendChild(li);
+  }
+  panel.hidden = false;
+  // Close the active player controls; the demo ends on the later list.
+  for (const id of [
+    "player-play",
+    "player-stop",
+    "player-mark",
+    "player-seek",
+    "player-rate",
+    "player-tag",
+    "player-intent",
+    "player-position",
+    "player-stars",
+    "player-tags",
+  ]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = true;
+  }
+  const now = document.getElementById("player-now");
+  if (now) now.textContent = "Player closed";
 }
 
 async function refreshFiles() {
@@ -244,6 +364,7 @@ async function refreshIntents() {
     li.className = "muted";
     li.textContent = "No intents yet";
     list.appendChild(li);
+    await refreshPlayerIntents();
     return;
   }
 
@@ -362,6 +483,7 @@ async function refreshIntents() {
 
     list.appendChild(li);
   }
+  await refreshPlayerIntents();
 }
 
 document.getElementById("pair-form").addEventListener("submit", async (event) => {
@@ -582,6 +704,183 @@ document.getElementById("fill-btn").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("player-tags").addEventListener("input", async (event) => {
+  const value = event.target.value;
+  const last = value.split(",").pop()?.trim() || "";
+  const res = await fetch(`/api/tags?q=${encodeURIComponent(last)}`);
+  const data = await res.json().catch(() => ({ tags: [] }));
+  const datalist = document.getElementById("tag-suggestions");
+  if (!datalist) return;
+  datalist.innerHTML = "";
+  for (const tag of data.tags || []) {
+    const option = document.createElement("option");
+    option.value = tag;
+    datalist.appendChild(option);
+  }
+});
+
+document.getElementById("player-play").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const intentId = document.getElementById("player-intent").value;
+  if (!intentId) {
+    status.textContent = "Choose an intent";
+    return;
+  }
+  status.textContent = "Starting playback…";
+  try {
+    const res = await fetch("/api/player/play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ intent_id: intentId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Play failed";
+      return;
+    }
+    status.textContent = `Playing “${data.mix.title}”`;
+    document.getElementById("later-panel").hidden = true;
+    await refreshPlayer();
+    await refreshFiles();
+  } catch (err) {
+    status.textContent = "Play request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-stop").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  try {
+    await fetch("/api/player/stop", { method: "POST" });
+    status.textContent = "Stopped (mix left in place if under 75%)";
+    await refreshPlayer();
+  } catch (err) {
+    status.textContent = "Stop request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-seek").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const position = Number(document.getElementById("player-position").value || 0);
+  try {
+    const res = await fetch("/api/player/playhead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position_seconds: position }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Playhead update failed";
+      return;
+    }
+    status.textContent = data.played
+      ? `Playhead ${position}s · marked played`
+      : `Playhead ${position}s`;
+    if (data.played) {
+      await showLaterFeatures(data.later || []);
+    }
+    await refreshPlayer();
+    await refreshMixes();
+    await refreshFiles();
+    await refreshIntents();
+  } catch (err) {
+    status.textContent = "Playhead request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-mark").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  status.textContent = "Marking played…";
+  try {
+    const res = await fetch("/api/player/mark-played", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Mark played failed";
+      return;
+    }
+    status.textContent = "Marked played";
+    await showLaterFeatures(data.later);
+    await refreshPlayer();
+    await refreshMixes();
+    await refreshFiles();
+    await refreshIntents();
+  } catch (err) {
+    status.textContent = "Mark played request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-rate").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const player = await (await fetch("/api/player")).json();
+  if (!player.current_mix_id) {
+    status.textContent = "Nothing to rate";
+    return;
+  }
+  const stars = document.getElementById("player-stars").value;
+  if (!stars) {
+    status.textContent = "Choose 1–5 stars";
+    return;
+  }
+  try {
+    const res = await fetch(`/api/mixes/${player.current_mix_id}/rate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stars: Number(stars) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Rate failed";
+      return;
+    }
+    status.textContent = `Rated ${stars}★`;
+    await refreshMixes();
+    await refreshPlayer();
+  } catch (err) {
+    status.textContent = "Rate request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-tag").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const player = await (await fetch("/api/player")).json();
+  if (!player.current_mix_id) {
+    status.textContent = "Nothing to tag";
+    return;
+  }
+  const tags = document
+    .getElementById("player-tags")
+    .value.split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  try {
+    const res = await fetch(`/api/mixes/${player.current_mix_id}/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Tag failed";
+      return;
+    }
+    status.textContent = tags.length ? `Tags: ${tags.join(", ")}` : "Tags cleared";
+    await refreshMixes();
+    await refreshTagSuggestions();
+    await refreshPlayer();
+  } catch (err) {
+    status.textContent = "Tag request failed";
+    console.error(err);
+  }
+});
+
 (async () => {
   await refreshHealth();
   await refreshPairing();
@@ -589,4 +888,6 @@ document.getElementById("fill-btn").addEventListener("click", async () => {
   await refreshMixes();
   await refreshFiles();
   await refreshIntents();
+  await refreshPlayerIntents();
+  await refreshPlayer();
 })();

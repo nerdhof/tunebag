@@ -31,6 +31,7 @@ from mixy.domain import (
     Intent,
     Mix,
     Platform,
+    Playhead,
     Sequence,
     SequenceEntry,
     StarBucket,
@@ -54,6 +55,7 @@ from mixy.source import (
 )
 
 _HTTP_TIMEOUT = 5.0
+PLAYED_THRESHOLD = 0.75
 
 
 class DeviceAgent:
@@ -87,6 +89,10 @@ class DeviceAgent:
         # Local-only (not events): simulated link mode and now-playing for metered cap.
         self._metered = False
         self._current_mix_id: UUID | None = None
+        # Local player supervision (browser is remote control; closing it does not stop).
+        self._playing = False
+        self._playing_intent_id: UUID | None = None
+        self._playback_position: float = 0.0
         self.data_dir = self.catalog.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,6 +202,105 @@ class DeviceAgent:
         if mix_id is not None and mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
         self._current_mix_id = mix_id
+
+    def is_playing(self) -> bool:
+        return self._playing
+
+    def play(self, intent_id: UUID, mix_id: UUID | None = None) -> Mix:
+        """Supervise local playback of an assigned mix that has a file on this device.
+
+        Resumes from the latest synced playhead when one exists for the mix.
+        """
+        if intent_id not in self.catalog.intents:
+            raise KeyError(f"unknown intent {intent_id}")
+        assignment = self.assignment(intent_id)
+        if assignment is None or not assignment.mix_ids:
+            raise ValueError("intent has no assignment on this device")
+        target = mix_id if mix_id is not None else assignment.mix_ids[0]
+        if target not in assignment.mix_ids:
+            raise ValueError("mix is not in this device's assignment")
+        if target not in self._local_files:
+            raise ValueError("mix has no local file")
+        mix = self.catalog.mixes[target]
+        existing = self.catalog.playheads.get(target)
+        self._playback_position = (
+            float(existing.position_seconds) if existing is not None else 0.0
+        )
+        self._playing = True
+        self._playing_intent_id = intent_id
+        self.set_current_mix(target)
+        return mix
+
+    def stop(self) -> None:
+        """Stop local playback without marking the mix played."""
+        self._playing = False
+        self._playing_intent_id = None
+
+    def playback_position(self) -> float:
+        """Current local playback position (including a mid-mix resume point)."""
+        return self._playback_position
+
+    def playing_intent_id(self) -> UUID | None:
+        return self._playing_intent_id
+
+    def report_playhead(self, position_seconds: float) -> Playhead:
+        """Update the playhead for the current mix; mark played at or past 75%."""
+        mix_id = self._current_mix_id
+        if mix_id is None:
+            raise ValueError("no current mix")
+        mix = self.catalog.mixes.get(mix_id)
+        if mix is None:
+            raise KeyError(f"unknown mix {mix_id}")
+        self._playback_position = float(position_seconds)
+        self._append_and_apply(
+            EventType.PLAYHEAD,
+            {
+                "mix_id": str(mix_id),
+                "position_seconds": float(position_seconds),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        )
+        mix = self.catalog.mixes[mix_id]
+        if not mix.played and mix.duration_seconds > 0:
+            if position_seconds >= PLAYED_THRESHOLD * mix.duration_seconds:
+                self.mark_played(mix_id)
+        return self.catalog.playheads[mix_id]
+
+    def mark_played(self, mix_id: UUID | None = None) -> Mix:
+        """Mark a mix played (explicit control or auto at 75%).
+
+        Rebuilds sequences so the mix goes to the back of the pool, fills the
+        next assignment, then deletes the played file once a replacement is local.
+        """
+        target = mix_id if mix_id is not None else self._current_mix_id
+        if target is None:
+            raise ValueError("no mix to mark played")
+        if target not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {target}")
+        if not self.catalog.mixes[target].played:
+            self._append_and_apply(EventType.PLAYED, {"mix_id": str(target)})
+            self._rebuild_all_sequences()
+            self.fill_caches()
+            self._delete_played_file_if_replaced(target)
+        if self._current_mix_id == target:
+            self._playing = False
+            self._playing_intent_id = None
+            self._playback_position = 0.0
+        return self.catalog.mixes[target]
+
+    def mix(self, mix_id: UUID) -> Mix | None:
+        return self.catalog.mixes.get(mix_id)
+
+    def playhead(self, mix_id: UUID) -> Playhead | None:
+        return self.catalog.playheads.get(mix_id)
+
+    def suggest_tags(self, prefix: str = "", limit: int = 10) -> list[str]:
+        """Tags already in the catalog that match the prefix."""
+        return self.catalog.suggest_tags(prefix, limit=limit)
+
+    def later_features(self) -> list[str]:
+        """Planned later features shown when the demo player closes (not implemented)."""
+        return _load_later_features()
 
     def fill_caches(self, *, override_intent_id: UUID | None = None) -> int:
         """Fill this device's assignments from peers or origin.
@@ -685,6 +790,13 @@ class DeviceAgent:
 
     def _upsert_intent_and_rebuild(self, intent: Intent) -> None:
         self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))
+        self._rebuild_sequence_for_intent(intent)
+
+    def _rebuild_all_sequences(self) -> None:
+        for intent in self.intents():
+            self._rebuild_sequence_for_intent(intent)
+
+    def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
         sequence = build_sequence(intent, self.catalog.mixes_list())
         self._append_and_apply(
             EventType.SEQUENCE_BUILT,
@@ -719,6 +831,24 @@ class DeviceAgent:
                     "budget_seconds": device_hours.budget_seconds,
                 },
             )
+
+    def _delete_played_file_if_replaced(self, played_mix_id: UUID) -> None:
+        """Drop a played mix's bytes once another assigned mix is local."""
+        if played_mix_id not in self._local_files:
+            return
+        replacement_local = False
+        for intent in self.intents():
+            assignment = self.assignment(intent.id)
+            if assignment is None:
+                continue
+            for mix_id in assignment.mix_ids:
+                if mix_id != played_mix_id and mix_id in self._local_files:
+                    replacement_local = True
+                    break
+            if replacement_local:
+                break
+        if replacement_local:
+            self.remove_local_file(played_mix_id)
 
     def _apply(self, event: Event) -> None:
         payload = event.payload
@@ -815,6 +945,26 @@ class DeviceAgent:
                     budget_seconds=int(payload["budget_seconds"]),
                 )
             )
+            return
+        if event.type is EventType.PLAYHEAD:
+            updated_at = payload.get("updated_at")
+            self.catalog.set_playhead(
+                Playhead(
+                    mix_id=UUID(payload["mix_id"]),
+                    device_id=event.device_id,
+                    position_seconds=float(payload["position_seconds"]),
+                    updated_at=(
+                        datetime.fromisoformat(updated_at)
+                        if updated_at
+                        else event.created_at
+                    ),
+                )
+            )
+            return
+        if event.type is EventType.PLAYED:
+            mix = self.catalog.mixes.get(UUID(payload["mix_id"]))
+            if mix is not None and not mix.played:
+                self.catalog.add_mix(mix.model_copy(update={"played": True}))
             return
 
     def _sign(self, event: Event) -> str:
@@ -926,6 +1076,24 @@ def _load_public_key(pem: str) -> Ed25519PublicKey:
     if not isinstance(key, Ed25519PublicKey):
         raise TypeError("expected Ed25519 public key")
     return key
+
+
+def _load_later_features() -> list[str]:
+    path = Path(__file__).resolve().parents[2] / "docs" / "LATER.md"
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    features: list[str] = []
+    in_planned = False
+    for line in lines:
+        if line.startswith("## Planned features"):
+            in_planned = True
+            continue
+        if in_planned and line.startswith("## "):
+            break
+        if in_planned and line.startswith("- "):
+            features.append(line[2:].strip())
+    return features
 
 
 def _safe_filename(title: str, mix_id: UUID) -> str:

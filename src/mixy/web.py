@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from mixy import __version__
 from mixy.agent import DeviceAgent
-from mixy.domain import StarDistribution
+from mixy.domain import StarDistribution, Stars
 from mixy.pairing import payload_to_qr_text
 from mixy.source import DEFAULT_MIN_DURATION_SECONDS
 
@@ -69,6 +69,27 @@ class MeteredBody(BaseModel):
 
 class CurrentMixBody(BaseModel):
     mix_id: UUID | None = None
+
+
+class PlayBody(BaseModel):
+    intent_id: UUID
+    mix_id: UUID | None = None
+
+
+class PlayheadBody(BaseModel):
+    position_seconds: float = Field(ge=0)
+
+
+class MarkPlayedBody(BaseModel):
+    mix_id: UUID | None = None
+
+
+class RateBody(BaseModel):
+    stars: int = Field(ge=1, le=5)
+
+
+class TagBody(BaseModel):
+    tags: list[str] = Field(default_factory=list)
 
 
 def create_app(agent: DeviceAgent) -> FastAPI:
@@ -239,10 +260,113 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "url": mix.url,
                     "duration_seconds": mix.duration_seconds,
                     "tags": mix.tags,
+                    "stars": int(mix.stars) if mix.stars is not None else None,
+                    "played": mix.played,
+                    "rejected": mix.rejected,
                 }
                 for mix in agent.mixes()
             ]
         }
+
+    @app.post("/api/mixes/{mix_id}/rate")
+    def rate_mix(mix_id: UUID, body: RateBody) -> dict:
+        try:
+            mix = agent.rate_mix(mix_id, Stars(body.stars))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "mix": {
+                "id": str(mix.id),
+                "stars": int(mix.stars) if mix.stars is not None else None,
+            },
+        }
+
+    @app.post("/api/mixes/{mix_id}/tags")
+    def tag_mix(mix_id: UUID, body: TagBody) -> dict:
+        try:
+            mix = agent.tag_mix(mix_id, body.tags)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True, "mix": {"id": str(mix.id), "tags": mix.tags}}
+
+    @app.get("/api/player")
+    def player_state() -> dict:
+        current = agent.current_mix()
+        mix = agent.mix(current) if current is not None else None
+        return {
+            "playing": agent.is_playing(),
+            "intent_id": (
+                str(agent.playing_intent_id())
+                if agent.playing_intent_id() is not None
+                else None
+            ),
+            "current_mix_id": str(current) if current is not None else None,
+            "title": mix.title if mix is not None else None,
+            "duration_seconds": mix.duration_seconds if mix is not None else None,
+            "position_seconds": agent.playback_position(),
+            "stars": int(mix.stars) if mix is not None and mix.stars is not None else None,
+            "tags": mix.tags if mix is not None else [],
+            "played": mix.played if mix is not None else False,
+        }
+
+    @app.post("/api/player/play")
+    def player_play(body: PlayBody) -> dict:
+        try:
+            mix = agent.play(body.intent_id, body.mix_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "playing": agent.is_playing(),
+            "mix": {
+                "id": str(mix.id),
+                "title": mix.title,
+                "duration_seconds": mix.duration_seconds,
+            },
+        }
+
+    @app.post("/api/player/stop")
+    def player_stop() -> dict:
+        agent.stop()
+        return {"ok": True, "playing": agent.is_playing()}
+
+    @app.post("/api/player/playhead")
+    def player_playhead(body: PlayheadBody) -> dict:
+        try:
+            head = agent.report_playhead(body.position_seconds)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        mix = agent.mix(head.mix_id)
+        return {
+            "ok": True,
+            "mix_id": str(head.mix_id),
+            "position_seconds": head.position_seconds,
+            "played": mix.played if mix is not None else False,
+            "playing": agent.is_playing(),
+            "later": agent.later_features() if mix is not None and mix.played else [],
+        }
+
+    @app.post("/api/player/mark-played")
+    def player_mark_played(body: MarkPlayedBody) -> dict:
+        try:
+            mix = agent.mark_played(body.mix_id)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "mix": {"id": str(mix.id), "played": mix.played},
+            "playing": agent.is_playing(),
+            "later": agent.later_features(),
+        }
+
+    @app.get("/api/later")
+    def later() -> dict:
+        return {"features": agent.later_features()}
 
     @app.get("/api/artists")
     def artists() -> dict:
@@ -282,7 +406,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     @app.get("/api/tags")
     def list_tags(q: str = "") -> dict:
         if q:
-            return {"tags": agent.catalog.suggest_tags(q)}
+            return {"tags": agent.suggest_tags(q)}
         return {"tags": agent.catalog.all_tags()}
 
     @app.get("/api/intents")
