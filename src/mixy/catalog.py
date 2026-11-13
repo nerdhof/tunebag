@@ -54,6 +54,9 @@ class Catalog:
         self.assignments[(assignment.intent_id, assignment.device_id)] = assignment
         return assignment
 
+    def clear_assignment(self, intent_id: UUID, device_id: UUID) -> None:
+        self.assignments.pop((intent_id, device_id), None)
+
     def add_device(self, device: Device) -> Device:
         self.devices[device.id] = device
         return device

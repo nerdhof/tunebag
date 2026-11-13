@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from mixy import __version__
-from mixy.agent import DeviceAgent
+from mixy.agent import DeviceAgent, DeviceHoursSpec
 from mixy.domain import StarDistribution, Stars
 from mixy.pairing import payload_to_qr_text
 from mixy.source import DEFAULT_MIN_DURATION_SECONDS
@@ -41,6 +42,7 @@ class AddArtistsBody(BaseModel):
 class DeviceHoursBody(BaseModel):
     device_id: UUID
     budget_seconds: int = Field(gt=0)
+    expires_at: datetime | None = None
 
 
 class CreateIntentBody(BaseModel):
@@ -61,6 +63,21 @@ class UpdateIntentBody(BaseModel):
 class SetDeviceHoursBody(BaseModel):
     device_id: UUID
     budget_seconds: int = Field(gt=0)
+    expires_at: datetime | None = None
+
+
+def _hours_spec(dh: DeviceHoursBody) -> DeviceHoursSpec:
+    if dh.expires_at is None:
+        return (dh.device_id, dh.budget_seconds)
+    return (dh.device_id, dh.budget_seconds, dh.expires_at)
+
+
+def _hours_json(dh: Any) -> dict[str, Any]:
+    return {
+        "device_id": str(dh.device_id),
+        "budget_seconds": dh.budget_seconds,
+        "expires_at": dh.expires_at.isoformat() if dh.expires_at else None,
+    }
 
 
 class MeteredBody(BaseModel):
@@ -117,6 +134,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "current_mix_id": (
                 str(agent.current_mix()) if agent.current_mix() is not None else None
             ),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.get("/api/metered")
@@ -169,6 +187,10 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     def events() -> dict:
         return {"events": [event.model_dump(mode="json") for event in agent.export_events()]}
 
+    @app.get("/api/activity")
+    def activity() -> dict:
+        return {"entries": [entry.as_dict() for entry in agent.activity()]}
+
     @app.post("/api/pair")
     def pair(body: PairBody) -> dict:
         try:
@@ -198,47 +220,74 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     @app.post("/api/sync")
     def sync() -> dict:
         try:
-            agent.sync()
+            agent.sync(fill=False)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"peer sync failed: {exc}") from exc
+        agent.request_fill()
         return {
             "ok": True,
             "mixes": len(agent.mixes()),
             "peers": len(agent.peers()),
             "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.post("/api/fill")
     def fill() -> dict:
-        try:
-            files = agent.fill_caches()
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"origin fetch failed: {exc}") from exc
+        agent.request_fill()
         return {
             "ok": True,
-            "files": files,
+            "files": len(agent.files()),
             "mixes": len(agent.mixes()),
             "metered": agent.is_metered(),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.post("/api/intents/{intent_id}/fill-now")
     def fill_now(intent_id: UUID) -> dict:
-        try:
-            files = agent.fill_now(intent_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"origin fetch failed: {exc}") from exc
+        if intent_id not in {intent.id for intent in agent.intents()}:
+            raise HTTPException(status_code=404, detail=f"unknown intent {intent_id}")
+        agent.request_fill(override_intent_id=intent_id)
         return {
             "ok": True,
-            "files": files,
+            "files": len(agent.files()),
             "mixes": len(agent.mixes()),
             "metered": agent.is_metered(),
             "intent_id": str(intent_id),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.get("/api/files")
     def files() -> dict:
+        downloading = agent.downloading_mix_id
+        groups = []
+        for group in agent.cache_groups():
+            group_id = group["id"]
+            groups.append(
+                {
+                    "id": None if group_id is None else str(group_id),
+                    "name": group["name"],
+                    "overview": group["overview"],
+                    "mixes": [
+                        {
+                            "id": str(mix["id"]),
+                            "title": mix["title"],
+                            "duration_seconds": mix["duration_seconds"],
+                            "status": mix["status"],
+                            **(
+                                {
+                                    "downloaded_bytes": mix["downloaded_bytes"],
+                                    "total_bytes": mix["total_bytes"],
+                                }
+                                if mix["status"] == "loading"
+                                and "downloaded_bytes" in mix
+                                else {}
+                            ),
+                        }
+                        for mix in group["mixes"]
+                    ],
+                }
+            )
         return {
             "files": [
                 {
@@ -247,15 +296,23 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "duration_seconds": mix.duration_seconds,
                 }
                 for mix in agent.files()
-            ]
+            ],
+            "groups": groups,
+            "downloading_mix_id": None if downloading is None else str(downloading),
         }
 
     @app.get("/api/mixes")
     def mixes() -> dict:
+        artists_by_id = {a.id: a.name for a in agent.artists()}
+        pending_until = {
+            str(p.mix_id): p.undo_until.isoformat() for p in agent.pending_rejects()
+        }
         return {
             "mixes": [
                 {
                     "id": str(mix.id),
+                    "artist_id": str(mix.artist_id),
+                    "artist": artists_by_id.get(mix.artist_id, "Unknown"),
                     "title": mix.title,
                     "url": mix.url,
                     "duration_seconds": mix.duration_seconds,
@@ -263,6 +320,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "stars": int(mix.stars) if mix.stars is not None else None,
                     "played": mix.played,
                     "rejected": mix.rejected,
+                    "reject_pending_until": pending_until.get(str(mix.id)),
                 }
                 for mix in agent.mixes()
             ]
@@ -284,6 +342,43 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             },
         }
 
+    @app.post("/api/mixes/{mix_id}/reject")
+    def reject_mix(mix_id: UUID) -> dict:
+        try:
+            mix = agent.reject_mix(mix_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        pending = next(
+            (p for p in agent.pending_rejects() if p.mix_id == mix_id),
+            None,
+        )
+        return {
+            "ok": True,
+            "mix": {
+                "id": str(mix.id),
+                "rejected": mix.rejected,
+                "reject_pending_until": (
+                    pending.undo_until.isoformat() if pending is not None else None
+                ),
+            },
+        }
+
+    @app.post("/api/mixes/{mix_id}/undo-reject")
+    def undo_reject(mix_id: UUID) -> dict:
+        undone = agent.undo_reject(mix_id)
+        mix = agent.mix(mix_id)
+        if mix is None:
+            raise HTTPException(status_code=404, detail=f"unknown mix {mix_id}")
+        return {
+            "ok": True,
+            "undone": undone,
+            "mix": {
+                "id": str(mix.id),
+                "rejected": mix.rejected,
+                "reject_pending_until": None,
+            },
+        }
+
     @app.post("/api/mixes/{mix_id}/tags")
     def tag_mix(mix_id: UUID, body: TagBody) -> dict:
         try:
@@ -296,6 +391,14 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     def player_state() -> dict:
         current = agent.current_mix()
         mix = agent.mix(current) if current is not None else None
+        pending_until = None
+        if current is not None:
+            pending = next(
+                (p for p in agent.pending_rejects() if p.mix_id == current),
+                None,
+            )
+            if pending is not None:
+                pending_until = pending.undo_until.isoformat()
         return {
             "playing": agent.is_playing(),
             "intent_id": (
@@ -310,6 +413,8 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "stars": int(mix.stars) if mix is not None and mix.stars is not None else None,
             "tags": mix.tags if mix is not None else [],
             "played": mix.played if mix is not None else False,
+            "rejected": mix.rejected if mix is not None else False,
+            "reject_pending_until": pending_until,
         }
 
     @app.post("/api/player/play")
@@ -339,6 +444,22 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     def player_playhead(body: PlayheadBody) -> dict:
         try:
             head = agent.report_playhead(body.position_seconds)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        mix = agent.mix(head.mix_id)
+        return {
+            "ok": True,
+            "mix_id": str(head.mix_id),
+            "position_seconds": head.position_seconds,
+            "played": mix.played if mix is not None else False,
+            "playing": agent.is_playing(),
+            "later": agent.later_features() if mix is not None and mix.played else [],
+        }
+
+    @app.post("/api/player/seek")
+    def player_seek(body: PlayheadBody) -> dict:
+        try:
+            head = agent.seek(body.position_seconds)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         mix = agent.mix(head.mix_id)
@@ -419,13 +540,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "tags": intent.tags,
                     "distribution": intent.distribution.model_dump(),
                     "seed": intent.seed,
-                    "device_hours": [
-                        {
-                            "device_id": str(dh.device_id),
-                            "budget_seconds": dh.budget_seconds,
-                        }
-                        for dh in intent.device_hours
-                    ],
+                    "device_hours": [_hours_json(dh) for dh in intent.device_hours],
                 }
                 for intent in agent.intents()
             ]
@@ -436,18 +551,22 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         name = body.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="name is required")
-        intent = agent.create_intent(
-            name,
-            tags=body.tags,
-            distribution=body.distribution,
-            seed=body.seed,
-            device_hours=[(dh.device_id, dh.budget_seconds) for dh in body.device_hours],
-        )
-        files = agent.fill_caches()
+        try:
+            intent = agent.create_intent(
+                name,
+                tags=body.tags,
+                distribution=body.distribution,
+                seed=body.seed,
+                device_hours=[_hours_spec(dh) for dh in body.device_hours],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        agent.request_fill()
         return {
             "ok": True,
             "intent": {"id": str(intent.id), "name": intent.name},
-            "files": files,
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.patch("/api/intents/{intent_id}")
@@ -469,7 +588,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 tags=body.tags,
                 distribution=body.distribution,
                 device_hours=(
-                    [(dh.device_id, dh.budget_seconds) for dh in body.device_hours]
+                    [_hours_spec(dh) for dh in body.device_hours]
                     if body.device_hours is not None
                     else None
                 ),
@@ -478,11 +597,12 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        files = agent.fill_caches()
+        agent.request_fill()
         return {
             "ok": True,
             "intent": {"id": str(intent.id), "name": intent.name},
-            "files": files,
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.delete("/api/intents/{intent_id}")
@@ -495,28 +615,29 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
     @app.put("/api/intents/{intent_id}/hours")
     def set_intent_hours(intent_id: UUID, body: SetDeviceHoursBody) -> dict:
+        hours_kwargs: dict[str, Any] = {}
+        if "expires_at" in body.model_dump(exclude_unset=True):
+            hours_kwargs["expires_at"] = body.expires_at
         try:
             intent = agent.set_device_hours(
                 intent_id,
                 body.device_id,
                 body.budget_seconds,
+                **hours_kwargs,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        files = agent.fill_caches()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        agent.request_fill()
         return {
             "ok": True,
             "intent": {
                 "id": str(intent.id),
-                "device_hours": [
-                    {
-                        "device_id": str(dh.device_id),
-                        "budget_seconds": dh.budget_seconds,
-                    }
-                    for dh in intent.device_hours
-                ],
+                "device_hours": [_hours_json(dh) for dh in intent.device_hours],
             },
-            "files": files,
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
         }
 
     @app.get("/api/intents/{intent_id}/sequence")

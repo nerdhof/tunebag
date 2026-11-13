@@ -29,7 +29,7 @@ body {
 }
 
 main {
-  max-width: 40rem;
+  max-width: 56rem;
   margin: 0 auto;
   padding: 2rem 1.25rem 4rem;
 }
@@ -56,6 +56,29 @@ section {
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+}
+
+.seek-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.seek-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.seek-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 0.9rem;
+  min-width: 3.25rem;
+}
+
+.seek-time:last-child {
+  text-align: right;
 }
 
 .metered-toggle {
@@ -85,6 +108,37 @@ button:disabled {
   color: var(--muted);
 }
 
+#activity-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  max-height: 12rem;
+  overflow: auto;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+#activity-list li {
+  padding: 0.2rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+  color: var(--muted);
+  word-break: break-word;
+}
+
+#activity-list li:first-child {
+  border-top: none;
+}
+
+#activity-list li.level-WARNING {
+  color: var(--fg);
+}
+
+#activity-list .activity-ts {
+  opacity: 0.7;
+  margin-right: 0.5rem;
+}
+
 #qr {
   display: block;
   background: #fff;
@@ -94,7 +148,7 @@ button:disabled {
 }
 
 #pairing label,
-#catalog label,
+#artists-form label,
 #intents label {
   display: block;
   margin: 0.75rem 0;
@@ -102,8 +156,8 @@ button:disabled {
 
 #pairing input,
 #pairing textarea,
-#catalog input,
-#catalog textarea,
+#artists-form input,
+#artists-form textarea,
 #intents input,
 #intents textarea {
   display: block;
@@ -173,17 +227,151 @@ button:disabled {
   border-radius: 8px;
 }
 
-#peer-list,
-#mix-list {
+#peer-list {
   padding-left: 1.25rem;
 }
 
-#catalog label input[type="number"],
+#artists-form label input[type="number"],
 #intents .chance-grid input,
 #intent-hours input {
   max-width: 8rem;
 }
 
+#intent-hours .hours-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.65rem;
+}
+
+#catalog-table-wrap {
+  max-height: 24rem;
+  overflow: auto;
+  margin-top: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-radius: 8px;
+}
+
+#catalog-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+#catalog-table th,
+#catalog-table td {
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+#catalog-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  z-index: 1;
+  font-weight: 600;
+}
+
+#catalog-table .artist-row {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--muted) 12%, var(--card));
+}
+
+#catalog-table .artist-row:hover {
+  background: color-mix(in srgb, var(--muted) 20%, var(--card));
+}
+
+#catalog-table .artist-row[data-expanded="true"] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+}
+
+#catalog-table .artist-toggle {
+  display: inline-block;
+  width: 1rem;
+  margin-right: 0.35rem;
+  color: var(--muted);
+}
+
+#catalog-table .mix-row[hidden] {
+  display: none;
+}
+
+#catalog-table .tag-cell {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 10rem;
+}
+
+#catalog-table .tag-cell input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--muted);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+#catalog-table .tag-cell button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 #sync-btn {
   margin-top: 0.5rem;
+}
+
+#file-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+}
+
+#file-list .cache-intent-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+  cursor: pointer;
+  padding: 0.55rem 0.65rem;
+  margin: 0.35rem 0 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--muted) 12%, var(--card));
+}
+
+#file-list .cache-intent-header:hover {
+  background: color-mix(in srgb, var(--muted) 20%, var(--card));
+}
+
+#file-list .cache-intent-header[data-expanded="true"] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+}
+
+#file-list .cache-intent-toggle {
+  display: inline-block;
+  width: 1rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+#file-list .cache-intent-name {
+  font-weight: 600;
+}
+
+#file-list .cache-intent-overview {
+  flex: 1 1 12rem;
+  font-size: 0.9rem;
+}
+
+#file-list .cache-mix-row {
+  padding: 0.35rem 0.65rem 0.35rem 1.65rem;
+}
+
+#file-list .cache-mix-row[hidden] {
+  display: none;
 }

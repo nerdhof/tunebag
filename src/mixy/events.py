@@ -20,6 +20,7 @@ class EventType(str, Enum):
     INTENT_DELETED = "intent_deleted"
     SEQUENCE_BUILT = "sequence_built"
     ASSIGNMENT_SET = "assignment_set"
+    ASSIGNMENT_CLEARED = "assignment_cleared"
     PLAYED = "played"
     PLAYHEAD = "playhead"
     DEVICE_PAIRED = "device_paired"

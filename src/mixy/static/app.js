@@ -2,6 +2,39 @@ let localDeviceId = null;
 let currentMixId = null;
 let peersCache = [];
 let editingHoursByDevice = null;
+let editingExpiresByDevice = null;
+const expandedCatalogArtists = new Set();
+const expandedCacheIntents = new Set();
+let rejectUndoTimer = null;
+let fillWasInProgress = false;
+let lastFilesRefreshAt = 0;
+let filesRefreshInFlight = null;
+const FILES_REFRESH_MIN_MS = 1000;
+
+function fillInProgressFromEntries(entries) {
+  let inProgress = false;
+  for (const entry of entries) {
+    const msg = entry.message || "";
+    if (msg.startsWith("fill caches start")) {
+      inProgress = true;
+    } else if (msg.startsWith("fill caches end")) {
+      inProgress = false;
+    }
+  }
+  return inProgress;
+}
+
+function requestFilesRefresh({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - lastFilesRefreshAt < FILES_REFRESH_MIN_MS) {
+    return filesRefreshInFlight || Promise.resolve();
+  }
+  lastFilesRefreshAt = now;
+  filesRefreshInFlight = refreshFiles().finally(() => {
+    filesRefreshInFlight = null;
+  });
+  return filesRefreshInFlight;
+}
 
 function resetIntentForm() {
   document.getElementById("intent-edit-id").value = "";
@@ -14,7 +47,16 @@ function resetIntentForm() {
   document.getElementById("intent-submit").textContent = "Create intent";
   document.getElementById("intent-cancel").hidden = true;
   editingHoursByDevice = null;
+  editingExpiresByDevice = null;
   renderHoursFields();
+}
+
+function hoursUntilExpiry(iso) {
+  if (!iso) return "";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "0";
+  return String(Math.round((ms / 3600000) * 10) / 10);
 }
 
 function beginEditIntent(intent) {
@@ -30,11 +72,62 @@ function beginEditIntent(intent) {
   document.getElementById("intent-submit").textContent = "Save changes";
   document.getElementById("intent-cancel").hidden = false;
   editingHoursByDevice = {};
+  editingExpiresByDevice = {};
   for (const dh of intent.device_hours || []) {
     editingHoursByDevice[dh.device_id] = String(dh.budget_seconds / 3600);
+    const until = hoursUntilExpiry(dh.expires_at);
+    if (until !== "") {
+      editingExpiresByDevice[dh.device_id] = until;
+    }
   }
   renderHoursFields();
   document.getElementById("intent-form").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function formatActivityTs(ts) {
+  if (!ts) return "";
+  const match = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
+  return match ? match[1] : ts;
+}
+
+async function refreshActivity() {
+  const list = document.getElementById("activity-list");
+  if (!list) return;
+  try {
+    const res = await fetch("/api/activity");
+    const data = await res.json();
+    const chronological = Array.isArray(data.entries) ? data.entries : [];
+    const entries = chronological.slice().reverse();
+    list.replaceChildren();
+    if (!entries.length) {
+      const empty = document.createElement("li");
+      empty.className = "muted";
+      empty.textContent = "No activity yet";
+      list.appendChild(empty);
+    } else {
+      for (const entry of entries) {
+        const li = document.createElement("li");
+        li.className = `level-${entry.level || "INFO"}`;
+        const time = document.createElement("span");
+        time.className = "activity-ts";
+        time.textContent = formatActivityTs(entry.ts);
+        li.appendChild(time);
+        li.appendChild(document.createTextNode(entry.message || ""));
+        list.appendChild(li);
+      }
+    }
+
+    const filling = fillInProgressFromEntries(chronological);
+    if (filling) {
+      await requestFilesRefresh();
+    } else if (fillWasInProgress) {
+      await requestFilesRefresh({ force: true });
+      await refreshIntents();
+    }
+    fillWasInProgress = filling;
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 async function refreshHealth() {
@@ -90,8 +183,12 @@ async function refreshPeers() {
 function renderHoursFields() {
   const root = document.getElementById("intent-hours");
   const previous = {};
+  const previousExpires = {};
   for (const input of root.querySelectorAll("input[data-device-id]")) {
     previous[input.dataset.deviceId] = input.value;
+  }
+  for (const input of root.querySelectorAll("input[data-expires-for]")) {
+    previousExpires[input.dataset.expiresFor] = input.value;
   }
   root.innerHTML = "";
 
@@ -131,6 +228,9 @@ function renderHoursFields() {
   }
 
   for (const device of devices) {
+    const row = document.createElement("div");
+    row.className = "hours-row";
+
     const label = document.createElement("label");
     label.textContent = `${device.name} (hours)`;
     const input = document.createElement("input");
@@ -144,7 +244,22 @@ function renderHoursFields() {
       editingHoursByDevice?.[device.id] ??
       device.defaultHours;
     label.appendChild(input);
-    root.appendChild(label);
+    row.appendChild(label);
+
+    const expiresLabel = document.createElement("label");
+    expiresLabel.textContent = "Expires in (hours, optional)";
+    const expiresInput = document.createElement("input");
+    expiresInput.type = "number";
+    expiresInput.min = "0";
+    expiresInput.step = "0.5";
+    expiresInput.placeholder = "never";
+    expiresInput.dataset.expiresFor = device.id;
+    expiresInput.value =
+      previousExpires[device.id] ?? editingExpiresByDevice?.[device.id] ?? "";
+    expiresLabel.appendChild(expiresInput);
+    row.appendChild(expiresLabel);
+
+    root.appendChild(row);
   }
 }
 
@@ -155,55 +270,295 @@ function formatDuration(seconds) {
   return `${m}m`;
 }
 
+function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function formatHms(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+let playerSeekDragging = false;
+let playerPollTimer = null;
+
+function setPlayerPolling(playing) {
+  if (playing) {
+    if (playerPollTimer == null) {
+      playerPollTimer = setInterval(() => {
+        void refreshPlayer();
+      }, 500);
+    }
+  } else if (playerPollTimer != null) {
+    clearInterval(playerPollTimer);
+    playerPollTimer = null;
+  }
+}
+
+function updateSeekBar(data) {
+  const seekbar = document.getElementById("player-seekbar");
+  const currentEl = document.getElementById("player-time-current");
+  const totalEl = document.getElementById("player-time-total");
+  if (!seekbar || !currentEl || !totalEl) return;
+  const duration = Math.max(0, Math.round(data.duration_seconds || 0));
+  const pos = Math.max(0, Math.min(duration, Math.round(data.position_seconds || 0)));
+  seekbar.max = String(duration);
+  if (!playerSeekDragging) {
+    seekbar.value = String(pos);
+  }
+  const displayPos = playerSeekDragging ? Number(seekbar.value) : pos;
+  currentEl.textContent = formatClock(displayPos);
+  totalEl.textContent = formatClock(duration);
+  const hasMix = Boolean(data.current_mix_id);
+  seekbar.disabled = !hasMix;
+}
+
+function cacheGroupKey(group) {
+  return group.id == null ? "other" : String(group.id);
+}
+
+function formatCacheOverview(overview) {
+  const parts = ["cached", "loading", "pending"].map((status) => {
+    const bucket = overview?.[status] || { count: 0, duration_seconds: 0 };
+    return `${status}: ${bucket.count} (${formatHms(bucket.duration_seconds)})`;
+  });
+  return parts.join(", ");
+}
+
+function formatMb(bytes) {
+  const n = Number(bytes) || 0;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderDownloadProgress(file) {
+  const wrap = document.createElement("div");
+  wrap.className = "cache-progress";
+  const downloaded = Number(file.downloaded_bytes) || 0;
+  const total =
+    file.total_bytes == null || file.total_bytes === ""
+      ? null
+      : Number(file.total_bytes);
+  const known = total != null && Number.isFinite(total) && total > 0;
+
+  const label = document.createElement("span");
+  label.className = "cache-progress-label";
+  label.textContent = known
+    ? `${formatMb(downloaded)} / ${formatMb(total)}`
+    : downloaded > 0
+      ? formatMb(downloaded)
+      : "downloading…";
+  wrap.appendChild(label);
+
+  const track = document.createElement("div");
+  track.className = "cache-progress-track";
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-valuemin", "0");
+  if (known) {
+    const pct = Math.max(0, Math.min(100, (downloaded / total) * 100));
+    track.setAttribute("aria-valuemax", "100");
+    track.setAttribute("aria-valuenow", String(Math.round(pct)));
+    const fill = document.createElement("div");
+    fill.className = "cache-progress-fill";
+    fill.style.width = `${pct}%`;
+    track.appendChild(fill);
+  } else {
+    track.classList.add("indeterminate");
+    track.setAttribute("aria-valuetext", "download in progress");
+    const fill = document.createElement("div");
+    fill.className = "cache-progress-fill";
+    track.appendChild(fill);
+  }
+  wrap.appendChild(track);
+  return wrap;
+}
+
+function setCacheGroupExpanded(groupKey, expanded) {
+  const header = document.querySelector(
+    `#cache-body .cache-intent-header[data-group-id="${CSS.escape(groupKey)}"]`,
+  );
+  if (!header) return;
+  header.dataset.expanded = expanded ? "true" : "false";
+  header.setAttribute("aria-expanded", expanded ? "true" : "false");
+  const toggle = header.querySelector(".cache-intent-toggle");
+  if (toggle) toggle.textContent = expanded ? "▼" : "▶";
+  document
+    .querySelectorAll(
+      `#cache-body .cache-mix-row[data-group-id="${CSS.escape(groupKey)}"]`,
+    )
+    .forEach((row) => {
+      row.hidden = !expanded;
+    });
+  if (expanded) expandedCacheIntents.add(groupKey);
+  else expandedCacheIntents.delete(groupKey);
+}
+
+function groupMixesByArtist(mixes) {
+  const groups = new Map();
+  for (const mix of mixes) {
+    const artistId = mix.artist_id || "unknown";
+    const artistName = mix.artist || "Unknown";
+    let group = groups.get(artistId);
+    if (!group) {
+      group = { artistId, artistName, mixes: [] };
+      groups.set(artistId, group);
+    }
+    group.mixes.push(mix);
+  }
+  const sorted = [...groups.values()].sort((a, b) =>
+    a.artistName.localeCompare(b.artistName, undefined, { sensitivity: "base" }),
+  );
+  for (const group of sorted) {
+    group.mixes.sort((a, b) =>
+      (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" }),
+    );
+  }
+  return sorted;
+}
+
+function setArtistExpanded(artistId, expanded) {
+  const header = document.querySelector(
+    `#catalog-body tr.artist-row[data-artist-id="${CSS.escape(artistId)}"]`,
+  );
+  if (!header) return;
+  header.dataset.expanded = expanded ? "true" : "false";
+  header.setAttribute("aria-expanded", expanded ? "true" : "false");
+  const toggle = header.querySelector(".artist-toggle");
+  if (toggle) toggle.textContent = expanded ? "▼" : "▶";
+  document
+    .querySelectorAll(
+      `#catalog-body tr.mix-row[data-artist-id="${CSS.escape(artistId)}"]`,
+    )
+    .forEach((row) => {
+      row.hidden = !expanded;
+    });
+  if (expanded) expandedCatalogArtists.add(artistId);
+  else expandedCatalogArtists.delete(artistId);
+}
+
 async function refreshMixes() {
   const res = await fetch("/api/mixes");
   const data = await res.json();
-  const list = document.getElementById("mix-list");
-  list.innerHTML = "";
+  const body = document.getElementById("catalog-body");
+  body.innerHTML = "";
   if (!data.mixes.length) {
-    const li = document.createElement("li");
-    li.textContent = "No mixes yet";
-    li.className = "muted";
-    list.appendChild(li);
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.className = "muted";
+    td.textContent = "No mixes yet";
+    tr.appendChild(td);
+    body.appendChild(tr);
+    await refreshTagSuggestions();
     return;
   }
-  for (const mix of data.mixes) {
-    const li = document.createElement("li");
-    const meta = document.createElement("div");
-    const stars = mix.stars != null ? ` · ${mix.stars}★` : "";
-    const played = mix.played ? " · played" : "";
-    meta.textContent = `${mix.title} · ${formatDuration(mix.duration_seconds)}${stars}${played}`;
-    li.appendChild(meta);
-    const row = document.createElement("div");
-    row.className = "controls";
-    const tagInput = document.createElement("input");
-    tagInput.type = "text";
-    tagInput.setAttribute("list", "tag-suggestions");
-    tagInput.placeholder = "tags";
-    tagInput.value = (mix.tags || []).join(", ");
-    tagInput.style.flex = "1";
-    row.appendChild(tagInput);
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.textContent = "Save tags";
-    saveBtn.addEventListener("click", async () => {
-      const tags = tagInput.value
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-      const res = await fetch(`/api/mixes/${mix.id}/tags`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tags }),
-      });
-      if (res.ok) {
-        await refreshMixes();
-        await refreshTagSuggestions();
+
+  for (const group of groupMixesByArtist(data.mixes)) {
+    const expanded = expandedCatalogArtists.has(group.artistId);
+    const header = document.createElement("tr");
+    header.className = "artist-row";
+    header.dataset.artistId = group.artistId;
+    header.dataset.expanded = expanded ? "true" : "false";
+    header.setAttribute("aria-expanded", expanded ? "true" : "false");
+    header.tabIndex = 0;
+    header.setAttribute("role", "button");
+
+    const artistCell = document.createElement("td");
+    artistCell.colSpan = 5;
+    const toggle = document.createElement("span");
+    toggle.className = "artist-toggle";
+    toggle.setAttribute("aria-hidden", "true");
+    toggle.textContent = expanded ? "▼" : "▶";
+    artistCell.appendChild(toggle);
+    artistCell.appendChild(
+      document.createTextNode(
+        `${group.artistName} (${group.mixes.length})`,
+      ),
+    );
+    header.appendChild(artistCell);
+
+    const toggleGroup = () => {
+      setArtistExpanded(
+        group.artistId,
+        header.dataset.expanded !== "true",
+      );
+    };
+    header.addEventListener("click", toggleGroup);
+    header.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleGroup();
       }
     });
-    row.appendChild(saveBtn);
-    li.appendChild(row);
-    list.appendChild(li);
+    body.appendChild(header);
+
+    for (const mix of group.mixes) {
+      const tr = document.createElement("tr");
+      tr.className = "mix-row";
+      tr.dataset.artistId = group.artistId;
+      tr.dataset.mixId = mix.id;
+      tr.hidden = !expanded;
+
+      const blankArtist = document.createElement("td");
+      blankArtist.textContent = "";
+      tr.appendChild(blankArtist);
+
+      const title = document.createElement("td");
+      title.textContent = mix.title || "";
+      tr.appendChild(title);
+
+      const length = document.createElement("td");
+      length.textContent = formatDuration(mix.duration_seconds || 0);
+      tr.appendChild(length);
+
+      const rating = document.createElement("td");
+      rating.textContent = mix.stars != null ? `${mix.stars}★` : "—";
+      tr.appendChild(rating);
+
+      const tagsCell = document.createElement("td");
+      const tagRow = document.createElement("div");
+      tagRow.className = "tag-cell";
+      const tagInput = document.createElement("input");
+      tagInput.type = "text";
+      tagInput.setAttribute("list", "tag-suggestions");
+      tagInput.placeholder = "tags";
+      tagInput.value = (mix.tags || []).join(", ");
+      tagInput.addEventListener("click", (event) => event.stopPropagation());
+      tagRow.appendChild(tagInput);
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.textContent = "Save";
+      saveBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const tags = tagInput.value
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+        const saveRes = await fetch(`/api/mixes/${mix.id}/tags`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tags }),
+        });
+        if (saveRes.ok) {
+          const saved = await saveRes.json();
+          tagInput.value = (saved.mix?.tags || tags).join(", ");
+          await refreshTagSuggestions();
+        }
+      });
+      tagRow.appendChild(saveBtn);
+      tagsCell.appendChild(tagRow);
+      tr.appendChild(tagsCell);
+      body.appendChild(tr);
+    }
   }
   await refreshTagSuggestions();
 }
@@ -246,6 +601,53 @@ async function refreshPlayerIntents() {
   }
 }
 
+function clearRejectUndoTimer() {
+  if (rejectUndoTimer != null) {
+    clearTimeout(rejectUndoTimer);
+    rejectUndoTimer = null;
+  }
+}
+
+function updateRejectControls(data) {
+  const undoBtn = document.getElementById("player-undo-reject");
+  const rejectBtn = document.getElementById("player-reject");
+  const status = document.getElementById("player-reject-status");
+  if (!undoBtn || !rejectBtn || !status) return;
+  const until = data.reject_pending_until;
+  clearRejectUndoTimer();
+  if (until && data.current_mix_id) {
+    undoBtn.hidden = false;
+    rejectBtn.hidden = true;
+    status.hidden = false;
+    status.textContent = "Reject pending — undo available for a few seconds";
+    const ms = Date.parse(until) - Date.now();
+    if (Number.isFinite(ms) && ms > 0) {
+      rejectUndoTimer = setTimeout(async () => {
+        await refreshPlayer();
+        await refreshMixes();
+        await refreshFiles();
+      }, ms + 50);
+    } else {
+      // Window already elapsed; refresh flushes commit via pending_rejects.
+      void (async () => {
+        await refreshPlayer();
+        await refreshMixes();
+        await refreshFiles();
+      })();
+    }
+  } else {
+    undoBtn.hidden = true;
+    rejectBtn.hidden = false;
+    if (data.rejected) {
+      status.hidden = false;
+      status.textContent = "Rejected";
+    } else {
+      status.hidden = true;
+      status.textContent = "";
+    }
+  }
+}
+
 async function refreshPlayer() {
   const res = await fetch("/api/player");
   const data = await res.json();
@@ -253,15 +655,23 @@ async function refreshPlayer() {
   if (!now) return;
   if (!data.current_mix_id) {
     now.textContent = "Nothing playing";
+    updateSeekBar({});
+    setPlayerPolling(false);
+    updateRejectControls({});
     return;
   }
   const state = data.playing ? "Playing" : "Paused/stopped";
   const pos = Math.round(data.position_seconds || 0);
   now.textContent = `${state}: ${data.title} @ ${pos}s / ${formatDuration(data.duration_seconds || 0)}`;
-  document.getElementById("player-position").value = String(pos);
+  if (!playerSeekDragging) {
+    document.getElementById("player-position").value = String(pos);
+  }
   document.getElementById("player-stars").value =
     data.stars != null ? String(data.stars) : "";
   document.getElementById("player-tags").value = (data.tags || []).join(", ");
+  updateSeekBar(data);
+  setPlayerPolling(Boolean(data.playing));
+  updateRejectControls(data);
 }
 
 async function showLaterFeatures(features) {
@@ -281,7 +691,10 @@ async function showLaterFeatures(features) {
     "player-stop",
     "player-mark",
     "player-seek",
+    "player-seekbar",
     "player-rate",
+    "player-reject",
+    "player-undo-reject",
     "player-tag",
     "player-intent",
     "player-position",
@@ -291,6 +704,7 @@ async function showLaterFeatures(features) {
     const el = document.getElementById(id);
     if (el) el.disabled = true;
   }
+  setPlayerPolling(false);
   const now = document.getElementById("player-now");
   if (now) now.textContent = "Player closed";
 }
@@ -304,53 +718,108 @@ async function refreshFiles() {
   }
   const list = document.getElementById("file-list");
   list.innerHTML = "";
-  if (!data.files.length) {
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  if (!groups.length) {
     const li = document.createElement("li");
-    li.textContent = "No cached audio yet — create an intent with hours, or press Fill caches";
+    li.textContent =
+      "No assigned audio yet — create an intent with hours, or press Fill caches";
     li.className = "muted";
     list.appendChild(li);
     return;
   }
-  for (const file of data.files) {
-    const li = document.createElement("li");
-    const row = document.createElement("div");
-    row.className = "controls";
-    const label = document.createElement("span");
-    label.style.flex = "1";
-    const isCurrent = currentMixId === file.id;
-    label.textContent =
-      `${file.title} · ${formatDuration(file.duration_seconds)}` +
-      (isCurrent ? " · current" : "");
-    row.appendChild(label);
-    const currentBtn = document.createElement("button");
-    currentBtn.type = "button";
-    currentBtn.textContent = isCurrent ? "Clear current" : "Set current";
-    currentBtn.addEventListener("click", async () => {
-      const status = document.getElementById("fill-status");
-      try {
-        const res = await fetch("/api/current-mix", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mix_id: isCurrent ? null : file.id }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          status.textContent = body.detail || "Could not set current mix";
-          return;
-        }
-        currentMixId = body.current_mix_id || null;
-        status.textContent = currentMixId
-          ? `Current mix set · metered cap uses this + one ahead`
-          : "Current mix cleared · metered cap uses assignment head";
-        await refreshFiles();
-      } catch (err) {
-        status.textContent = "Current mix request failed";
-        console.error(err);
+
+  for (const group of groups) {
+    const groupKey = cacheGroupKey(group);
+    const expanded = expandedCacheIntents.has(groupKey);
+
+    const headerLi = document.createElement("li");
+    headerLi.className = "cache-intent-header";
+    headerLi.dataset.groupId = groupKey;
+    headerLi.dataset.expanded = expanded ? "true" : "false";
+    headerLi.setAttribute("aria-expanded", expanded ? "true" : "false");
+    headerLi.tabIndex = 0;
+    headerLi.setAttribute("role", "button");
+
+    const toggle = document.createElement("span");
+    toggle.className = "cache-intent-toggle";
+    toggle.setAttribute("aria-hidden", "true");
+    toggle.textContent = expanded ? "▼" : "▶";
+    headerLi.appendChild(toggle);
+
+    const heading = document.createElement("span");
+    heading.className = "cache-intent-name";
+    heading.textContent = group.name || "Intent";
+    headerLi.appendChild(heading);
+
+    const overview = document.createElement("span");
+    overview.className = "cache-intent-overview muted";
+    overview.textContent = formatCacheOverview(group.overview);
+    headerLi.appendChild(overview);
+
+    const toggleGroup = () => {
+      setCacheGroupExpanded(groupKey, headerLi.dataset.expanded !== "true");
+    };
+    headerLi.addEventListener("click", toggleGroup);
+    headerLi.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleGroup();
       }
     });
-    row.appendChild(currentBtn);
-    li.appendChild(row);
-    list.appendChild(li);
+    list.appendChild(headerLi);
+
+    for (const file of group.mixes || []) {
+      const li = document.createElement("li");
+      li.className = "cache-mix-row";
+      li.dataset.groupId = groupKey;
+      li.hidden = !expanded;
+
+      const row = document.createElement("div");
+      row.className = "controls";
+      const label = document.createElement("span");
+      label.style.flex = "1";
+      const isCurrent = currentMixId === file.id;
+      const statusLabel = file.status ? ` · ${file.status}` : "";
+      label.textContent =
+        `${file.title} · ${formatDuration(file.duration_seconds)}` +
+        statusLabel +
+        (isCurrent ? " · current" : "");
+      row.appendChild(label);
+
+      if (file.status === "cached") {
+        const currentBtn = document.createElement("button");
+        currentBtn.type = "button";
+        currentBtn.textContent = isCurrent ? "Clear current" : "Set current";
+        currentBtn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const status = document.getElementById("fill-status");
+          try {
+            const res = await fetch("/api/current-mix", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mix_id: isCurrent ? null : file.id }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              status.textContent = body.detail || "Could not set current mix";
+              return;
+            }
+            currentMixId = body.current_mix_id || null;
+            status.textContent = currentMixId
+              ? `Current mix set · metered cap uses this + one ahead`
+              : "Current mix cleared · metered cap uses assignment head";
+            await refreshFiles();
+          } catch (err) {
+            status.textContent = "Current mix request failed";
+            console.error(err);
+          }
+        });
+        row.appendChild(currentBtn);
+      }
+
+      li.appendChild(row);
+      list.appendChild(li);
+    }
   }
 }
 
@@ -395,7 +864,9 @@ async function refreshIntents() {
           status.textContent = data.detail || "Fill now failed";
           return;
         }
-        status.textContent = `Fill now “${intent.name}” · ${data.files} cached`;
+        status.textContent = data.fill_in_progress
+          ? `Fill now “${intent.name}” started · ${data.files} cached so far`
+          : `Fill now “${intent.name}” · ${data.files} cached`;
         await refreshFiles();
       } catch (err) {
         status.textContent = "Fill now request failed";
@@ -437,7 +908,14 @@ async function refreshIntents() {
     const tags = intent.tags.length ? intent.tags.join(", ") : "untagged only";
     const dist = intent.distribution;
     const hours = (intent.device_hours || [])
-      .map((dh) => `${formatDuration(dh.budget_seconds)}`)
+      .map((dh) => {
+        const budget = formatDuration(dh.budget_seconds);
+        if (!dh.expires_at) return budget;
+        const until = hoursUntilExpiry(dh.expires_at);
+        return until === "" || until === "0"
+          ? `${budget} (expired)`
+          : `${budget} (expires ${until}h)`;
+      })
       .join(" / ");
     meta.textContent =
       `Tags: ${tags} · chances ${Math.round(dist.five * 100)}/` +
@@ -579,6 +1057,11 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
     return;
   }
 
+  // Refresh device id before collect — open tab after serve restart can be stale.
+  await refreshHealth();
+  await refreshPeers();
+  renderHoursFields();
+
   const device_hours = [];
   for (const input of document.querySelectorAll("#intent-hours input[data-device-id]")) {
     const hours = Number(input.value);
@@ -586,9 +1069,25 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
       status.textContent = "Each device needs hours greater than 0";
       return;
     }
+    const deviceId = input.dataset.deviceId;
+    const expiresInput = document.querySelector(
+      `#intent-hours input[data-expires-for="${deviceId}"]`,
+    );
+    let expires_at = null;
+    if (expiresInput && expiresInput.value !== "") {
+      const until = Number(expiresInput.value);
+      if (!Number.isFinite(until) || until < 0) {
+        status.textContent = "Expires in must be a non-negative number of hours";
+        return;
+      }
+      if (until > 0) {
+        expires_at = new Date(Date.now() + until * 3600 * 1000).toISOString();
+      }
+    }
     device_hours.push({
-      device_id: input.dataset.deviceId,
+      device_id: deviceId,
       budget_seconds: Math.round(hours * 3600),
+      expires_at,
     });
   }
   if (!device_hours.length) {
@@ -625,9 +1124,10 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
       return;
     }
     const fileCount = data.files ?? 0;
+    const filling = data.fill_in_progress ? " · filling caches…" : ` · ${fileCount} cached`;
     status.textContent = editId
-      ? `Updated “${data.intent.name}” · ${fileCount} cached`
-      : `Created “${data.intent.name}” · ${fileCount} cached`;
+      ? `Updated “${data.intent.name}”${filling}`
+      : `Created “${data.intent.name}”${filling}`;
     resetIntentForm();
     await refreshIntents();
     await refreshFiles();
@@ -647,8 +1147,9 @@ document.getElementById("sync-btn").addEventListener("click", async () => {
       status.textContent = data.detail || "Sync failed";
       return;
     }
-    status.textContent =
-      `Synced · ${data.peers} peers · ${data.mixes} mixes · ${data.files} cached`;
+    status.textContent = data.fill_in_progress
+      ? `Synced · ${data.peers} peers · ${data.mixes} mixes · filling caches…`
+      : `Synced · ${data.peers} peers · ${data.mixes} mixes · ${data.files} cached`;
     await refreshPeers();
     await refreshMixes();
     await refreshIntents();
@@ -687,7 +1188,7 @@ document.getElementById("metered-toggle").addEventListener("change", async (even
 
 document.getElementById("fill-btn").addEventListener("click", async () => {
   const status = document.getElementById("fill-status");
-  status.textContent = "Filling caches… (downloads can take a while)";
+  status.textContent = "Starting fill…";
   try {
     const res = await fetch("/api/fill", { method: "POST" });
     const data = await res.json();
@@ -695,7 +1196,9 @@ document.getElementById("fill-btn").addEventListener("click", async () => {
       status.textContent = data.detail || "Fill failed";
       return;
     }
-    status.textContent = `Filled · ${data.files} cached`;
+    status.textContent = data.fill_in_progress
+      ? `Filling caches… (${data.files} cached so far)`
+      : `Filled · ${data.files} cached`;
     await refreshFiles();
     await refreshIntents();
   } catch (err) {
@@ -759,6 +1262,61 @@ document.getElementById("player-stop").addEventListener("click", async () => {
     console.error(err);
   }
 });
+
+const playerSeekbar = document.getElementById("player-seekbar");
+if (playerSeekbar) {
+  playerSeekbar.addEventListener("pointerdown", () => {
+    playerSeekDragging = true;
+  });
+  playerSeekbar.addEventListener("pointerup", () => {
+    playerSeekDragging = false;
+  });
+  playerSeekbar.addEventListener("pointercancel", () => {
+    playerSeekDragging = false;
+  });
+  playerSeekbar.addEventListener("input", () => {
+    playerSeekDragging = true;
+    const currentEl = document.getElementById("player-time-current");
+    if (currentEl) {
+      currentEl.textContent = formatClock(Number(playerSeekbar.value || 0));
+    }
+    document.getElementById("player-position").value = String(
+      Math.round(Number(playerSeekbar.value || 0)),
+    );
+  });
+  playerSeekbar.addEventListener("change", async () => {
+    playerSeekDragging = false;
+    const status = document.getElementById("player-status");
+    const position = Math.round(Number(playerSeekbar.value || 0));
+    try {
+      const res = await fetch("/api/player/seek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ position_seconds: position }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        status.textContent = data.detail || "Seek failed";
+        await refreshPlayer();
+        return;
+      }
+      status.textContent = data.played
+        ? `Seeked to ${formatClock(position)} · marked played`
+        : `Seeked to ${formatClock(position)}`;
+      if (data.played) {
+        await showLaterFeatures(data.later || []);
+      }
+      await refreshPlayer();
+      await refreshMixes();
+      await refreshFiles();
+      await refreshIntents();
+    } catch (err) {
+      status.textContent = "Seek request failed";
+      console.error(err);
+      await refreshPlayer();
+    }
+  });
+}
 
 document.getElementById("player-seek").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
@@ -848,6 +1406,56 @@ document.getElementById("player-rate").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("player-reject").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const player = await (await fetch("/api/player")).json();
+  if (!player.current_mix_id) {
+    status.textContent = "Nothing to reject";
+    return;
+  }
+  try {
+    const res = await fetch(`/api/mixes/${player.current_mix_id}/reject`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Reject failed";
+      return;
+    }
+    status.textContent = "Reject started — undo available briefly";
+    await refreshPlayer();
+    await refreshMixes();
+  } catch (err) {
+    status.textContent = "Reject request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-undo-reject").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const player = await (await fetch("/api/player")).json();
+  if (!player.current_mix_id) {
+    status.textContent = "Nothing to undo";
+    return;
+  }
+  try {
+    const res = await fetch(`/api/mixes/${player.current_mix_id}/undo-reject`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Undo reject failed";
+      return;
+    }
+    status.textContent = data.undone ? "Reject undone" : "Nothing to undo";
+    await refreshPlayer();
+    await refreshMixes();
+  } catch (err) {
+    status.textContent = "Undo reject request failed";
+    console.error(err);
+  }
+});
+
 document.getElementById("player-tag").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   const player = await (await fetch("/api/player")).json();
@@ -883,6 +1491,7 @@ document.getElementById("player-tag").addEventListener("click", async () => {
 
 (async () => {
   await refreshHealth();
+  await refreshActivity();
   await refreshPairing();
   await refreshPeers();
   await refreshMixes();
@@ -890,4 +1499,5 @@ document.getElementById("player-tag").addEventListener("click", async () => {
   await refreshIntents();
   await refreshPlayerIntents();
   await refreshPlayer();
+  setInterval(refreshActivity, 1000);
 })();

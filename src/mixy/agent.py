@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import random
+import threading
+import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from mixy.activity import ActivityEntry, ActivityLog
 from mixy.catalog import Catalog
 from mixy.domain import (
     Artist,
@@ -32,6 +37,7 @@ from mixy.domain import (
     Mix,
     Platform,
     Playhead,
+    RejectPending,
     Sequence,
     SequenceEntry,
     StarBucket,
@@ -47,8 +53,9 @@ from mixy.pairing import (
 from mixy.pairing import (
     pairing_payload as build_pairing_payload,
 )
-from mixy.sequence import assign_by_budget, build_sequence
 from mixy.player import AudioPlayer, default_player
+from mixy.reject import RejectBuffer
+from mixy.sequence import assign_by_budget, build_sequence
 from mixy.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
@@ -57,6 +64,9 @@ from mixy.source import (
 
 _HTTP_TIMEOUT = 5.0
 PLAYED_THRESHOLD = 0.75
+_UNSET = object()
+# (device_id, budget) or (device_id, budget, expires_at)
+DeviceHoursSpec = tuple[UUID, int] | tuple[UUID, int, datetime | None]
 
 
 class DeviceAgent:
@@ -70,6 +80,7 @@ class DeviceAgent:
         source: Source | None = None,
         data_dir: Path | None = None,
         player: AudioPlayer | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._identity = identity or generate_identity(name)
         self._private_key = _load_private_key(self._identity.private_key_pem)
@@ -84,20 +95,41 @@ class DeviceAgent:
         self.catalog.local_device_id = self.device.id
         self.catalog.add_device(self.device)
         self._log = EventLog()
+        self._activity = ActivityLog()
         self._reachable: list[DeviceAgent] = []
         self._peer_urls: dict[UUID, str] = {}
         self._seen_event_ids: set[UUID] = set()
         self._local_files: dict[UUID, bytes] = {}
-        # Local-only (not events): simulated link mode and now-playing for metered cap.
+        # Local-only (not events): simulated link mode, reject undo window, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
+        self._clock: Callable[[], datetime] = clock or datetime.utcnow
+        self._rejects = RejectBuffer()
         # Local player supervision (browser is remote control; closing it does not stop).
         self._player: AudioPlayer = player if player is not None else default_player()
         self._playing = False
         self._playing_intent_id: UUID | None = None
         self._playback_position: float = 0.0
+        self._play_anchor_position: float = 0.0
+        self._play_anchor_at: datetime | None = None
+        # Background fill: single-flight with coalesce so HTTP can return immediately.
+        self._fill_lock = threading.Lock()
+        self._fill_in_progress = False
+        self._fill_pending = False
+        self._fill_pending_override: UUID | None = None
+        self._downloading_mix_id: UUID | None = None
+        self._download_bytes: int = 0
+        self._download_total_bytes: int | None = None
+        self._download_lock = threading.Lock()
         self.data_dir = self.catalog.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def note(self, message: str, *, level: int = logging.INFO) -> None:
+        """Record an operational progress line (terminal + UI activity feed)."""
+        self._activity.note(message, level=level)
+
+    def activity(self) -> list[ActivityEntry]:
+        return self._activity.entries()
 
     @property
     def device_id(self) -> UUID:
@@ -172,6 +204,110 @@ class DeviceAgent:
             if mix_id in self.catalog.mixes
         ]
 
+    @property
+    def downloading_mix_id(self) -> UUID | None:
+        with self._download_lock:
+            return self._downloading_mix_id
+
+    @property
+    def download_progress(self) -> dict[str, Any] | None:
+        with self._download_lock:
+            if self._downloading_mix_id is None:
+                return None
+            return {
+                "mix_id": self._downloading_mix_id,
+                "downloaded_bytes": self._download_bytes,
+                "total_bytes": self._download_total_bytes,
+            }
+
+    def cache_groups(self) -> list[dict[str, Any]]:
+        """Assignments for this device, grouped for the Cache UI.
+
+        Each group has mixes in assignment order with status cached / loading /
+        pending, plus overview count and duration totals. Local files with no
+        remaining assignment appear under a synthetic Other group.
+        """
+        local_ids = self._local_file_ids()
+        progress = self.download_progress
+        downloading = None if progress is None else progress["mix_id"]
+        assigned_ids: set[UUID] = set()
+        groups: list[dict[str, Any]] = []
+
+        for intent in self.intents():
+            assignment = self.assignment(intent.id)
+            if assignment is None:
+                continue
+            mixes: list[dict[str, Any]] = []
+            overview = {
+                "cached": {"count": 0, "duration_seconds": 0},
+                "loading": {"count": 0, "duration_seconds": 0},
+                "pending": {"count": 0, "duration_seconds": 0},
+            }
+            for mix_id in assignment.mix_ids:
+                assigned_ids.add(mix_id)
+                mix = self.catalog.mixes.get(mix_id)
+                if mix is None:
+                    continue
+                if mix_id in local_ids:
+                    status = "cached"
+                elif downloading is not None and mix_id == downloading:
+                    status = "loading"
+                else:
+                    status = "pending"
+                duration = int(mix.duration_seconds)
+                entry: dict[str, Any] = {
+                    "id": mix_id,
+                    "title": mix.title,
+                    "duration_seconds": duration,
+                    "status": status,
+                }
+                if status == "loading" and progress is not None:
+                    entry["downloaded_bytes"] = int(progress["downloaded_bytes"])
+                    entry["total_bytes"] = progress["total_bytes"]
+                mixes.append(entry)
+                overview[status]["count"] += 1
+                overview[status]["duration_seconds"] += duration
+            groups.append(
+                {
+                    "id": intent.id,
+                    "name": intent.name,
+                    "mixes": mixes,
+                    "overview": overview,
+                }
+            )
+
+        other_mixes: list[dict[str, Any]] = []
+        other_overview = {
+            "cached": {"count": 0, "duration_seconds": 0},
+            "loading": {"count": 0, "duration_seconds": 0},
+            "pending": {"count": 0, "duration_seconds": 0},
+        }
+        for mix_id in sorted(local_ids - assigned_ids, key=str):
+            mix = self.catalog.mixes.get(mix_id)
+            if mix is None:
+                continue
+            duration = int(mix.duration_seconds)
+            other_mixes.append(
+                {
+                    "id": mix_id,
+                    "title": mix.title,
+                    "duration_seconds": duration,
+                    "status": "cached",
+                }
+            )
+            other_overview["cached"]["count"] += 1
+            other_overview["cached"]["duration_seconds"] += duration
+        if other_mixes:
+            groups.append(
+                {
+                    "id": None,
+                    "name": "Other",
+                    "mixes": other_mixes,
+                    "overview": other_overview,
+                }
+            )
+        return groups
+
     def file_bytes(self, mix_id: UUID) -> bytes | None:
         """Local audio bytes for a mix, if present (peer handoff)."""
         if mix_id in self._local_files:
@@ -216,6 +352,7 @@ class DeviceAgent:
     def is_playing(self) -> bool:
         if self._playing and not self._player.is_alive():
             # External player exited; keep catalog current_mix for metered/resume.
+            self._freeze_playback_position()
             self._playing = False
         return self._playing
 
@@ -237,24 +374,28 @@ class DeviceAgent:
             raise ValueError("mix has no local file")
         mix = self.catalog.mixes[target]
         existing = self.catalog.playheads.get(target)
-        self._playback_position = (
-            float(existing.position_seconds) if existing is not None else 0.0
-        )
+        start = float(existing.position_seconds) if existing is not None else 0.0
         blob = self._ensure_blob_on_disk(target)
-        self._player.play(blob, start_seconds=self._playback_position)
+        self._player.play(blob, start_seconds=start)
         self._playing = True
         self._playing_intent_id = intent_id
         self.set_current_mix(target)
+        self._set_play_anchor(start)
         return mix
 
     def stop(self) -> None:
         """Stop local playback without marking the mix played."""
+        self._freeze_playback_position()
         self._player.stop()
         self._playing = False
         self._playing_intent_id = None
+        # Expiry may have deferred deletion of the mix that was playing.
+        self._prune_unassigned_files()
 
     def playback_position(self) -> float:
         """Current local playback position (including a mid-mix resume point)."""
+        if self._playing and self._play_anchor_at is not None:
+            return self._computed_playback_position()
         return self._playback_position
 
     def playing_intent_id(self) -> UUID | None:
@@ -268,20 +409,75 @@ class DeviceAgent:
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
             raise KeyError(f"unknown mix {mix_id}")
-        self._playback_position = float(position_seconds)
+        pos = float(position_seconds)
+        self._playback_position = pos
+        if self._playing and self._play_anchor_at is not None:
+            self._play_anchor_position = pos
+            self._play_anchor_at = self._clock()
         self._append_and_apply(
             EventType.PLAYHEAD,
             {
                 "mix_id": str(mix_id),
-                "position_seconds": float(position_seconds),
+                "position_seconds": pos,
                 "updated_at": datetime.utcnow().isoformat(),
             },
         )
         mix = self.catalog.mixes[mix_id]
         if not mix.played and mix.duration_seconds > 0:
-            if position_seconds >= PLAYED_THRESHOLD * mix.duration_seconds:
+            if pos >= PLAYED_THRESHOLD * mix.duration_seconds:
                 self.mark_played(mix_id)
         return self.catalog.playheads[mix_id]
+
+    def seek(self, position_seconds: float) -> Playhead:
+        """Seek the current mix: sync playhead and restart local audio if playing."""
+        mix_id = self._current_mix_id
+        if mix_id is None:
+            raise ValueError("no current mix")
+        mix = self.catalog.mixes.get(mix_id)
+        if mix is None:
+            raise KeyError(f"unknown mix {mix_id}")
+        duration = float(mix.duration_seconds)
+        pos = max(0.0, float(position_seconds))
+        if duration > 0:
+            pos = min(duration, pos)
+        was_playing = self.is_playing()
+        intent_id = self._playing_intent_id
+        head = self.report_playhead(pos)
+        if was_playing and self.is_playing() and intent_id is not None:
+            blob = self._ensure_blob_on_disk(mix_id)
+            self._player.play(blob, start_seconds=pos)
+            self._playing = True
+            self._playing_intent_id = intent_id
+            self._set_play_anchor(pos)
+        else:
+            self._playback_position = pos
+            self._clear_play_anchor()
+        return head
+
+    def _set_play_anchor(self, position: float) -> None:
+        self._playback_position = float(position)
+        self._play_anchor_position = float(position)
+        self._play_anchor_at = self._clock()
+
+    def _clear_play_anchor(self) -> None:
+        self._play_anchor_at = None
+
+    def _computed_playback_position(self) -> float:
+        if self._play_anchor_at is None:
+            return self._playback_position
+        elapsed = (self._clock() - self._play_anchor_at).total_seconds()
+        pos = self._play_anchor_position + max(0.0, elapsed)
+        mix_id = self._current_mix_id
+        if mix_id is not None:
+            mix = self.catalog.mixes.get(mix_id)
+            if mix is not None and mix.duration_seconds > 0:
+                pos = min(float(mix.duration_seconds), pos)
+        return round(pos, 3)
+
+    def _freeze_playback_position(self) -> None:
+        if self._play_anchor_at is not None:
+            self._playback_position = self._computed_playback_position()
+            self._clear_play_anchor()
 
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
         """Mark a mix played (explicit control or auto at 75%).
@@ -304,6 +500,7 @@ class DeviceAgent:
             self._playing = False
             self._playing_intent_id = None
             self._playback_position = 0.0
+            self._clear_play_anchor()
         return self.catalog.mixes[target]
 
     def mix(self, mix_id: UUID) -> Mix | None:
@@ -320,6 +517,68 @@ class DeviceAgent:
         """Planned later features shown when the demo player closes (not implemented)."""
         return _load_later_features()
 
+    @property
+    def fill_in_progress(self) -> bool:
+        with self._fill_lock:
+            return self._fill_in_progress
+
+    def request_fill(self, *, override_intent_id: UUID | None = None) -> bool:
+        """Start ``fill_caches`` on a daemon thread (single-flight).
+
+        If a fill is already running, coalesce another pass when it finishes
+        (preferring a provided fill-now override). Returns True if a new thread
+        was started, False if coalesced onto the in-progress fill.
+        """
+        with self._fill_lock:
+            if self._fill_in_progress:
+                self._fill_pending = True
+                if override_intent_id is not None:
+                    self._fill_pending_override = override_intent_id
+                return False
+            self._fill_in_progress = True
+            self._fill_pending = False
+            self._fill_pending_override = None
+            started_override = override_intent_id
+        thread = threading.Thread(
+            target=self._run_fill_background,
+            kwargs={"override_intent_id": started_override},
+            daemon=True,
+            name="mixy-fill",
+        )
+        thread.start()
+        return True
+
+    def wait_for_fill(self, timeout: float = 30.0) -> None:
+        """Block until no background fill is running (for tests)."""
+        deadline = time.monotonic() + timeout
+        while self.fill_in_progress:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("fill still in progress")
+            time.sleep(0.05)
+
+    def _run_fill_background(self, *, override_intent_id: UUID | None = None) -> None:
+        try:
+            while True:
+                try:
+                    self.fill_caches(override_intent_id=override_intent_id)
+                except Exception as exc:
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    self.note(f"fill caches failed: {exc}", level=logging.WARNING)
+                with self._fill_lock:
+                    if not self._fill_pending:
+                        self._fill_in_progress = False
+                        return
+                    override_intent_id = self._fill_pending_override
+                    self._fill_pending = False
+                    self._fill_pending_override = None
+        except BaseException:
+            with self._fill_lock:
+                self._fill_in_progress = False
+                self._fill_pending = False
+                self._fill_pending_override = None
+            raise
+
     def fill_caches(self, *, override_intent_id: UUID | None = None) -> int:
         """Fill this device's assignments from peers or origin.
 
@@ -330,9 +589,22 @@ class DeviceAgent:
         Returns the number of mixes with local audio after the pass. Per-mix
         fetch failures are skipped so one bad URL does not abort the fill.
         """
+        if override_intent_id is not None:
+            self.note(f"fill caches start (fill-now intent={override_intent_id})")
+        else:
+            self.note("fill caches start")
         for intent in self.intents():
             assignment = self.assignment(intent.id)
             if assignment is None:
+                if intent.device_hours:
+                    other = ", ".join(
+                        str(dh.device_id) for dh in intent.device_hours
+                    )
+                    self.note(
+                        f"fill skip: {intent.name} has hours for {other} "
+                        f"(not this device {self.device.id})",
+                        level=logging.WARNING,
+                    )
                 continue
             for mix_id in assignment.mix_ids:
                 try:
@@ -345,9 +617,17 @@ class DeviceAgent:
                     # yt-dlp and platform errors vary; one bad URL must not abort the fill.
                     if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                         raise
+                    mix = self.catalog.mixes.get(mix_id)
+                    label = mix.title if mix is not None else str(mix_id)
+                    self.note(
+                        f"download failed: {label}: {exc}",
+                        level=logging.WARNING,
+                    )
                     continue
         self._refresh_intent_folders()
-        return len(self.files())
+        cached = len(self.files())
+        self.note(f"fill caches end · {cached} cached")
+        return cached
 
     def fill_now(self, intent_id: UUID) -> int:
         """One-shot origin fill of one intent to full device hours, then the cap returns."""
@@ -362,9 +642,20 @@ class DeviceAgent:
         min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS,
     ) -> list[Mix]:
         """List own uploads for each artist URL and write catalog rows only."""
+        self.note(f"add artists start · {len(urls)} URL(s)")
         added: list[Mix] = []
         for url in urls:
-            listing = self.source.list_uploads(url)
+            self.note(f"fetch artist list start: {url}")
+            try:
+                listing = self.source.list_uploads(url)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(
+                    f"fetch artist list failed: {url}: {exc}",
+                    level=logging.WARNING,
+                )
+                raise
             artist = Artist(
                 platform=listing.platform,
                 platform_id=listing.platform_id,
@@ -381,6 +672,7 @@ class DeviceAgent:
                     "url": artist.url,
                 },
             )
+            kept = 0
             for upload in listing.uploads:
                 if upload.duration_seconds < min_duration_seconds:
                     continue
@@ -405,6 +697,12 @@ class DeviceAgent:
                     },
                 )
                 added.append(self.catalog.mixes[mix.id])
+                kept += 1
+            self.note(
+                f"fetch artist list end: {listing.name} · "
+                f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
+            )
+        self.note(f"add artists end · {len(added)} mix(es)")
         return added
 
     def pair(self, payload: dict[str, Any]) -> Device:
@@ -463,14 +761,40 @@ class DeviceAgent:
         return self.catalog.mixes[mix_id]
 
     def reject_mix(self, mix_id: UUID) -> Mix:
-        """Commit a reject immediately (undo window is issue 07)."""
+        """Start a local 20s undo window; nothing syncs until commit."""
+        self.commit_pending_rejects()
         if mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
-        self._append_and_apply(
-            EventType.MIX_REJECTED,
-            {"mix_id": str(mix_id)},
-        )
+        if self.catalog.mixes[mix_id].rejected:
+            return self.catalog.mixes[mix_id]
+        self._rejects.start(mix_id, self.device.id, now=self._clock())
         return self.catalog.mixes[mix_id]
+
+    def undo_reject(self, mix_id: UUID) -> bool:
+        """Cancel a pending reject during the undo window."""
+        return self._rejects.undo(mix_id)
+
+    def pending_rejects(self) -> list[RejectPending]:
+        self.commit_pending_rejects()
+        return self._rejects.pending()
+
+    def commit_pending_rejects(self) -> list[UUID]:
+        """Commit rejects whose undo windows have ended; delete + rebuild."""
+        committed: list[UUID] = []
+        for pending in self._rejects.ready_to_commit(now=self._clock()):
+            if pending.mix_id not in self.catalog.mixes:
+                continue
+            if self.catalog.mixes[pending.mix_id].rejected:
+                committed.append(pending.mix_id)
+                continue
+            self._append_and_apply(
+                EventType.MIX_REJECTED,
+                {"mix_id": str(pending.mix_id)},
+            )
+            self._rebuild_all_sequences()
+            self.fill_caches()
+            committed.append(pending.mix_id)
+        return committed
 
     def create_intent(
         self,
@@ -479,12 +803,10 @@ class DeviceAgent:
         tags: list[str] | None = None,
         distribution: StarDistribution | None = None,
         seed: int | None = None,
-        device_hours: list[tuple[UUID, int]] | None = None,
+        device_hours: list[DeviceHoursSpec] | None = None,
     ) -> Intent:
-        hours = [
-            DeviceHours(device_id=device_id, budget_seconds=budget)
-            for device_id, budget in (device_hours or [])
-        ]
+        hours = _device_hours_from_spec(list(device_hours or []))
+        self._require_known_devices([dh.device_id for dh in hours])
         intent = Intent(
             name=name,
             tags=list(tags or []),
@@ -500,12 +822,29 @@ class DeviceAgent:
         intent_id: UUID,
         device_id: UUID,
         budget_seconds: int,
+        *,
+        expires_at: datetime | None | object = _UNSET,
     ) -> Intent:
         intent = self.catalog.intents.get(intent_id)
         if intent is None:
             raise KeyError(f"unknown intent {intent_id}")
+        self._require_known_devices([device_id])
+        existing = next(
+            (dh for dh in intent.device_hours if dh.device_id == device_id),
+            None,
+        )
+        if expires_at is _UNSET:
+            resolved_expiry = existing.expires_at if existing is not None else None
+        else:
+            resolved_expiry = expires_at  # type: ignore[assignment]
         hours = [dh for dh in intent.device_hours if dh.device_id != device_id]
-        hours.append(DeviceHours(device_id=device_id, budget_seconds=budget_seconds))
+        hours.append(
+            DeviceHours(
+                device_id=device_id,
+                budget_seconds=budget_seconds,
+                expires_at=resolved_expiry,
+            )
+        )
         updated = intent.model_copy(update={"device_hours": hours})
         self._upsert_intent_and_rebuild(updated)
         return self.catalog.intents[intent_id]
@@ -525,7 +864,7 @@ class DeviceAgent:
         name: str | None = None,
         tags: list[str] | None = None,
         distribution: StarDistribution | None = None,
-        device_hours: list[tuple[UUID, int]] | None = None,
+        device_hours: list[DeviceHoursSpec] | None = None,
     ) -> Intent:
         intent = self.catalog.intents.get(intent_id)
         if intent is None:
@@ -538,15 +877,62 @@ class DeviceAgent:
         if distribution is not None:
             updates["distribution"] = distribution
         if device_hours is not None:
-            updates["device_hours"] = [
-                DeviceHours(device_id=device_id, budget_seconds=budget)
-                for device_id, budget in device_hours
-            ]
+            hours = _device_hours_from_spec(device_hours)
+            self._require_known_devices([dh.device_id for dh in hours])
+            updates["device_hours"] = hours
         if not updates:
             return intent
         updated = intent.model_copy(update=updates)
         self._upsert_intent_and_rebuild(updated)
         return self.catalog.intents[intent_id]
+
+    def apply_expired_hours(self) -> list[tuple[UUID, UUID]]:
+        """Remove device hours whose expires_at has passed; prune exclusive files."""
+        now = self._clock()
+        applied: list[tuple[UUID, UUID]] = []
+        for intent in list(self.intents()):
+            expired_ids = [
+                dh.device_id
+                for dh in intent.device_hours
+                if dh.expires_at is not None and dh.expires_at <= now
+            ]
+            if not expired_ids:
+                continue
+            expired_set = set(expired_ids)
+            remaining = [
+                dh for dh in intent.device_hours if dh.device_id not in expired_set
+            ]
+            updated = intent.model_copy(update={"device_hours": remaining})
+            self._upsert_intent_and_rebuild(updated)
+            for device_id in expired_ids:
+                applied.append((intent.id, device_id))
+        if applied:
+            self._prune_unassigned_files()
+        return applied
+
+    def _require_known_devices(self, device_ids: list[UUID]) -> None:
+        """Reject hours for device ids that are not local or a known peer."""
+        unknown = [device_id for device_id in device_ids if device_id not in self.catalog.devices]
+        if not unknown:
+            return
+        bad = ", ".join(str(device_id) for device_id in unknown)
+        raise ValueError(f"unknown device_id(s) for hours: {bad}")
+
+    def _prune_unassigned_files(self) -> None:
+        """Drop local blobs no remaining assignment wants (except currently playing)."""
+        wanted: set[UUID] = set()
+        for intent in self.intents():
+            assignment = self.assignment(intent.id)
+            if assignment is None:
+                continue
+            wanted.update(assignment.mix_ids)
+        playing = self.current_mix() if self.is_playing() else None
+        for mix_id in list(self._local_file_ids()):
+            if mix_id in wanted:
+                continue
+            if playing is not None and mix_id == playing:
+                continue
+            self.remove_local_file(mix_id)
 
     def add_mix(
         self,
@@ -599,19 +985,37 @@ class DeviceAgent:
     def export_events(self) -> list[Event]:
         return self._log.all()
 
-    def sync(self) -> None:
+    def sync(self, *, fill: bool = True) -> None:
+        self.commit_pending_rejects()
+        self.apply_expired_hours()
+        self.note("sync start")
         for agent in list(self._reachable):
             if not self._trusts_public_key(agent.public_key_pem):
                 continue
+            before = len(self._seen_event_ids)
             for event in agent.export_events():
                 self._ingest(event)
+            ingested = len(self._seen_event_ids) - before
+            self.note(f"sync peer {agent.name}: {ingested} new event(s)")
         trusted_ids = {peer.id for peer in self.peers()}
         for peer_id, url in list(self._peer_urls.items()):
             if peer_id not in trusted_ids:
                 continue
+            peer = self.catalog.devices.get(peer_id)
+            label = peer.name if peer is not None else str(peer_id)
+            before = len(self._seen_event_ids)
             self.ingest_events(self._http_fetch_events(url))
-        # Unmetered standing fill after catalog catches up with peers.
-        self.fill_caches()
+            ingested = len(self._seen_event_ids) - before
+            self.note(f"sync peer {label} ({url}): {ingested} new event(s)")
+        # Peer may have applied our expiry; drop exclusive locals after ingest.
+        self.apply_expired_hours()
+        self._prune_unassigned_files()
+        if fill:
+            self.note("sync catalog end · filling caches")
+            # Unmetered standing fill after catalog catches up with peers.
+            self.fill_caches()
+        else:
+            self.note("sync catalog end")
 
     def _ensure_local_file(
         self,
@@ -625,6 +1029,7 @@ class DeviceAgent:
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
             return
+        label = mix.title
 
         # Prefer a copy from any reachable peer that already has the bytes.
         # Peer / USB copies ignore the metered cap.
@@ -633,15 +1038,24 @@ class DeviceAgent:
                 continue
             peer_bytes = peer.file_bytes(mix_id)
             if peer_bytes is not None:
-                self._store_local_file(mix_id, peer_bytes)
+                self.note(f"copy from peer {peer.name}: {label}")
+                self._with_download(mix_id, lambda: self._store_local_file(mix_id, peer_bytes))
+                self.note(f"cached: {label}")
                 return
 
         preferred = self._preferred_origin_agent(intent_id, mix_id)
         if preferred is self:
             if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
                 return
-            data = self.source.fetch_bytes(mix.url)
-            self._store_local_file(mix_id, data)
+            self.note(f"download from origin: {label}")
+            self._with_download(
+                mix_id,
+                lambda: self._store_local_file(
+                    mix_id,
+                    self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress),
+                ),
+            )
+            self.note(f"cached: {label}")
             return
         if preferred is not None:
             # Preferred peer is reachable but does not have the file yet — wait.
@@ -649,8 +1063,34 @@ class DeviceAgent:
         # Preferred unreachable (or no other assignee): fetch our own hours.
         if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
             return
-        data = self.source.fetch_bytes(mix.url)
-        self._store_local_file(mix_id, data)
+        self.note(f"download from origin: {label}")
+        self._with_download(
+            mix_id,
+            lambda: self._store_local_file(
+                mix_id,
+                self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress),
+            ),
+        )
+        self.note(f"cached: {label}")
+
+    def _on_download_progress(self, downloaded: int, total: int | None) -> None:
+        with self._download_lock:
+            self._download_bytes = max(0, int(downloaded))
+            self._download_total_bytes = None if total is None else max(0, int(total))
+
+    def _with_download(self, mix_id: UUID, action: Callable[[], None]) -> None:
+        with self._download_lock:
+            self._downloading_mix_id = mix_id
+            self._download_bytes = 0
+            self._download_total_bytes = None
+        try:
+            action()
+        finally:
+            with self._download_lock:
+                if self._downloading_mix_id == mix_id:
+                    self._downloading_mix_id = None
+                    self._download_bytes = 0
+                    self._download_total_bytes = None
 
     def _origin_fetch_allowed(
         self,
@@ -839,6 +1279,16 @@ class DeviceAgent:
             self._rebuild_sequence_for_intent(intent)
 
     def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
+        active_devices = {dh.device_id for dh in intent.device_hours}
+        for iid, device_id in list(self.catalog.assignments):
+            if iid == intent.id and device_id not in active_devices:
+                self._append_and_apply(
+                    EventType.ASSIGNMENT_CLEARED,
+                    {
+                        "intent_id": str(intent.id),
+                        "device_id": str(device_id),
+                    },
+                )
         sequence = build_sequence(intent, self.catalog.mixes_list())
         self._append_and_apply(
             EventType.SEQUENCE_BUILT,
@@ -953,9 +1403,11 @@ class DeviceAgent:
                 )
             return
         if event.type is EventType.MIX_REJECTED:
-            mix = self.catalog.mixes.get(UUID(payload["mix_id"]))
+            mix_id = UUID(payload["mix_id"])
+            mix = self.catalog.mixes.get(mix_id)
             if mix is not None:
                 self.catalog.add_mix(mix.model_copy(update={"rejected": True}))
+            self.remove_local_file(mix_id)
             return
         if event.type is EventType.INTENT_UPSERTED:
             self.catalog.upsert_intent(_intent_from_payload(payload))
@@ -986,6 +1438,12 @@ class DeviceAgent:
                     mix_ids=[UUID(mix_id) for mix_id in payload["mix_ids"]],
                     budget_seconds=int(payload["budget_seconds"]),
                 )
+            )
+            return
+        if event.type is EventType.ASSIGNMENT_CLEARED:
+            self.catalog.clear_assignment(
+                UUID(payload["intent_id"]),
+                UUID(payload["device_id"]),
             )
             return
         if event.type is EventType.PLAYHEAD:
@@ -1043,6 +1501,29 @@ class DeviceAgent:
             response.raise_for_status()
             raw_events = response.json().get("events", [])
         return [Event.model_validate(raw) for raw in raw_events]
+
+
+def _device_hours_from_spec(entries: list[DeviceHoursSpec]) -> list[DeviceHours]:
+    hours: list[DeviceHours] = []
+    for entry in entries:
+        if len(entry) == 2:
+            device_id, budget = entry
+            hours.append(DeviceHours(device_id=device_id, budget_seconds=budget))
+        elif len(entry) == 3:
+            device_id, budget, expires_at = entry
+            hours.append(
+                DeviceHours(
+                    device_id=device_id,
+                    budget_seconds=budget,
+                    expires_at=expires_at,
+                )
+            )
+        else:
+            raise ValueError(
+                "device_hours entries must be (device_id, budget) "
+                "or (device_id, budget, expires_at)"
+            )
+    return hours
 
 
 def _intent_payload(intent: Intent) -> dict[str, Any]:
