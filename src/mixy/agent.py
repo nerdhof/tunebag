@@ -48,6 +48,7 @@ from mixy.pairing import (
     pairing_payload as build_pairing_payload,
 )
 from mixy.sequence import assign_by_budget, build_sequence
+from mixy.player import AudioPlayer, default_player
 from mixy.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
@@ -68,6 +69,7 @@ class DeviceAgent:
         identity: DeviceIdentity | None = None,
         source: Source | None = None,
         data_dir: Path | None = None,
+        player: AudioPlayer | None = None,
     ) -> None:
         self._identity = identity or generate_identity(name)
         self._private_key = _load_private_key(self._identity.private_key_pem)
@@ -90,6 +92,7 @@ class DeviceAgent:
         self._metered = False
         self._current_mix_id: UUID | None = None
         # Local player supervision (browser is remote control; closing it does not stop).
+        self._player: AudioPlayer = player if player is not None else default_player()
         self._playing = False
         self._playing_intent_id: UUID | None = None
         self._playback_position: float = 0.0
@@ -165,13 +168,20 @@ class DeviceAgent:
         """Mixes that have local audio bytes on this device."""
         return [
             self.catalog.mixes[mix_id]
-            for mix_id in self._local_files
+            for mix_id in self._local_file_ids()
             if mix_id in self.catalog.mixes
         ]
 
     def file_bytes(self, mix_id: UUID) -> bytes | None:
         """Local audio bytes for a mix, if present (peer handoff)."""
-        return self._local_files.get(mix_id)
+        if mix_id in self._local_files:
+            return self._local_files[mix_id]
+        blob = self._blob_path(mix_id)
+        if blob.is_file():
+            data = blob.read_bytes()
+            self._local_files[mix_id] = data
+            return data
+        return None
 
     def remove_local_file(self, mix_id: UUID) -> None:
         """Drop local audio for a mix so it can be fetched again."""
@@ -204,12 +214,16 @@ class DeviceAgent:
         self._current_mix_id = mix_id
 
     def is_playing(self) -> bool:
+        if self._playing and not self._player.is_alive():
+            # External player exited; keep catalog current_mix for metered/resume.
+            self._playing = False
         return self._playing
 
     def play(self, intent_id: UUID, mix_id: UUID | None = None) -> Mix:
         """Supervise local playback of an assigned mix that has a file on this device.
 
         Resumes from the latest synced playhead when one exists for the mix.
+        Starts the local audio player against the cached blob (browser is remote only).
         """
         if intent_id not in self.catalog.intents:
             raise KeyError(f"unknown intent {intent_id}")
@@ -219,13 +233,15 @@ class DeviceAgent:
         target = mix_id if mix_id is not None else assignment.mix_ids[0]
         if target not in assignment.mix_ids:
             raise ValueError("mix is not in this device's assignment")
-        if target not in self._local_files:
+        if not self._has_local_file(target):
             raise ValueError("mix has no local file")
         mix = self.catalog.mixes[target]
         existing = self.catalog.playheads.get(target)
         self._playback_position = (
             float(existing.position_seconds) if existing is not None else 0.0
         )
+        blob = self._ensure_blob_on_disk(target)
+        self._player.play(blob, start_seconds=self._playback_position)
         self._playing = True
         self._playing_intent_id = intent_id
         self.set_current_mix(target)
@@ -233,6 +249,7 @@ class DeviceAgent:
 
     def stop(self) -> None:
         """Stop local playback without marking the mix played."""
+        self._player.stop()
         self._playing = False
         self._playing_intent_id = None
 
@@ -283,6 +300,7 @@ class DeviceAgent:
             self.fill_caches()
             self._delete_played_file_if_replaced(target)
         if self._current_mix_id == target:
+            self._player.stop()
             self._playing = False
             self._playing_intent_id = None
             self._playback_position = 0.0
@@ -602,7 +620,7 @@ class DeviceAgent:
         *,
         override_intent_id: UUID | None = None,
     ) -> None:
-        if mix_id in self._local_files:
+        if self._has_local_file(mix_id):
             return
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
@@ -691,6 +709,33 @@ class DeviceAgent:
         blob.parent.mkdir(parents=True, exist_ok=True)
         blob.write_bytes(data)
 
+    def _has_local_file(self, mix_id: UUID) -> bool:
+        return mix_id in self._local_files or self._blob_path(mix_id).is_file()
+
+    def _local_file_ids(self) -> set[UUID]:
+        ids = set(self._local_files)
+        blobs = self.data_dir / "blobs"
+        if blobs.is_dir():
+            for path in blobs.iterdir():
+                if not path.is_file():
+                    continue
+                try:
+                    ids.add(UUID(path.name))
+                except ValueError:
+                    continue
+        return ids
+
+    def _ensure_blob_on_disk(self, mix_id: UUID) -> Path:
+        blob = self._blob_path(mix_id)
+        if blob.is_file():
+            return blob
+        data = self._local_files.get(mix_id)
+        if data is None:
+            raise ValueError("mix has no local file")
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(data)
+        return blob
+
     def _blob_path(self, mix_id: UUID) -> Path:
         return self.data_dir / "blobs" / str(mix_id)
 
@@ -705,22 +750,19 @@ class DeviceAgent:
             if assignment is None:
                 continue
             for mix_id in assignment.mix_ids:
-                if mix_id not in self._local_files:
+                if not self._has_local_file(mix_id):
                     continue
                 mix = self.catalog.mixes.get(mix_id)
                 if mix is None:
                     continue
-                blob = self._blob_path(mix_id)
-                if not blob.exists():
-                    blob.parent.mkdir(parents=True, exist_ok=True)
-                    blob.write_bytes(self._local_files[mix_id])
+                blob = self._ensure_blob_on_disk(mix_id)
                 target = folder / _safe_filename(mix.title, mix_id)
                 if target.exists() or target.is_symlink():
                     target.unlink()
                 try:
                     target.hardlink_to(blob)
                 except OSError:
-                    target.write_bytes(self._local_files[mix_id])
+                    target.write_bytes(blob.read_bytes())
 
     def _trust_payload(self, payload: dict[str, Any]) -> Device:
         if payload.get("v") != 1:
@@ -834,7 +876,7 @@ class DeviceAgent:
 
     def _delete_played_file_if_replaced(self, played_mix_id: UUID) -> None:
         """Drop a played mix's bytes once another assigned mix is local."""
-        if played_mix_id not in self._local_files:
+        if not self._has_local_file(played_mix_id):
             return
         replacement_local = False
         for intent in self.intents():
@@ -842,7 +884,7 @@ class DeviceAgent:
             if assignment is None:
                 continue
             for mix_id in assignment.mix_ids:
-                if mix_id != played_mix_id and mix_id in self._local_files:
+                if mix_id != played_mix_id and self._has_local_file(mix_id):
                     replacement_local = True
                     break
             if replacement_local:

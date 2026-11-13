@@ -7,13 +7,30 @@ from uuid import UUID
 
 from mixy.agent import DeviceAgent
 from mixy.domain import Platform, Stars
+from mixy.player import NullPlayer
 from mixy.source import FakeSource
+
+
+class _RecordingPlayer(NullPlayer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.plays: list[tuple[Path, float]] = []
+        self.stops = 0
+
+    def play(self, path: Path, *, start_seconds: float = 0) -> None:
+        super().play(path, start_seconds=start_seconds)
+        self.plays.append((path, start_seconds))
+
+    def stop(self) -> None:
+        super().stop()
+        self.stops += 1
 
 
 def _pair(
     tmp_path: Path,
     *,
     source: FakeSource | None = None,
+    player: NullPlayer | None = None,
 ) -> tuple[DeviceAgent, DeviceAgent, FakeSource]:
     src = source or FakeSource()
     laptop = DeviceAgent(
@@ -21,12 +38,14 @@ def _pair(
         priority=1,
         source=src,
         data_dir=tmp_path / "laptop",
+        player=player if player is not None else NullPlayer(),
     )
     phone = DeviceAgent(
         "phone",
         priority=10,
         source=src,
         data_dir=tmp_path / "phone",
+        player=NullPlayer(),
     )
     laptop.connect(phone)
     phone.pair(laptop.pairing_payload())
@@ -59,6 +78,35 @@ def _add_mix(
     if stars is not None:
         agent.rate_mix(mix.id, stars)
     return mix.id
+
+
+def test_play_starts_local_player_against_cached_file(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=3600,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.fill_caches()
+
+    laptop.play(intent.id, mix_id)
+
+    assert len(recorder.plays) == 1
+    path, start = recorder.plays[0]
+    assert path == tmp_path / "laptop" / "blobs" / str(mix_id)
+    assert path.is_file()
+    assert start == 0.0
+    laptop.stop()
+    assert recorder.stops >= 1
 
 
 def test_mark_played_counts_as_played_without_waiting(tmp_path: Path) -> None:

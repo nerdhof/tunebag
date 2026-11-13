@@ -106,7 +106,20 @@
           <button type="submit">Add artists</button>
         </form>
         <p id="artists-status" class="muted" role="status"></p>
-        <ul id="mix-list"></ul>
+        <div id="catalog-table-wrap">
+          <table id="catalog-table">
+            <thead>
+              <tr>
+                <th>Artist</th>
+                <th>Title</th>
+                <th>Length</th>
+                <th>Rating</th>
+                <th>Tags</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-body"></tbody>
+          </table>
+        </div>
       </section>
       <section id="intents">
         <h2>Intents</h2>
@@ -160,8 +173,8 @@
       <section id="player">
         <h2>Player</h2>
         <p class="muted">
-          The agent plays from its local cache. Closing this page does not stop playback. Rate and
-          tag here or from the catalog list.
+          The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
+          stop playback. Rate and tag here or from the catalog list.
         </p>
         <label>
           Intent
