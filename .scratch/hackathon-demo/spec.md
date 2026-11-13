@@ -26,8 +26,8 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 12. As a listener, I want an intent whose tags are several words to match only mixes that have all of those tags, so that a narrower plan does not fill with loosely related mixes.
 13. As a listener, I want an intent with no tags to match only untagged mixes, so that exploratory listening has its own sequence.
 14. As a listener, I want the star distribution to be the chance of drawing each bucket, so that a short budget and a long budget use the same rule.
-15. As a listener, I want the default chances to be 40% five-star, 30% four-star, 20% three-star, and 10% rest, so that I can start from the mix I described.
-16. As a listener, I want rest to mean unrated, one-star, and two-star mixes, so that unrated tagged mixes can still appear in a tagged intent.
+15. As a listener, I want the default chances to be 30% five-star, 20% four-star, 10% three-star, 5% two-star, 5% one-star, and 30% unrated, so that I can start from the mix I described.
+16. As a listener, I want unrated mixes to have their own chance bucket, so that unrated tagged mixes can still appear in a tagged intent.
 17. As a listener, I want rejected mixes left out of every sequence, so that a mix I have rejected never comes back.
 18. As a listener, I want an empty star bucket skipped and the other chances rescaled, so that a missing bucket does not stall the sequence.
 19. As a listener, I want one seeded sequence per intent, long enough for the largest device budget, so that both devices are looking at the same order.
@@ -81,8 +81,8 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 - One device agent per device is the interface the web player and the CLI call. Tests construct two agents and use them as paired peers. HTTP is the demo transport of that same agent, not a second behavior.
 - The catalog is rebuilt by replaying a signed append-only event log. Audio bytes, the simulated metered flag, the in-progress reject timer, and the device private key stay local and are not events.
 - A sequence is an event, written when the intent or its device hours change. Assignments are the per-device prefixes of that stored sequence, cut by duration. A device that syncs the events does not draw its own sequence.
-- Star draw chances are always probabilities, at every budget. The shared sequence is produced with one seed up to the largest device budget. Smaller hours take a duration prefix of that sequence. An empty bucket is skipped and the remaining chances are rescaled. Rejected mixes are not candidates. Rest is unrated, one-star, and two-star.
-- The prototype domain model already fixes the distribution shape: four buckets named five, four, three, and rest, required to sum to 1, defaulting to 0.4, 0.3, 0.2, and 0.1.
+- Star draw chances are always probabilities, at every budget. The shared sequence is produced with one seed up to the largest device budget. Smaller hours take a duration prefix of that sequence. An empty bucket is skipped and the remaining chances are rescaled. Rejected mixes are not candidates.
+- The distribution shape is six buckets named five, four, three, two, one, and unrated, required to sum to 1, defaulting to 0.3, 0.2, 0.1, 0.05, 0.05, and 0.3.
 - Pairing exchanges a device name and an Ed25519 public key. The laptop shows the QR payload. The short code is derived from that key. The laptop's fetch priority is ahead of the phone's.
 - Reachability is a heartbeat. For each assigned mix, the highest-priority reachable device whose own hours include that mix downloads it from the source URL. Other devices take the file from that peer. If the preferred device is unreachable, the device that has the mix in its hours downloads it.
 - Artist ingest lists own uploads and writes catalog rows only. Download of audio uses the source URL directly and does not consult the existing download archive, so a mix removed from disk can be fetched again. SoundCloud and hearthis.at URLs are resolved by a Source adapter selected by host. Add applies a configurable minimum duration (default 20 minutes) before writing mix rows.
@@ -116,6 +116,6 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 
 ## Further Notes
 
-- Vocabulary is the glossary in the domain context: mix, catalog, sequence, assignment, file, intent, stars, reject, rest bucket, tag, peer, metered, Fill now, playhead, played, event log.
+- Vocabulary is the glossary in the domain context: mix, catalog, sequence, assignment, file, intent, stars, reject, star distribution, tag, peer, metered, Fill now, playhead, played, event log.
 - The listener's `snd` tool records downloads in an archive that refuses a URL after the first fetch. Mixy must not use that archive as a gate.
 - The hackathon close shows the out-of-scope list. It does not implement it.

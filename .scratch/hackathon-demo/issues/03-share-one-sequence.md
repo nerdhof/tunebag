@@ -8,7 +8,7 @@
 
 - [x] An intent has a name, a tag filter, and star draw chances.
 - [x] Several tags match only mixes that have all of them. No tags match only untagged mixes.
-- [x] The default chances are 40% five-star, 30% four-star, 20% three-star, and 10% rest. Rest means unrated, one-star, and two-star.
+- [x] The default chances are 30% five-star, 20% four-star, 10% three-star, 5% two-star, 5% one-star, and 30% unrated.
 - [x] Rejected mixes are not candidates. An empty bucket is skipped and the other chances are rescaled.
 - [x] One seeded sequence is stored up to the largest device budget. The other device applies that sequence instead of drawing its own.
 - [x] Two hours on the phone and eight on the laptop show the same first stretch on both, plus the extra hours only on the laptop.

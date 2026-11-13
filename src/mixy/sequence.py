@@ -22,8 +22,12 @@ from mixy.domain import (
 
 
 def bucket_for(mix: Mix) -> StarBucket:
-    if mix.stars is None or mix.stars in (Stars.ONE, Stars.TWO):
-        return StarBucket.REST
+    if mix.stars is None:
+        return StarBucket.UNRATED
+    if mix.stars is Stars.ONE:
+        return StarBucket.ONE
+    if mix.stars is Stars.TWO:
+        return StarBucket.TWO
     if mix.stars is Stars.THREE:
         return StarBucket.THREE
     if mix.stars is Stars.FOUR:

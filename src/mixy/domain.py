@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def new_id() -> UUID:
@@ -75,32 +75,43 @@ class StarBucket(str, Enum):
     FIVE = "5"
     FOUR = "4"
     THREE = "3"
-    REST = "rest"  # unrated + 1★ + 2★
+    TWO = "2"
+    ONE = "1"
+    UNRATED = "unrated"
 
 
 class StarDistribution(BaseModel):
     """Draw probabilities for sequence building. Must sum to 1.0."""
 
-    five: Annotated[float, Field(ge=0, le=1)] = 0.4
-    four: Annotated[float, Field(ge=0, le=1)] = 0.3
-    three: Annotated[float, Field(ge=0, le=1)] = 0.2
-    rest: Annotated[float, Field(ge=0, le=1)] = 0.1
+    five: Annotated[float, Field(ge=0, le=1)] = 0.3
+    four: Annotated[float, Field(ge=0, le=1)] = 0.2
+    three: Annotated[float, Field(ge=0, le=1)] = 0.1
+    two: Annotated[float, Field(ge=0, le=1)] = 0.05
+    one: Annotated[float, Field(ge=0, le=1)] = 0.05
+    unrated: Annotated[float, Field(ge=0, le=1)] = 0.3
 
-    @field_validator("rest")
-    @classmethod
-    def probabilities_sum_to_one(cls, rest: float, info) -> float:
-        values = info.data
-        total = values.get("five", 0) + values.get("four", 0) + values.get("three", 0) + rest
+    @model_validator(mode="after")
+    def probabilities_sum_to_one(self) -> Self:
+        total = (
+            self.five
+            + self.four
+            + self.three
+            + self.two
+            + self.one
+            + self.unrated
+        )
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"star distribution must sum to 1.0, got {total}")
-        return rest
+        return self
 
     def as_map(self) -> dict[StarBucket, float]:
         return {
             StarBucket.FIVE: self.five,
             StarBucket.FOUR: self.four,
             StarBucket.THREE: self.three,
-            StarBucket.REST: self.rest,
+            StarBucket.TWO: self.two,
+            StarBucket.ONE: self.one,
+            StarBucket.UNRATED: self.unrated,
         }
 
 

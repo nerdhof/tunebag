@@ -184,13 +184,16 @@ button:disabled {
 }
 
 .chance-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem 1rem;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  align-items: end;
 }
 
 .chance-grid label {
-  margin: 0.35rem 0;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 #intent-list {
@@ -232,9 +235,13 @@ button:disabled {
 }
 
 #artists-form label input[type="number"],
-#intents .chance-grid input,
 #intent-hours input {
   max-width: 8rem;
+}
+
+#intents .chance-grid input {
+  width: 100%;
+  max-width: none;
 }
 
 #intent-hours .hours-row {

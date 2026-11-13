@@ -14,7 +14,7 @@ Shared understanding locked 2026-11-13. Do not reopen unless product decisions c
 | Intent | Tag filter + star distribution. Device hours and expiry hang off the intent. |
 | Reject | Separate from stars. After a 20s local undo window, every device deletes the file and the mix never re-enters a sequence. |
 
-Stars are 1–5. Unrated mixes may still enter a tagged sequence. Rest bucket = unrated + 1★ + 2★. Weight for draws is the configured probability per bucket.
+Stars are 1–5. Unrated mixes may still enter a tagged sequence. Star distribution has six buckets (5★–1★ + unrated); weight for draws is the configured probability per bucket.
 
 ## Rules
 

@@ -11,7 +11,7 @@ Canonical vocabulary for the codebase. Align code and docs with these terms.
 - **Tag** — free-text label; suggestions prefer existing tags. Intent membership uses AND of required tags.
 - **Stars** — rating 1–5. Separate from reject. Unrated mixes may still match a tagged intent.
 - **Reject** — “never assign again”; after a 20s local undo window, bytes are deleted on every device.
-- **Rest bucket** — unrated + 1★ + 2★ mixes when sampling by star distribution.
+- **Star distribution** — draw chances for 5★ / 4★ / 3★ / 2★ / 1★ / unrated (must sum to 1; default 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3).
 - **Intent** — shared plan: tag filter + star distribution. Devices attach hours and optional expiry.
 - **Sequence** — seeded ordered list of mixes for one intent, length up to the largest device budget.
 - **Assignment** — which device hours cover which prefix of the sequence (independent of whether audio is on disk).

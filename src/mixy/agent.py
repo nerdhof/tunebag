@@ -1423,7 +1423,7 @@ class DeviceAgent:
                         SequenceEntry(
                             mix_id=UUID(entry["mix_id"]),
                             position=int(entry["position"]),
-                            bucket=StarBucket(entry["bucket"]),
+                            bucket=_bucket_from_payload(entry["bucket"]),
                         )
                         for entry in payload["entries"]
                     ],
@@ -1535,7 +1535,9 @@ def _intent_payload(intent: Intent) -> dict[str, Any]:
             "five": intent.distribution.five,
             "four": intent.distribution.four,
             "three": intent.distribution.three,
-            "rest": intent.distribution.rest,
+            "two": intent.distribution.two,
+            "one": intent.distribution.one,
+            "unrated": intent.distribution.unrated,
         },
         "device_hours": [
             {
@@ -1549,18 +1551,40 @@ def _intent_payload(intent: Intent) -> dict[str, Any]:
     }
 
 
+def _bucket_from_payload(raw: str) -> StarBucket:
+    # Older sequences stored unrated+1★+2★ as "rest".
+    if raw == "rest":
+        return StarBucket.UNRATED
+    return StarBucket(raw)
+
+
+def _distribution_from_payload(dist: dict[str, Any]) -> StarDistribution:
+    if "unrated" not in dist and "rest" in dist:
+        return StarDistribution(
+            five=float(dist.get("five", 0.3)),
+            four=float(dist.get("four", 0.2)),
+            three=float(dist.get("three", 0.1)),
+            two=0.0,
+            one=0.0,
+            unrated=float(dist["rest"]),
+        )
+    return StarDistribution(
+        five=float(dist.get("five", 0.3)),
+        four=float(dist.get("four", 0.2)),
+        three=float(dist.get("three", 0.1)),
+        two=float(dist.get("two", 0.05)),
+        one=float(dist.get("one", 0.05)),
+        unrated=float(dist.get("unrated", 0.3)),
+    )
+
+
 def _intent_from_payload(payload: dict[str, Any]) -> Intent:
     dist = payload.get("distribution") or {}
     return Intent(
         id=UUID(payload["id"]),
         name=payload["name"],
         tags=list(payload.get("tags") or []),
-        distribution=StarDistribution(
-            five=float(dist.get("five", 0.4)),
-            four=float(dist.get("four", 0.3)),
-            three=float(dist.get("three", 0.2)),
-            rest=float(dist.get("rest", 0.1)),
-        ),
+        distribution=_distribution_from_payload(dist),
         device_hours=[
             DeviceHours(
                 device_id=UUID(dh["device_id"]),

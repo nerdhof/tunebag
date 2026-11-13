@@ -40,10 +40,12 @@ function resetIntentForm() {
   document.getElementById("intent-edit-id").value = "";
   document.getElementById("intent-name").value = "";
   document.getElementById("intent-tags").value = "";
-  document.getElementById("chance-five").value = "40";
-  document.getElementById("chance-four").value = "30";
-  document.getElementById("chance-three").value = "20";
-  document.getElementById("chance-rest").value = "10";
+  document.getElementById("chance-five").value = "30";
+  document.getElementById("chance-four").value = "20";
+  document.getElementById("chance-three").value = "10";
+  document.getElementById("chance-two").value = "5";
+  document.getElementById("chance-one").value = "5";
+  document.getElementById("chance-unrated").value = "30";
   document.getElementById("intent-submit").textContent = "Create intent";
   document.getElementById("intent-cancel").hidden = true;
   editingHoursByDevice = null;
@@ -67,7 +69,9 @@ function beginEditIntent(intent) {
   document.getElementById("chance-five").value = String(Math.round(dist.five * 100));
   document.getElementById("chance-four").value = String(Math.round(dist.four * 100));
   document.getElementById("chance-three").value = String(Math.round(dist.three * 100));
-  document.getElementById("chance-rest").value = String(Math.round(dist.rest * 100));
+  document.getElementById("chance-two").value = String(Math.round(dist.two * 100));
+  document.getElementById("chance-one").value = String(Math.round(dist.one * 100));
+  document.getElementById("chance-unrated").value = String(Math.round(dist.unrated * 100));
   document.getElementById("intent-chances").open = true;
   document.getElementById("intent-submit").textContent = "Save changes";
   document.getElementById("intent-cancel").hidden = false;
@@ -934,8 +938,9 @@ async function refreshIntents() {
     meta.textContent =
       `Tags: ${tags} · chances ${Math.round(dist.five * 100)}/` +
       `${Math.round(dist.four * 100)}/${Math.round(dist.three * 100)}/` +
-      `${Math.round(dist.rest * 100)}` +
-      (hours ? ` · hours ${hours}` : "");
+      `${Math.round(dist.two * 100)}/${Math.round(dist.one * 100)}/` +
+      `${Math.round(dist.unrated * 100)}` +
+      ` · hours ${hours}`;
     li.appendChild(meta);
 
     const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
@@ -1064,8 +1069,10 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
   const five = Number(document.getElementById("chance-five").value);
   const four = Number(document.getElementById("chance-four").value);
   const three = Number(document.getElementById("chance-three").value);
-  const rest = Number(document.getElementById("chance-rest").value);
-  const total = five + four + three + rest;
+  const two = Number(document.getElementById("chance-two").value);
+  const one = Number(document.getElementById("chance-one").value);
+  const unrated = Number(document.getElementById("chance-unrated").value);
+  const total = five + four + three + two + one + unrated;
   if (Math.abs(total - 100) > 0.01) {
     status.textContent = `Star chances must sum to 100% (got ${total})`;
     return;
@@ -1116,7 +1123,9 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
       five: five / 100,
       four: four / 100,
       three: three / 100,
-      rest: rest / 100,
+      two: two / 100,
+      one: one / 100,
+      unrated: unrated / 100,
     },
     device_hours,
   };

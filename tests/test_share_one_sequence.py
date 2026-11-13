@@ -47,10 +47,12 @@ def test_intent_has_name_tags_and_default_star_chances() -> None:
 
     assert intent.name == "Deep house"
     assert intent.tags == ["deep", "house"]
-    assert intent.distribution.five == 0.4
-    assert intent.distribution.four == 0.3
-    assert intent.distribution.three == 0.2
-    assert intent.distribution.rest == 0.1
+    assert intent.distribution.five == 0.3
+    assert intent.distribution.four == 0.2
+    assert intent.distribution.three == 0.1
+    assert intent.distribution.two == 0.05
+    assert intent.distribution.one == 0.05
+    assert intent.distribution.unrated == 0.3
     assert intent.id in {i.id for i in laptop.intents()}
 
 
