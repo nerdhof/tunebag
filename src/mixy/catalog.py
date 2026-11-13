@@ -40,6 +40,12 @@ class Catalog:
         self.intents[intent.id] = intent
         return intent
 
+    def delete_intent(self, intent_id: UUID) -> None:
+        self.intents.pop(intent_id, None)
+        self.sequences.pop(intent_id, None)
+        for key in [key for key in self.assignments if key[0] == intent_id]:
+            del self.assignments[key]
+
     def set_sequence(self, sequence: Sequence) -> Sequence:
         self.sequences[sequence.intent_id] = sequence
         return sequence

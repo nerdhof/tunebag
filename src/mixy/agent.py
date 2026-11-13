@@ -10,6 +10,7 @@ import base64
 import json
 import random
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -64,6 +65,7 @@ class DeviceAgent:
         base_url: str | None = None,
         identity: DeviceIdentity | None = None,
         source: Source | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         self._identity = identity or generate_identity(name)
         self._private_key = _load_private_key(self._identity.private_key_pem)
@@ -74,7 +76,7 @@ class DeviceAgent:
         )
         self.base_url = base_url
         self.source = source if source is not None else default_source()
-        self.catalog = Catalog()
+        self.catalog = Catalog(data_dir=data_dir)
         self.catalog.local_device_id = self.device.id
         self.catalog.add_device(self.device)
         self._log = EventLog()
@@ -82,6 +84,8 @@ class DeviceAgent:
         self._peer_urls: dict[UUID, str] = {}
         self._seen_event_ids: set[UUID] = set()
         self._local_files: dict[UUID, bytes] = {}
+        self.data_dir = self.catalog.data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def device_id(self) -> UUID:
@@ -120,6 +124,13 @@ class DeviceAgent:
         if self not in other._reachable:
             other._reachable.append(self)
 
+    def disconnect(self, other: DeviceAgent) -> None:
+        """Mark another in-process agent unreachable."""
+        if other in self._reachable:
+            self._reachable.remove(other)
+        if self in other._reachable:
+            other._reachable.remove(self)
+
     def peers(self) -> list[Device]:
         return [d for d in self.catalog.devices.values() if d.id != self.device.id]
 
@@ -148,6 +159,34 @@ class DeviceAgent:
             for mix_id in self._local_files
             if mix_id in self.catalog.mixes
         ]
+
+    def file_bytes(self, mix_id: UUID) -> bytes | None:
+        """Local audio bytes for a mix, if present (peer handoff)."""
+        return self._local_files.get(mix_id)
+
+    def remove_local_file(self, mix_id: UUID) -> None:
+        """Drop local audio for a mix so it can be fetched again."""
+        self._local_files.pop(mix_id, None)
+        blob = self._blob_path(mix_id)
+        if blob.exists():
+            blob.unlink()
+        self._refresh_intent_folders()
+
+    def intent_folder(self, intent_id: UUID) -> Path:
+        """Directory of this device's assigned files for an intent."""
+        path = self.data_dir / "intents" / str(intent_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def fill_caches(self) -> None:
+        """Fill this device's assignments from peers or origin (unmetered)."""
+        for intent in self.intents():
+            assignment = self.assignment(intent.id)
+            if assignment is None:
+                continue
+            for mix_id in assignment.mix_ids:
+                self._ensure_local_file(intent.id, mix_id)
+        self._refresh_intent_folders()
 
     def add_artists(
         self,
@@ -304,6 +343,44 @@ class DeviceAgent:
         self._upsert_intent_and_rebuild(updated)
         return self.catalog.intents[intent_id]
 
+    def delete_intent(self, intent_id: UUID) -> None:
+        if intent_id not in self.catalog.intents:
+            raise KeyError(f"unknown intent {intent_id}")
+        self._append_and_apply(
+            EventType.INTENT_DELETED,
+            {"id": str(intent_id)},
+        )
+
+    def update_intent(
+        self,
+        intent_id: UUID,
+        *,
+        name: str | None = None,
+        tags: list[str] | None = None,
+        distribution: StarDistribution | None = None,
+        device_hours: list[tuple[UUID, int]] | None = None,
+    ) -> Intent:
+        intent = self.catalog.intents.get(intent_id)
+        if intent is None:
+            raise KeyError(f"unknown intent {intent_id}")
+        updates: dict[str, Any] = {}
+        if name is not None:
+            updates["name"] = name
+        if tags is not None:
+            updates["tags"] = list(tags)
+        if distribution is not None:
+            updates["distribution"] = distribution
+        if device_hours is not None:
+            updates["device_hours"] = [
+                DeviceHours(device_id=device_id, budget_seconds=budget)
+                for device_id, budget in device_hours
+            ]
+        if not updates:
+            return intent
+        updated = intent.model_copy(update=updates)
+        self._upsert_intent_and_rebuild(updated)
+        return self.catalog.intents[intent_id]
+
     def add_mix(
         self,
         *,
@@ -366,6 +443,94 @@ class DeviceAgent:
             if peer_id not in trusted_ids:
                 continue
             self.ingest_events(self._http_fetch_events(url))
+
+    def _ensure_local_file(self, intent_id: UUID, mix_id: UUID) -> None:
+        if mix_id in self._local_files:
+            return
+        mix = self.catalog.mixes.get(mix_id)
+        if mix is None:
+            return
+
+        # Prefer a copy from any reachable peer that already has the bytes.
+        for peer in self._reachable:
+            if not self._trusts_public_key(peer.public_key_pem):
+                continue
+            peer_bytes = peer.file_bytes(mix_id)
+            if peer_bytes is not None:
+                self._store_local_file(mix_id, peer_bytes)
+                return
+
+        preferred = self._preferred_origin_agent(intent_id, mix_id)
+        if preferred is self:
+            data = self.source.fetch_bytes(mix.url)
+            self._store_local_file(mix_id, data)
+            return
+        if preferred is not None:
+            # Preferred peer is reachable but does not have the file yet — wait.
+            return
+        # Preferred unreachable (or no other assignee): fetch our own hours.
+        data = self.source.fetch_bytes(mix.url)
+        self._store_local_file(mix_id, data)
+
+    def _preferred_origin_agent(
+        self, intent_id: UUID, mix_id: UUID
+    ) -> DeviceAgent | None:
+        """Highest-priority (lowest number) reachable agent whose assignment includes mix_id."""
+        candidates: list[DeviceAgent] = []
+        if self._assignment_includes(self, intent_id, mix_id):
+            candidates.append(self)
+        for peer in self._reachable:
+            if not self._trusts_public_key(peer.public_key_pem):
+                continue
+            if self._assignment_includes(peer, intent_id, mix_id):
+                candidates.append(peer)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda a: (a.device.priority, str(a.device_id)))
+
+    @staticmethod
+    def _assignment_includes(
+        agent: DeviceAgent, intent_id: UUID, mix_id: UUID
+    ) -> bool:
+        assignment = agent.assignment(intent_id, agent.device_id)
+        return assignment is not None and mix_id in assignment.mix_ids
+
+    def _store_local_file(self, mix_id: UUID, data: bytes) -> None:
+        self._local_files[mix_id] = data
+        blob = self._blob_path(mix_id)
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(data)
+
+    def _blob_path(self, mix_id: UUID) -> Path:
+        return self.data_dir / "blobs" / str(mix_id)
+
+    def _refresh_intent_folders(self) -> None:
+        for intent in self.intents():
+            folder = self.intent_folder(intent.id)
+            # Clear previous links/files so folder matches current assignment.
+            for existing in folder.iterdir():
+                if existing.is_file() or existing.is_symlink():
+                    existing.unlink()
+            assignment = self.assignment(intent.id)
+            if assignment is None:
+                continue
+            for mix_id in assignment.mix_ids:
+                if mix_id not in self._local_files:
+                    continue
+                mix = self.catalog.mixes.get(mix_id)
+                if mix is None:
+                    continue
+                blob = self._blob_path(mix_id)
+                if not blob.exists():
+                    blob.parent.mkdir(parents=True, exist_ok=True)
+                    blob.write_bytes(self._local_files[mix_id])
+                target = folder / _safe_filename(mix.title, mix_id)
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                try:
+                    target.hardlink_to(blob)
+                except OSError:
+                    target.write_bytes(self._local_files[mix_id])
 
     def _trust_payload(self, payload: dict[str, Any]) -> Device:
         if payload.get("v") != 1:
@@ -529,6 +694,9 @@ class DeviceAgent:
         if event.type is EventType.INTENT_UPSERTED:
             self.catalog.upsert_intent(_intent_from_payload(payload))
             return
+        if event.type is EventType.INTENT_DELETED:
+            self.catalog.delete_intent(UUID(payload["id"]))
+            return
         if event.type is EventType.SEQUENCE_BUILT:
             self.catalog.set_sequence(
                 Sequence(
@@ -664,3 +832,10 @@ def _load_public_key(pem: str) -> Ed25519PublicKey:
     if not isinstance(key, Ed25519PublicKey):
         raise TypeError("expected Ed25519 public key")
     return key
+
+
+def _safe_filename(title: str, mix_id: UUID) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_ ." else "_" for ch in title).strip()
+    if not cleaned:
+        cleaned = "mix"
+    return f"{cleaned[:80]}-{mix_id}.bin"

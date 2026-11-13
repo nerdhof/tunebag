@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from mixy.domain import Platform
+from mixy.ytdlp_fetch import AudioFetcher, fetch_audio_bytes
 
 DEFAULT_MIN_DURATION_SECONDS = 20 * 60
 
@@ -71,8 +72,14 @@ class HearthisSource:
 
     API = "https://api-v2.hearthis.at"
 
-    def __init__(self, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        client: httpx.Client | None = None,
+        audio_fetcher: AudioFetcher | None = None,
+    ) -> None:
         self._client = client
+        self._audio_fetcher = audio_fetcher
 
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -117,9 +124,7 @@ class HearthisSource:
         )
 
     def fetch_bytes(self, source_url: str) -> bytes:
-        response = self._http().get(source_url)
-        response.raise_for_status()
-        return response.content
+        return fetch_audio_bytes(source_url, fetcher=self._audio_fetcher)
 
 
 class SoundCloudSource:
@@ -132,9 +137,11 @@ class SoundCloudSource:
         *,
         client_id: str | None = None,
         client: httpx.Client | None = None,
+        audio_fetcher: AudioFetcher | None = None,
     ) -> None:
         self._client_id = client_id or os.environ.get("MIXY_SOUNDCLOUD_CLIENT_ID")
         self._client = client
+        self._audio_fetcher = audio_fetcher
 
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -213,39 +220,7 @@ class SoundCloudSource:
         )
 
     def fetch_bytes(self, source_url: str) -> bytes:
-        client_id = self._ensure_client_id()
-        # Progressive download stream via resolve + progressive transcoding when needed.
-        if "api" in urlparse(source_url).netloc:
-            response = self._http().get(source_url, params={"client_id": client_id})
-            response.raise_for_status()
-            return response.content
-        resolved = self._http().get(
-            f"{self.API}/resolve",
-            params={"url": source_url, "client_id": client_id},
-        )
-        resolved.raise_for_status()
-        track = resolved.json()
-        transcodings = (
-            track.get("media", {}).get("transcodings")
-            or []
-        )
-        progressive = next(
-            (t for t in transcodings if t.get("format", {}).get("protocol") == "progressive"),
-            None,
-        )
-        if progressive is None:
-            raise ValueError(f"no progressive stream for {source_url}")
-        stream = self._http().get(
-            progressive["url"],
-            params={"client_id": client_id},
-        )
-        stream.raise_for_status()
-        media_url = stream.json().get("url")
-        if not media_url:
-            raise ValueError(f"no media url for {source_url}")
-        audio = self._http().get(media_url)
-        audio.raise_for_status()
-        return audio.content
+        return fetch_audio_bytes(source_url, fetcher=self._audio_fetcher)
 
 
 class CompositeSource:
