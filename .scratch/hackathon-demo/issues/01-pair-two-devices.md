@@ -12,3 +12,7 @@
 - [x] After pairing, each device shows the other as a peer.
 - [x] A catalog event written on one device is visible on the other after sync over the local network.
 - [x] The private key stays on the device that created it.
+
+## Comments
+
+- Implemented `DeviceAgent` as the sole seam: QR/short-code pair, mutual peers, signed event sync. CLI is `mixy serve --name …` only; browser shows QR + short code + peer list. Tests in `tests/test_pair_two_devices.py`.
