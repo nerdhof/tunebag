@@ -32,6 +32,18 @@ class Catalog:
         self.artists[artist.id] = artist
         return artist
 
+    def delete_artist(self, artist_id: UUID) -> list[UUID]:
+        """Remove artist and their mixes; return removed mix ids."""
+        self.artists.pop(artist_id, None)
+        removed: list[UUID] = []
+        for mix_id, mix in list(self.mixes.items()):
+            if mix.artist_id != artist_id:
+                continue
+            del self.mixes[mix_id]
+            self.playheads.pop(mix_id, None)
+            removed.append(mix_id)
+        return removed
+
     def add_mix(self, mix: Mix) -> Mix:
         self.mixes[mix.id] = mix
         return mix

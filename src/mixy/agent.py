@@ -367,7 +367,16 @@ class DeviceAgent:
         assignment = self.assignment(intent_id)
         if assignment is None or not assignment.mix_ids:
             raise ValueError("intent has no assignment on this device")
-        target = mix_id if mix_id is not None else assignment.mix_ids[0]
+        if mix_id is not None:
+            target = mix_id
+        elif (
+            self._current_mix_id is not None
+            and self._current_mix_id in assignment.mix_ids
+            and self._has_local_file(self._current_mix_id)
+        ):
+            target = self._current_mix_id
+        else:
+            target = assignment.mix_ids[0]
         if target not in assignment.mix_ids:
             raise ValueError("mix is not in this device's assignment")
         if not self._has_local_file(target):
@@ -391,6 +400,49 @@ class DeviceAgent:
         self._playing_intent_id = None
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
+
+    def pause(self, position_seconds: float | None = None) -> None:
+        """Pause local playback; keep current mix and intent for resume.
+
+        Always commits the playhead (optional explicit position, else frozen clock).
+        """
+        if self.is_playing():
+            self._freeze_playback_position()
+        pos = (
+            float(position_seconds)
+            if position_seconds is not None
+            else self._playback_position
+        )
+        if self._current_mix_id is not None:
+            self.report_playhead(pos)
+        if self.is_playing():
+            self._player.stop()
+            self._playing = False
+            self._clear_play_anchor()
+
+    def skip(self, intent_id: UUID | None = None) -> Mix:
+        """Advance to the next local assigned mix without marking the current played."""
+        resolved = intent_id if intent_id is not None else self._playing_intent_id
+        if resolved is None:
+            raise ValueError("no intent to skip within")
+        if resolved not in self.catalog.intents:
+            raise KeyError(f"unknown intent {resolved}")
+        assignment = self.assignment(resolved)
+        if assignment is None or not assignment.mix_ids:
+            raise ValueError("intent has no assignment on this device")
+        local_ids = [mid for mid in assignment.mix_ids if self._has_local_file(mid)]
+        if not local_ids:
+            raise ValueError("no local mixes to skip to")
+        current = self._current_mix_id
+        if current in local_ids:
+            idx = local_ids.index(current)
+            next_id = local_ids[(idx + 1) % len(local_ids)]
+        else:
+            next_id = local_ids[0]
+        if next_id == current:
+            raise ValueError("no other local mix to skip to")
+        self._freeze_playback_position()
+        return self.play(resolved, next_id)
 
     def playback_position(self) -> float:
         """Current local playback position (including a mid-mix resume point)."""
@@ -705,6 +757,78 @@ class DeviceAgent:
         self.note(f"add artists end · {len(added)} mix(es)")
         return added
 
+    def refresh_artists(
+        self,
+        artist_ids: list[UUID] | None = None,
+        *,
+        min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS,
+    ) -> list[Mix]:
+        """Re-list known artists' own uploads; add new catalog rows only."""
+        if artist_ids:
+            artists: list[Artist] = []
+            for artist_id in artist_ids:
+                artist = self.catalog.artists.get(artist_id)
+                if artist is None:
+                    raise KeyError(f"unknown artist {artist_id}")
+                artists.append(artist)
+        else:
+            artists = list(self.catalog.artists.values())
+
+        self.note(f"refresh artists start · {len(artists)} artist(s)")
+        known = self._known_platform_keys()
+        added: list[Mix] = []
+        for artist in artists:
+            self.note(f"fetch artist list start: {artist.url}")
+            try:
+                listing = self.source.list_uploads(artist.url)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(
+                    f"fetch artist list failed: {artist.url}: {exc}",
+                    level=logging.WARNING,
+                )
+                raise
+            kept = 0
+            for upload in listing.uploads:
+                if upload.duration_seconds < min_duration_seconds:
+                    continue
+                key = (upload.platform, upload.platform_id)
+                if key in known:
+                    continue
+                mix = Mix(
+                    artist_id=artist.id,
+                    platform=upload.platform,
+                    platform_id=upload.platform_id,
+                    title=upload.title,
+                    url=upload.url,
+                    duration_seconds=upload.duration_seconds,
+                )
+                self._append_and_apply(
+                    EventType.MIX_ADDED,
+                    {
+                        "id": str(mix.id),
+                        "artist_id": str(mix.artist_id),
+                        "platform": mix.platform.value,
+                        "platform_id": mix.platform_id,
+                        "title": mix.title,
+                        "url": mix.url,
+                        "duration_seconds": mix.duration_seconds,
+                    },
+                )
+                known.add(key)
+                added.append(self.catalog.mixes[mix.id])
+                kept += 1
+            self.note(
+                f"fetch artist list end: {artist.name} · "
+                f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
+            )
+        self.note(f"refresh artists end · {len(added)} mix(es)")
+        return added
+
+    def _known_platform_keys(self) -> set[tuple[Platform, str]]:
+        return {(m.platform, m.platform_id) for m in self.catalog.mixes.values()}
+
     def pair(self, payload: dict[str, Any]) -> Device:
         peer = self._trust_payload(payload)
         for agent in self._reachable:
@@ -849,6 +973,16 @@ class DeviceAgent:
         self._upsert_intent_and_rebuild(updated)
         return self.catalog.intents[intent_id]
 
+    def delete_artist(self, artist_id: UUID) -> None:
+        if artist_id not in self.catalog.artists:
+            raise KeyError(f"unknown artist {artist_id}")
+        self._append_and_apply(
+            EventType.ARTIST_DELETED,
+            {"id": str(artist_id)},
+        )
+        self._rebuild_all_sequences()
+        self.fill_caches()
+
     def delete_intent(self, intent_id: UUID) -> None:
         if intent_id not in self.catalog.intents:
             raise KeyError(f"unknown intent {intent_id}")
@@ -883,6 +1017,15 @@ class DeviceAgent:
         if not updates:
             return intent
         updated = intent.model_copy(update=updates)
+        self._upsert_intent_and_rebuild(updated)
+        return self.catalog.intents[intent_id]
+
+    def refresh_intent_sequence(self, intent_id: UUID) -> Intent:
+        """Re-roll the intent seed and rebuild shared sequence + assignments."""
+        intent = self.catalog.intents.get(intent_id)
+        if intent is None:
+            raise KeyError(f"unknown intent {intent_id}")
+        updated = intent.model_copy(update={"seed": random.randrange(1 << 31)})
         self._upsert_intent_and_rebuild(updated)
         return self.catalog.intents[intent_id]
 
@@ -1374,6 +1517,12 @@ class DeviceAgent:
                         url=payload["url"],
                     )
                 )
+            return
+        if event.type is EventType.ARTIST_DELETED:
+            artist_id = UUID(payload["id"])
+            removed_mix_ids = self.catalog.delete_artist(artist_id)
+            for mix_id in removed_mix_ids:
+                self.remove_local_file(mix_id)
             return
         if event.type is EventType.MIX_ADDED:
             mix_id = UUID(payload["id"])

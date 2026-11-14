@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
 from mixy.agent import DeviceAgent
-from mixy.domain import Platform
+from mixy.domain import Platform, Stars
 from mixy.source import ArtistListing, FakeSource, Upload
 
 
@@ -135,3 +140,87 @@ def test_paired_peer_sees_rows_after_sync_without_files() -> None:
     }
     assert phone.files() == []
     assert source.fetch_calls == []
+
+
+def test_delete_artist_removes_artist_and_mixes(tmp_path: Path) -> None:
+    source = _source_with_two_artists()
+    laptop = DeviceAgent("laptop", source=source, data_dir=tmp_path / "laptop")
+    laptop.add_artists(
+        [
+            "https://soundcloud.com/dj-alpha",
+            "https://hearthis.at/dj-beta/",
+        ]
+    )
+    alpha = next(a for a in laptop.artists() if a.name == "DJ Alpha")
+    alpha_mix = next(m for m in laptop.mixes() if m.artist_id == alpha.id)
+    laptop._store_local_file(alpha_mix.id, b"audio:alpha")
+    assert laptop.files()
+
+    laptop.delete_artist(alpha.id)
+
+    assert [a.name for a in laptop.artists()] == ["DJ Beta"]
+    assert [m.title for m in laptop.mixes()] == ["Beta Marathon"]
+    assert laptop.files() == []
+    assert laptop.file_bytes(alpha_mix.id) is None
+
+
+def test_delete_artist_syncs_to_peer() -> None:
+    source = _source_with_two_artists()
+    laptop = DeviceAgent("laptop", priority=1, source=source)
+    phone = DeviceAgent("phone", priority=10, source=FakeSource())
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+
+    laptop.add_artists(
+        [
+            "https://soundcloud.com/dj-alpha",
+            "https://hearthis.at/dj-beta/",
+        ]
+    )
+    laptop.sync()
+    phone.sync()
+    alpha = next(a for a in laptop.artists() if a.name == "DJ Alpha")
+
+    laptop.delete_artist(alpha.id)
+    laptop.sync()
+    phone.sync()
+
+    assert {a.name for a in phone.artists()} == {"DJ Beta"}
+    assert {m.title for m in phone.mixes()} == {"Beta Marathon"}
+
+
+def test_delete_artist_rebuilds_sequences() -> None:
+    source = _source_with_two_artists()
+    laptop = DeviceAgent("laptop", priority=1, source=source)
+    phone = DeviceAgent("phone", priority=10, source=FakeSource())
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    alpha = laptop.artists()[0]
+    mix = laptop.mixes()[0]
+    laptop.tag_mix(mix.id, ["deep"])
+    laptop.rate_mix(mix.id, Stars.FIVE)
+    intent = laptop.create_intent(
+        "Deep",
+        tags=["deep"],
+        seed=1,
+        device_hours=[(laptop.device_id, 3600), (phone.device_id, 3600)],
+    )
+    laptop.sync()
+    phone.sync()
+    assert [e.mix_id for e in laptop.sequence(intent.id).entries] == [mix.id]
+
+    laptop.delete_artist(alpha.id)
+    laptop.sync()
+    phone.sync()
+
+    assert laptop.sequence(intent.id).entries == []
+    assert phone.sequence(intent.id).entries == []
+    assert mix.id not in (laptop.assignment(intent.id, laptop.device_id).mix_ids or [])
+
+
+def test_delete_unknown_artist_raises() -> None:
+    laptop = DeviceAgent("laptop", source=FakeSource())
+    with pytest.raises(KeyError, match="unknown artist"):
+        laptop.delete_artist(uuid4())

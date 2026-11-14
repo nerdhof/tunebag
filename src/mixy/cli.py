@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 from mixy import __version__
 from mixy.agent import DeviceAgent
@@ -30,6 +31,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "serve":
         import uvicorn
 
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
         base_url = f"http://{args.host}:{args.port}"
         agent = DeviceAgent(args.name, priority=args.priority, base_url=base_url)
         app = create_app(agent)

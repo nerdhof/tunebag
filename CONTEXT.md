@@ -13,7 +13,7 @@ Canonical vocabulary for the codebase. Align code and docs with these terms.
 - **Reject** — “never assign again”; after a 20s local undo window, bytes are deleted on every device.
 - **Star distribution** — draw chances for 5★ / 4★ / 3★ / 2★ / 1★ / unrated (must sum to 1; default 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3).
 - **Intent** — shared plan: tag filter + star distribution. Devices attach hours and optional expiry.
-- **Sequence** — seeded ordered list of mixes for one intent, length up to the largest device budget.
+- **Sequence** — seeded ordered list of mixes for one intent. It fills until cumulative duration is at least the largest device budget, and may include the mix that crosses that budget.
 - **Assignment** — which device hours cover which prefix of the sequence (independent of whether audio is on disk).
 - **File** — audio bytes present on a device (local cache state).
 - **Cache** — the set of files a device currently holds for its assignments.

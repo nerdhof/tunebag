@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from mixy.agent import DeviceAgent
 from mixy.domain import Platform
+from mixy.pairing import generate_identity
 
 
 def test_pairing_payload_has_name_public_key_and_short_code_not_private_key() -> None:
@@ -45,6 +46,33 @@ def test_short_code_pairs_when_peer_is_reachable() -> None:
 
     assert [p.name for p in phone.peers()] == ["laptop"]
     assert [p.name for p in laptop.peers()] == ["phone"]
+
+
+def test_pairing_same_peer_again_does_not_duplicate() -> None:
+    laptop = DeviceAgent("laptop", priority=1)
+    phone = DeviceAgent("phone", priority=10)
+    laptop.connect(phone)
+
+    phone.pair(laptop.pairing_payload())
+    phone.pair(laptop.pairing_payload())
+
+    assert [p.name for p in phone.peers()] == ["laptop"]
+    assert [p.name for p in laptop.peers()] == ["phone"]
+
+
+def test_pairing_same_public_key_under_new_device_id_does_not_duplicate() -> None:
+    identity = generate_identity("laptop")
+    laptop_a = DeviceAgent("laptop", identity=identity, priority=1)
+    laptop_b = DeviceAgent("laptop", identity=identity, priority=1)
+    phone = DeviceAgent("phone", priority=10)
+    phone.connect(laptop_a)
+    phone.pair(laptop_a.pairing_payload())
+
+    phone.connect(laptop_b)
+    phone.pair(laptop_b.pairing_payload())
+
+    assert len(phone.peers()) == 1
+    assert phone.peers()[0].public_key_pem == identity.public_key_pem
 
 
 def test_catalog_event_on_one_device_visible_on_other_after_sync() -> None:

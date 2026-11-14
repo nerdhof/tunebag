@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import UUID
+
+import pytest
 
 from mixy.agent import DeviceAgent
 from mixy.domain import Platform, Stars
@@ -31,6 +35,7 @@ def _pair(
     *,
     source: FakeSource | None = None,
     player: NullPlayer | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> tuple[DeviceAgent, DeviceAgent, FakeSource]:
     src = source or FakeSource()
     laptop = DeviceAgent(
@@ -39,6 +44,7 @@ def _pair(
         source=src,
         data_dir=tmp_path / "laptop",
         player=player if player is not None else NullPlayer(),
+        clock=clock,
     )
     phone = DeviceAgent(
         "phone",
@@ -46,6 +52,7 @@ def _pair(
         source=src,
         data_dir=tmp_path / "phone",
         player=NullPlayer(),
+        clock=clock,
     )
     laptop.connect(phone)
     phone.pair(laptop.pairing_payload())
@@ -240,15 +247,18 @@ def test_played_mix_goes_to_back_of_pool(tmp_path: Path) -> None:
     )
     before = laptop.sequence(intent.id)
     assert before is not None
-    assert [e.mix_id for e in before.entries] == [first, second]
+    before_ids = [e.mix_id for e in before.entries]
+    assert set(before_ids) == {first, second}
+    head = before_ids[0]
+    other = before_ids[1]
 
     laptop.fill_caches()
-    laptop.play(intent.id, first)
+    laptop.play(intent.id, head)
     laptop.mark_played()
 
     after = laptop.sequence(intent.id)
     assert after is not None
-    assert [e.mix_id for e in after.entries] == [second, first]
+    assert [e.mix_id for e in after.entries] == [other, head]
 
 
 def test_played_file_stays_until_replacement_is_local(tmp_path: Path) -> None:
@@ -296,13 +306,18 @@ def test_played_file_deleted_once_replacement_is_local(tmp_path: Path) -> None:
         seed=1,
         device_hours=[(laptop.device_id, 3600)],
     )
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    assert len(assignment.mix_ids) == 1
+    head = assignment.mix_ids[0]
+    other = first if head == second else second
     laptop.fill_caches()
-    assert {m.id for m in laptop.files()} == {first}
-    laptop.play(intent.id, first)
+    assert {m.id for m in laptop.files()} == {head}
+    laptop.play(intent.id, head)
     laptop.mark_played()
 
-    assert first not in {m.id for m in laptop.files()}
-    assert second in {m.id for m in laptop.files()}
+    assert head not in {m.id for m in laptop.files()}
+    assert other in {m.id for m in laptop.files()}
 
 
 def test_one_star_leaves_mix_eligible_and_separate_from_reject(tmp_path: Path) -> None:
@@ -429,7 +444,7 @@ def test_playhead_syncs_and_peer_resumes_mid_mix(tmp_path: Path) -> None:
     phone.play(intent.id, mix_id)
     assert phone.is_playing() is True
     assert phone.current_mix() == mix_id
-    assert phone.playback_position() == 900
+    assert phone.playback_position() == pytest.approx(900, abs=0.05)
     assert phone.playhead(mix_id).position_seconds == 900
 
 
@@ -463,3 +478,199 @@ def test_latest_playhead_wins_across_devices(tmp_path: Path) -> None:
 
     assert laptop.playhead(mix_id).position_seconds == 500
     assert phone.playhead(mix_id).position_seconds == 500
+
+
+def test_playback_position_advances_with_clock(tmp_path: Path) -> None:
+    now = datetime(2024, 1, 1, 12, 0, 0)
+
+    def clock() -> datetime:
+        return now
+
+    laptop, _phone, source = _pair(tmp_path, player=_RecordingPlayer(), clock=clock)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=3600,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.fill_caches()
+    laptop.play(intent.id, mix_id)
+    assert laptop.playback_position() == 0.0
+
+    now = now + timedelta(seconds=45)
+    assert laptop.playback_position() == 45.0
+
+    laptop.stop()
+    assert laptop.playback_position() == 45.0
+    now = now + timedelta(seconds=10)
+    assert laptop.playback_position() == 45.0
+
+
+def test_seek_while_playing_restarts_player_at_offset(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=3600,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.fill_caches()
+    laptop.play(intent.id, mix_id)
+    assert len(recorder.plays) == 1
+
+    head = laptop.seek(900)
+    assert head.position_seconds == 900
+    assert laptop.playback_position() == pytest.approx(900, abs=0.05)
+    assert laptop.is_playing() is True
+    assert len(recorder.plays) == 2
+    assert recorder.plays[-1][1] == 900.0
+
+
+def test_seek_while_stopped_updates_playhead_without_play(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=3600,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.fill_caches()
+    laptop.play(intent.id, mix_id)
+    laptop.stop()
+    plays_after_stop = len(recorder.plays)
+
+    head = laptop.seek(120)
+    assert head.position_seconds == 120
+    assert laptop.playback_position() == 120
+    assert laptop.is_playing() is False
+    assert len(recorder.plays) == plays_after_stop
+    assert laptop.playhead(mix_id).position_seconds == 120
+
+
+def test_seek_past_75_percent_marks_played(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=1000,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 1000)],
+    )
+    laptop.fill_caches()
+    laptop.play(intent.id, mix_id)
+
+    laptop.seek(750)
+
+    assert next(m for m in laptop.mixes() if m.id == mix_id).played is True
+    assert laptop.is_playing() is False
+
+
+def test_pause_keeps_mix_and_play_resumes(tmp_path: Path) -> None:
+    now = datetime(2024, 1, 1, 12, 0, 0)
+
+    def clock() -> datetime:
+        return now
+
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder, clock=clock)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=3600,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.fill_caches()
+    laptop.play(intent.id, mix_id)
+    now = now + timedelta(seconds=90)
+    laptop.pause()
+
+    assert laptop.is_playing() is False
+    assert laptop.current_mix() == mix_id
+    assert laptop.playing_intent_id() == intent.id
+    assert laptop.playback_position() == 90.0
+    assert laptop.playhead(mix_id).position_seconds == 90.0
+
+    resumed = laptop.play(intent.id)
+    assert resumed.id == mix_id
+    assert laptop.is_playing() is True
+    assert recorder.plays[-1][1] == 90.0
+
+
+def test_skip_advances_to_next_local_mix_without_marking_played(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    first = _add_mix(
+        laptop,
+        source,
+        title="Alpha",
+        duration_seconds=3600,
+        platform_id="alpha",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Beta",
+        duration_seconds=3600,
+        platform_id="beta",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Skip",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    laptop.fill_caches()
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    assert set(assignment.mix_ids) == {first, second}
+    head = assignment.mix_ids[0]
+    nxt = assignment.mix_ids[1]
+
+    laptop.play(intent.id, head)
+    assert laptop.current_mix() == head
+    assert laptop.is_playing() is True
+
+    skipped = laptop.skip()
+    assert skipped.id == nxt
+    assert laptop.current_mix() == nxt
+    assert laptop.is_playing() is True
+    assert next(m for m in laptop.mixes() if m.id == head).played is False
+    assert len(recorder.plays) >= 2

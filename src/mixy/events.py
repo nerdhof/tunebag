@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 class EventType(str, Enum):
     ARTIST_ADDED = "artist_added"
+    ARTIST_DELETED = "artist_deleted"
     MIX_ADDED = "mix_added"
     MIX_TAGGED = "mix_tagged"
     MIX_RATED = "mix_rated"

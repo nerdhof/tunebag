@@ -5,6 +5,7 @@
   --muted: #9aa0a6;
   --accent: #7c9cff;
   --card: #1a1d24;
+  --control-height: 2.25rem;
   font-family: "IBM Plex Sans", system-ui, sans-serif;
 }
 
@@ -44,6 +45,25 @@ h1 {
   margin-top: 0;
 }
 
+#status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+}
+
+#status > p {
+  margin: 0;
+}
+
+#status .status-mid {
+  text-align: center;
+}
+
+#status .status-right {
+  text-align: right;
+}
+
 section {
   background: var(--card);
   border-radius: 12px;
@@ -58,16 +78,72 @@ section {
   align-items: center;
 }
 
-.seek-row {
+.form-row {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: flex-end;
   margin: 0.75rem 0;
 }
 
-.seek-row input[type="range"] {
-  flex: 1;
-  min-width: 0;
+.form-row > button {
+  flex-shrink: 0;
+}
+
+.inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  min-width: 6rem;
+}
+
+.inline-field.grow {
+  flex: 1 1 10rem;
+  min-width: 8rem;
+}
+
+.inline-field input,
+.inline-field select,
+.form-row input,
+.form-row select,
+.hours-editor input,
+.hours-editor select {
+  margin: 0;
+  width: 100%;
+}
+
+.player-transport {
+  align-items: center;
+}
+
+.player-transport input[type="range"] {
+  appearance: auto;
+  flex: 1 1 8rem;
+  min-width: 6rem;
+  margin: 0;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  line-height: normal;
+}
+
+.player-meta .inline-field.grow {
+  flex: 1 1 12rem;
+}
+
+#player > label {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+#player > label select {
+  display: block;
+  margin-top: 0.35rem;
+  min-width: 12rem;
+  width: auto;
 }
 
 .seek-time {
@@ -75,10 +151,6 @@ section {
   color: var(--muted);
   font-size: 0.9rem;
   min-width: 3.25rem;
-}
-
-.seek-time:last-child {
-  text-align: right;
 }
 
 .metered-toggle {
@@ -89,14 +161,47 @@ section {
   cursor: pointer;
 }
 
-button {
+button,
+.inline-field input:not([type="checkbox"]):not([type="range"]),
+.inline-field select,
+.form-row input:not([type="checkbox"]):not([type="range"]),
+.form-row select,
+.hours-editor input:not([type="checkbox"]):not([type="range"]),
+.hours-editor select,
+#pairing input:not([type="checkbox"]):not([type="range"]),
+#artists-form input:not([type="checkbox"]):not([type="range"]),
+#intents input:not([type="checkbox"]):not([type="range"]),
+#intents select,
+#player input:not([type="checkbox"]):not([type="range"]),
+#player select {
   appearance: none;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--fg);
+  box-sizing: border-box;
+  height: var(--control-height);
+  min-height: var(--control-height);
+  padding: 0 0.85rem;
   border-radius: 8px;
-  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--muted);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  line-height: calc(var(--control-height) - 2px);
+}
+
+button {
+  border-color: var(--accent);
+  background: transparent;
   cursor: pointer;
+}
+
+select {
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% - 2px),
+    calc(100% - 9px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 1.75rem;
 }
 
 button:disabled {
@@ -147,40 +252,32 @@ button:disabled {
   margin: 0.75rem 0;
 }
 
-#pairing label,
-#artists-form label,
-#intents label {
+#pairing label:not(.inline-field),
+#artists-form label:not(.inline-field),
+#intents label:not(.inline-field) {
   display: block;
   margin: 0.75rem 0;
 }
 
-#pairing input,
 #pairing textarea,
-#artists-form input,
-#artists-form textarea,
-#intents input,
 #intents textarea {
-  display: block;
-  width: 100%;
-  margin-top: 0.35rem;
   padding: 0.5rem 0.65rem;
   border-radius: 8px;
   border: 1px solid var(--muted);
   background: var(--bg);
   color: var(--fg);
   font: inherit;
+  line-height: 1.4;
+  height: auto;
+  min-height: 0;
 }
 
-#intents fieldset {
-  border: 1px solid var(--muted);
-  border-radius: 8px;
-  margin: 0.75rem 0;
-  padding: 0.5rem 0.85rem 0.85rem;
-}
-
-#intents legend {
-  padding: 0 0.35rem;
-  color: var(--muted);
+#pairing label:not(.inline-field) input,
+#pairing label:not(.inline-field) textarea,
+#intents label:not(.inline-field) input {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
 }
 
 .chance-grid {
@@ -199,6 +296,13 @@ button:disabled {
 #intent-list {
   list-style: none;
   padding: 0;
+  margin: 0.75rem 0 0;
+}
+
+.intent-list-rule {
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  margin: 1rem 0;
 }
 
 #intent-list > li {
@@ -216,10 +320,102 @@ button:disabled {
   font-size: 1rem;
 }
 
-#intent-list .seq-list,
-#intent-list .asg-list {
+#intent-list .intent-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: flex-start;
+  margin-top: 0.5rem;
+}
+
+#intent-list .intent-footer > button {
+  margin-left: auto;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+#intent-list .intent-pane-sequence {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+#intent-list .intent-pane-toggle {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.2rem 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#intent-list .intent-pane-body {
+  margin-top: 0.35rem;
+}
+
+#intent-list .device-hours {
   margin: 0.35rem 0 0;
-  padding-left: 1.25rem;
+}
+
+#intent-list .device-hours-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#intent-list .device-hours-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  padding: 0.35rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+#intent-list .device-hours-list > li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+#intent-list .device-hours-list .hours-label {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+#intent-list .device-hours-list button {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+#intent-list .hours-editor {
+  margin-top: 0.5rem;
+}
+
+#intent-list .hours-editor .inline-field input,
+#intent-list .hours-editor .inline-field select {
+  max-width: 10rem;
+}
+
+#intent-list .intent-seq-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+#intent-list .intent-seq-table th,
+#intent-list .intent-seq-table td {
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+#intent-list .intent-seq-table th:first-child,
+#intent-list .intent-seq-table td:first-child {
+  width: 2rem;
 }
 
 #pairing pre {
@@ -234,8 +430,7 @@ button:disabled {
   padding-left: 1.25rem;
 }
 
-#artists-form label input[type="number"],
-#intent-hours input {
+#artists-form .inline-field input[type="number"] {
   max-width: 8rem;
 }
 
@@ -244,17 +439,10 @@ button:disabled {
   max-width: none;
 }
 
-#intent-hours .hours-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem 1.25rem;
-  margin-bottom: 0.65rem;
-}
-
 #catalog-table-wrap {
   max-height: 24rem;
   overflow: auto;
-  margin-top: 0.75rem;
+  margin: 0.75rem 0;
   border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
   border-radius: 8px;
 }
@@ -299,6 +487,26 @@ button:disabled {
   width: 1rem;
   margin-right: 0.35rem;
   color: var(--muted);
+}
+
+#catalog-table .artist-row-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+#catalog-table .artist-label {
+  flex: 1;
+  min-width: 0;
+}
+
+#catalog-table .artist-delete,
+#catalog-table .artist-refresh {
+  margin: 0;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.85rem;
+  flex-shrink: 0;
 }
 
 #catalog-table .mix-row[hidden] {

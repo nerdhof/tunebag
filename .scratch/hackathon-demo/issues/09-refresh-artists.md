@@ -4,12 +4,16 @@
 
 **Blocked by:** 02: Add artists to the shared catalog
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] One artist or all catalog artists can be refreshed in one step.
-- [ ] Refresh reuses the same source `list_uploads` path as add.
-- [ ] Uploads whose platform id is already in the catalog are skipped.
-- [ ] Committed rejects are not resurrected as new catalog rows.
-- [ ] The same min-duration default (20 minutes) and per-call override apply.
-- [ ] Refresh creates no audio files.
-- [ ] New rows appear on the paired device after sync.
+- [x] One artist or all catalog artists can be refreshed in one step.
+- [x] Refresh reuses the same source `list_uploads` path as add.
+- [x] Uploads whose platform id is already in the catalog are skipped.
+- [x] Committed rejects are not resurrected as new catalog rows.
+- [x] The same min-duration default (20 minutes) and per-call override apply.
+- [x] Refresh creates no audio files.
+- [x] New rows appear on the paired device after sync.
+
+## Comments
+
+- Implemented `DeviceAgent.refresh_artists` (optional `artist_ids`, else all catalog artists). Skips known `(platform, platform_id)` including rejected rows. HTTP `POST /api/artists/refresh`; UI per-artist Refresh + Refresh all. Tests in `tests/test_refresh_artists.py`.

@@ -156,17 +156,19 @@ def test_phone_gets_shared_mix_as_soon_as_laptop_has_it(tmp_path: Path) -> None:
     phone.sync()
     assignment = laptop.assignment(intent.id)
     assert assignment is not None
-    assert assignment.mix_ids == [first, second]
+    assert set(assignment.mix_ids) == {first, second}
+    head, tail = assignment.mix_ids[0], assignment.mix_ids[1]
+    head_url = laptop.catalog.mixes[head].url
 
-    # Simulate laptop having only the first mix so far.
-    laptop._store_local_file(first, source.bytes_by_url["https://example.com/first"])
+    # Simulate laptop having only the sequence head so far.
+    laptop._store_local_file(head, source.bytes_by_url[head_url])
     calls_before = list(source.fetch_calls)
     phone.fill_caches()
 
-    assert {m.id for m in phone.files()} == {first}
+    assert {m.id for m in phone.files()} == {head}
     assert source.fetch_calls == calls_before
-    # Second still missing on phone — waited for preferred peer, no origin fetch.
-    assert second not in {m.id for m in phone.files()}
+    # Tail still missing on phone — waited for preferred peer, no origin fetch.
+    assert tail not in {m.id for m in phone.files()}
 
 
 def test_phone_origin_fetches_phone_only_mixes(tmp_path: Path) -> None:
@@ -197,13 +199,14 @@ def test_phone_origin_fetches_phone_only_mixes(tmp_path: Path) -> None:
     )
     phone.sync()
     laptop.fill_caches()
-    source.fetch_calls.clear()
     phone.fill_caches()
 
     phone_ids = {m.id for m in phone.files()}
     assert shared in phone_ids
     assert phone_only in phone_ids
-    assert source.fetch_calls == ["https://example.com/phone-only"]
+    assert "https://example.com/phone-only" in source.fetch_calls
+    # Shared mix is the laptop's origin job while reachable.
+    assert source.fetch_calls.count("https://example.com/shared") == 1
     phone_assignment = phone.assignment(intent.id)
     assert phone_assignment is not None
     assert set(phone_assignment.mix_ids) == {shared, phone_only}
@@ -289,6 +292,33 @@ def test_intent_folder_contains_assigned_files(tmp_path: Path) -> None:
     assert len(files) == 1
     assert files[0].read_bytes() == source.bytes_by_url["https://example.com/folder"]
     assert mix_id in {m.id for m in laptop.files()}
+
+
+def test_sync_fills_caches_from_peer(tmp_path: Path) -> None:
+    laptop, phone, source = _pair(tmp_path)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="After sync",
+        duration_seconds=3600,
+        platform_id="after-sync",
+        stars=Stars.FIVE,
+    )
+    laptop.create_intent(
+        "Sync fill",
+        seed=1,
+        device_hours=[
+            (phone.device_id, 3600),
+            (laptop.device_id, 3600),
+        ],
+    )
+    laptop.fill_caches()
+    source.fetch_calls.clear()
+
+    phone.sync()
+
+    assert [m.id for m in phone.files()] == [mix_id]
+    assert source.fetch_calls == []
 
 
 def test_removed_file_can_be_downloaded_again(tmp_path: Path) -> None:

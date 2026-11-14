@@ -14,7 +14,7 @@ Shared understanding locked 2026-11-13. Do not reopen unless product decisions c
 | Intent | Tag filter + star distribution. Device hours and expiry hang off the intent. |
 | Reject | Separate from stars. After a 20s local undo window, every device deletes the file and the mix never re-enters a sequence. |
 
-Stars are 1–5. Unrated mixes may still enter a tagged sequence. Star distribution has six buckets (5★–1★ + unrated); weight for draws is the configured probability per bucket.
+Stars are 1–5. Unrated mixes may still enter a tagged sequence. The star distribution is six draw chances, 5★ through 1★ plus unrated, defaulting to 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3.
 
 ## Rules
 
@@ -29,9 +29,9 @@ Stars are 1–5. Unrated mixes may still enter a tagged sequence. Star distribut
 
 - Tags on an intent mean AND (mix has all of them). Empty filter = untagged (exploratory).
 - Star distribution is always a draw probability, at any budget.
-- One seeded sequence up to the largest device budget. Smaller budgets take the prefix (2h phone ≡ first 2h of 8h laptop).
+- One seeded sequence fills until its duration is at least the largest device budget, and may include the mix that crosses that budget. Smaller budgets take the prefix (2h phone ≡ first 2h of 8h laptop).
 - Empty bucket → skip and rescale remaining probabilities.
-- Percentages that cannot fit a short budget become pick chances; a short stretch may be two 5★ mixes.
+- A short stretch may be two 5★ mixes.
 - Expiry is per device on the intent. Expiring removes that device from the plan; other devices keep their hours. Exclusive files are deleted except the currently playing mix.
 
 ### Fetch priority

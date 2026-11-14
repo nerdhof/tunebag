@@ -1,15 +1,20 @@
 let localDeviceId = null;
 let currentMixId = null;
 let peersCache = [];
-let editingHoursByDevice = null;
-let editingExpiresByDevice = null;
 const expandedCatalogArtists = new Set();
 const expandedCacheIntents = new Set();
+const expandedIntentPanes = new Set();
+/** @type {Map<string, {mode: "add"|"edit", deviceId?: string}>} */
+const hoursEditorState = new Map();
 let rejectUndoTimer = null;
 let fillWasInProgress = false;
 let lastFilesRefreshAt = 0;
 let filesRefreshInFlight = null;
 const FILES_REFRESH_MIN_MS = 1000;
+let lastPlayheadCommitAt = 0;
+let lastKnownPositionSeconds = 0;
+let playheadCommitInFlight = false;
+const PLAYHEAD_COMMIT_MS = 10000;
 
 function fillInProgressFromEntries(entries) {
   let inProgress = false;
@@ -48,9 +53,6 @@ function resetIntentForm() {
   document.getElementById("chance-unrated").value = "30";
   document.getElementById("intent-submit").textContent = "Create intent";
   document.getElementById("intent-cancel").hidden = true;
-  editingHoursByDevice = null;
-  editingExpiresByDevice = null;
-  renderHoursFields();
 }
 
 function hoursUntilExpiry(iso) {
@@ -75,17 +77,32 @@ function beginEditIntent(intent) {
   document.getElementById("intent-chances").open = true;
   document.getElementById("intent-submit").textContent = "Save changes";
   document.getElementById("intent-cancel").hidden = false;
-  editingHoursByDevice = {};
-  editingExpiresByDevice = {};
-  for (const dh of intent.device_hours || []) {
-    editingHoursByDevice[dh.device_id] = String(dh.budget_seconds / 3600);
-    const until = hoursUntilExpiry(dh.expires_at);
-    if (until !== "") {
-      editingExpiresByDevice[dh.device_id] = until;
-    }
-  }
-  renderHoursFields();
   document.getElementById("intent-form").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function knownDevices() {
+  const devices = [];
+  if (localDeviceId) {
+    devices.push({
+      id: localDeviceId,
+      name: document.getElementById("device-name").textContent || "this device",
+      defaultHours: "8",
+    });
+  }
+  for (const peer of peersCache) {
+    devices.push({
+      id: peer.id,
+      name: peer.name,
+      defaultHours: "2",
+    });
+  }
+  return devices;
+}
+
+function deviceName(deviceId) {
+  const known = knownDevices().find((d) => d.id === deviceId);
+  if (known) return known.name;
+  return String(deviceId).slice(0, 8);
 }
 
 function formatActivityTs(ts) {
@@ -181,97 +198,13 @@ async function refreshPeers() {
       list.appendChild(li);
     }
   }
-  renderHoursFields();
-}
-
-function renderHoursFields() {
-  const root = document.getElementById("intent-hours");
-  const previous = {};
-  const previousExpires = {};
-  for (const input of root.querySelectorAll("input[data-device-id]")) {
-    previous[input.dataset.deviceId] = input.value;
-  }
-  for (const input of root.querySelectorAll("input[data-expires-for]")) {
-    previousExpires[input.dataset.expiresFor] = input.value;
-  }
-  root.innerHTML = "";
-
-  const devices = [];
-  if (localDeviceId) {
-    devices.push({
-      id: localDeviceId,
-      name: document.getElementById("device-name").textContent || "this device",
-      defaultHours: "8",
-    });
-  }
-  for (const peer of peersCache) {
-    devices.push({
-      id: peer.id,
-      name: peer.name,
-      defaultHours: "2",
-    });
-  }
-  if (editingHoursByDevice) {
-    const known = new Set(devices.map((d) => d.id));
-    for (const [deviceId, hours] of Object.entries(editingHoursByDevice)) {
-      if (!known.has(deviceId)) {
-        devices.push({
-          id: deviceId,
-          name: deviceId.slice(0, 8),
-          defaultHours: hours,
-        });
-      }
-    }
-  }
-  if (!devices.length) {
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = "Waiting for this device’s id…";
-    root.appendChild(p);
-    return;
-  }
-
-  for (const device of devices) {
-    const row = document.createElement("div");
-    row.className = "hours-row";
-
-    const label = document.createElement("label");
-    label.textContent = `${device.name} (hours)`;
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "0.5";
-    input.step = "0.5";
-    input.required = true;
-    input.dataset.deviceId = device.id;
-    input.value =
-      previous[device.id] ??
-      editingHoursByDevice?.[device.id] ??
-      device.defaultHours;
-    label.appendChild(input);
-    row.appendChild(label);
-
-    const expiresLabel = document.createElement("label");
-    expiresLabel.textContent = "Expires in (hours, optional)";
-    const expiresInput = document.createElement("input");
-    expiresInput.type = "number";
-    expiresInput.min = "0";
-    expiresInput.step = "0.5";
-    expiresInput.placeholder = "never";
-    expiresInput.dataset.expiresFor = device.id;
-    expiresInput.value =
-      previousExpires[device.id] ?? editingExpiresByDevice?.[device.id] ?? "";
-    expiresLabel.appendChild(expiresInput);
-    row.appendChild(expiresLabel);
-
-    root.appendChild(row);
-  }
 }
 
 function formatDuration(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  return `${h}:${String(m).padStart(2, "0")}`;
 }
 
 function formatClock(seconds) {
@@ -295,6 +228,14 @@ function formatHms(seconds) {
 
 let playerSeekDragging = false;
 let playerPollTimer = null;
+
+/** True when focus is on an editable control inside el (not buttons). */
+function focusInside(el) {
+  const active = document.activeElement;
+  if (!el || !active || !el.contains(active)) return false;
+  const tag = active.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
 
 function setPlayerPolling(playing) {
   if (playing) {
@@ -449,10 +390,11 @@ function setArtistExpanded(artistId, expanded) {
   else expandedCatalogArtists.delete(artistId);
 }
 
-async function refreshMixes() {
+async function refreshMixes({ force = false } = {}) {
+  const body = document.getElementById("catalog-body");
+  if (!force && focusInside(body)) return;
   const res = await fetch("/api/mixes");
   const data = await res.json();
-  const body = document.getElementById("catalog-body");
   body.innerHTML = "";
   if (!data.mixes.length) {
     const tr = document.createElement("tr");
@@ -478,16 +420,79 @@ async function refreshMixes() {
 
     const artistCell = document.createElement("td");
     artistCell.colSpan = 5;
+    const artistInner = document.createElement("div");
+    artistInner.className = "artist-row-inner";
+    const artistLabel = document.createElement("span");
+    artistLabel.className = "artist-label";
     const toggle = document.createElement("span");
     toggle.className = "artist-toggle";
     toggle.setAttribute("aria-hidden", "true");
     toggle.textContent = expanded ? "▼" : "▶";
-    artistCell.appendChild(toggle);
-    artistCell.appendChild(
+    artistLabel.appendChild(toggle);
+    artistLabel.appendChild(
       document.createTextNode(
         `${group.artistName} (${group.mixes.length})`,
       ),
     );
+    artistInner.appendChild(artistLabel);
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "artist-refresh";
+    refreshBtn.textContent = "Refresh";
+    refreshBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const status = document.getElementById("artists-status");
+      status.textContent = `Refreshing “${group.artistName}”…`;
+      try {
+        const data = await postRefreshArtists([group.artistId]);
+        if (!data.ok) {
+          status.textContent = data.detail || "Refresh artist failed";
+          return;
+        }
+        status.textContent = `Refreshed “${group.artistName}” · ${data.added} new mix(es)`;
+        await refreshMixes();
+      } catch (err) {
+        status.textContent = "Refresh artist request failed";
+        console.error(err);
+      }
+    });
+    artistInner.appendChild(refreshBtn);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "artist-delete";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (
+        !window.confirm(
+          `Delete artist “${group.artistName}” and its mixes?`,
+        )
+      ) {
+        return;
+      }
+      const status = document.getElementById("artists-status");
+      status.textContent = "Deleting…";
+      try {
+        const res = await fetch(`/api/artists/${group.artistId}`, {
+          method: "DELETE",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          status.textContent = data.detail || "Delete artist failed";
+          return;
+        }
+        expandedCatalogArtists.delete(group.artistId);
+        status.textContent = `Deleted “${group.artistName}”`;
+        await refreshMixes();
+        await refreshIntents();
+        await refreshFiles();
+      } catch (err) {
+        status.textContent = "Delete artist request failed";
+        console.error(err);
+      }
+    });
+    artistInner.appendChild(deleteBtn);
+    artistCell.appendChild(artistInner);
     header.appendChild(artistCell);
 
     const toggleGroup = () => {
@@ -652,6 +657,44 @@ function updateRejectControls(data) {
   }
 }
 
+async function maybeCommitPlayhead(playing) {
+  if (!playing || playheadCommitInFlight) return;
+  const now = Date.now();
+  if (now - lastPlayheadCommitAt < PLAYHEAD_COMMIT_MS) return;
+  playheadCommitInFlight = true;
+  lastPlayheadCommitAt = now;
+  try {
+    const res = await fetch("/api/player/playhead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position_seconds: lastKnownPositionSeconds }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    if (data.played) {
+      const status = document.getElementById("player-status");
+      if (status) {
+        status.textContent = `Playhead ${Math.round(lastKnownPositionSeconds)}s · marked played`;
+      }
+      await showLaterFeatures(data.later || []);
+      await refreshMixes();
+      await refreshFiles();
+      await refreshIntents();
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    playheadCommitInFlight = false;
+  }
+}
+
+function updatePlayPauseButton(playing) {
+  const btn = document.getElementById("player-play");
+  if (!btn) return;
+  btn.textContent = playing ? "Pause" : "Play";
+  btn.dataset.playing = playing ? "true" : "false";
+}
+
 async function refreshPlayer() {
   const res = await fetch("/api/player");
   const data = await res.json();
@@ -659,23 +702,37 @@ async function refreshPlayer() {
   if (!now) return;
   if (!data.current_mix_id) {
     now.textContent = "Nothing playing";
+    lastKnownPositionSeconds = 0;
+    lastPlayheadCommitAt = 0;
     updateSeekBar({});
     setPlayerPolling(false);
     updateRejectControls({});
+    updatePlayPauseButton(false);
     return;
   }
   const state = data.playing ? "Playing" : "Paused/stopped";
   const pos = Math.round(data.position_seconds || 0);
-  now.textContent = `${state}: ${data.title} @ ${pos}s / ${formatDuration(data.duration_seconds || 0)}`;
   if (!playerSeekDragging) {
-    document.getElementById("player-position").value = String(pos);
+    lastKnownPositionSeconds = pos;
   }
-  document.getElementById("player-stars").value =
-    data.stars != null ? String(data.stars) : "";
-  document.getElementById("player-tags").value = (data.tags || []).join(", ");
+  now.textContent = `${state}: ${data.title} @ ${pos}s / ${formatDuration(data.duration_seconds || 0)}`;
+  const starsEl = document.getElementById("player-stars");
+  const tagsEl = document.getElementById("player-tags");
+  if (document.activeElement !== starsEl) {
+    starsEl.value = data.stars != null ? String(data.stars) : "";
+  }
+  if (document.activeElement !== tagsEl) {
+    tagsEl.value = (data.tags || []).join(", ");
+  }
   updateSeekBar(data);
   setPlayerPolling(Boolean(data.playing));
   updateRejectControls(data);
+  updatePlayPauseButton(Boolean(data.playing));
+  if (data.playing) {
+    await maybeCommitPlayhead(true);
+  } else {
+    lastPlayheadCommitAt = 0;
+  }
 }
 
 async function showLaterFeatures(features) {
@@ -692,16 +749,15 @@ async function showLaterFeatures(features) {
   // Close the active player controls; the demo ends on the later list.
   for (const id of [
     "player-play",
+    "player-skip",
     "player-stop",
     "player-mark",
-    "player-seek",
     "player-seekbar",
     "player-rate",
     "player-reject",
     "player-undo-reject",
     "player-tag",
     "player-intent",
-    "player-position",
     "player-stars",
     "player-tags",
   ]) {
@@ -713,14 +769,15 @@ async function showLaterFeatures(features) {
   if (now) now.textContent = "Player closed";
 }
 
-async function refreshFiles() {
+async function refreshFiles({ force = false } = {}) {
+  const body = document.getElementById("cache-body");
+  if (!force && focusInside(body)) return;
   const res = await fetch("/api/files");
   const data = await res.json();
   const countEl = document.getElementById("cache-count");
   if (countEl) {
     countEl.textContent = String(data.files.length);
   }
-  const body = document.getElementById("cache-body");
   body.innerHTML = "";
   const groups = Array.isArray(data.groups) ? data.groups : [];
   if (!groups.length) {
@@ -841,10 +898,293 @@ async function refreshFiles() {
   }
 }
 
-async function refreshIntents() {
+async function saveDeviceHours(intentId, deviceId, hoursValue, expiresValue) {
+  const status = document.getElementById("intent-status");
+  const hours = Number(hoursValue);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    status.textContent = "Hours must be greater than 0";
+    return false;
+  }
+  let expires_at = null;
+  if (expiresValue !== "" && expiresValue != null) {
+    const until = Number(expiresValue);
+    if (!Number.isFinite(until) || until < 0) {
+      status.textContent = "Expires in must be a non-negative number of hours";
+      return false;
+    }
+    if (until > 0) {
+      expires_at = new Date(Date.now() + until * 3600 * 1000).toISOString();
+    }
+  }
+  status.textContent = "Saving device hours…";
+  try {
+    const res = await fetch(`/api/intents/${intentId}/hours`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_id: deviceId,
+        budget_seconds: Math.round(hours * 3600),
+        expires_at,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Save device hours failed";
+      return false;
+    }
+    const filling = data.fill_in_progress ? " · filling caches…" : "";
+    status.textContent = `Saved hours for ${deviceName(deviceId)}${filling}`;
+    hoursEditorState.delete(intentId);
+    await refreshIntents();
+    await refreshFiles();
+    return true;
+  } catch (err) {
+    status.textContent = "Save device hours request failed";
+    console.error(err);
+    return false;
+  }
+}
+
+async function deleteDeviceHours(intent, deviceId) {
+  const status = document.getElementById("intent-status");
+  const name = deviceName(deviceId);
+  if (!window.confirm(`Remove hours for ${name} from “${intent.name}”?`)) {
+    return;
+  }
+  const remaining = (intent.device_hours || [])
+    .filter((dh) => dh.device_id !== deviceId)
+    .map((dh) => ({
+      device_id: dh.device_id,
+      budget_seconds: dh.budget_seconds,
+      expires_at: dh.expires_at,
+    }));
+  status.textContent = "Removing device hours…";
+  try {
+    const res = await fetch(`/api/intents/${intent.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_hours: remaining }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail;
+      status.textContent =
+        typeof detail === "string"
+          ? detail
+          : detail?.[0]?.msg || "Remove device hours failed";
+      return;
+    }
+    const filling = data.fill_in_progress ? " · filling caches…" : "";
+    status.textContent = `Removed hours for ${name}${filling}`;
+    hoursEditorState.delete(intent.id);
+    await refreshIntents();
+    await refreshFiles();
+  } catch (err) {
+    status.textContent = "Remove device hours request failed";
+    console.error(err);
+  }
+}
+
+function buildHoursEditor(intent, editor) {
+  const wrap = document.createElement("div");
+  wrap.className = "form-row hours-editor";
+
+  const assigned = new Set((intent.device_hours || []).map((dh) => dh.device_id));
+  let devices = knownDevices();
+  let defaultHours = "8";
+  let defaultExpires = "";
+  let fixedDeviceId = null;
+
+  if (editor.mode === "edit") {
+    fixedDeviceId = editor.deviceId;
+    const existing = (intent.device_hours || []).find(
+      (dh) => dh.device_id === editor.deviceId,
+    );
+    if (existing) {
+      defaultHours = String(existing.budget_seconds / 3600);
+      defaultExpires = hoursUntilExpiry(existing.expires_at);
+    }
+    if (!devices.some((d) => d.id === fixedDeviceId)) {
+      devices = [
+        ...devices,
+        { id: fixedDeviceId, name: deviceName(fixedDeviceId), defaultHours },
+      ];
+    }
+  } else {
+    devices = devices.filter((d) => !assigned.has(d.id));
+    if (devices.length) {
+      defaultHours = devices[0].defaultHours;
+    }
+  }
+
+  if (editor.mode === "add" && !devices.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = localDeviceId
+      ? "All known devices already have hours"
+      : "Waiting for this device’s id…";
+    wrap.appendChild(empty);
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => {
+      hoursEditorState.delete(intent.id);
+      void refreshIntents();
+    });
+    wrap.appendChild(cancel);
+    return wrap;
+  }
+
+  let deviceSelect = null;
+  if (editor.mode === "add") {
+    const deviceLabel = document.createElement("label");
+    deviceLabel.className = "inline-field";
+    deviceLabel.textContent = "Device";
+    deviceSelect = document.createElement("select");
+    for (const device of devices) {
+      const option = document.createElement("option");
+      option.value = device.id;
+      option.textContent = device.name;
+      deviceSelect.appendChild(option);
+    }
+    deviceSelect.addEventListener("change", () => {
+      const chosen = devices.find((d) => d.id === deviceSelect.value);
+      if (chosen) hoursInput.value = chosen.defaultHours;
+    });
+    deviceLabel.appendChild(deviceSelect);
+    wrap.appendChild(deviceLabel);
+  } else {
+    const deviceLabel = document.createElement("label");
+    deviceLabel.className = "inline-field";
+    deviceLabel.textContent = "Device";
+    const fixed = document.createElement("input");
+    fixed.type = "text";
+    fixed.value = deviceName(fixedDeviceId);
+    fixed.readOnly = true;
+    deviceLabel.appendChild(fixed);
+    wrap.appendChild(deviceLabel);
+  }
+
+  const hoursLabel = document.createElement("label");
+  hoursLabel.className = "inline-field";
+  hoursLabel.textContent = "Hours";
+  const hoursInput = document.createElement("input");
+  hoursInput.type = "number";
+  hoursInput.min = "0.5";
+  hoursInput.step = "0.5";
+  hoursInput.value = defaultHours;
+  hoursLabel.appendChild(hoursInput);
+  wrap.appendChild(hoursLabel);
+
+  const expiresLabel = document.createElement("label");
+  expiresLabel.className = "inline-field";
+  expiresLabel.textContent = "Expires in (hours)";
+  const expiresInput = document.createElement("input");
+  expiresInput.type = "number";
+  expiresInput.min = "0";
+  expiresInput.step = "0.5";
+  expiresInput.placeholder = "never";
+  expiresInput.value = defaultExpires;
+  expiresLabel.appendChild(expiresInput);
+  wrap.appendChild(expiresLabel);
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = editor.mode === "edit" ? "Save" : "Add";
+  saveBtn.addEventListener("click", async () => {
+    const deviceId = editor.mode === "edit" ? fixedDeviceId : deviceSelect.value;
+    await saveDeviceHours(intent.id, deviceId, hoursInput.value, expiresInput.value);
+  });
+  wrap.appendChild(saveBtn);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => {
+    hoursEditorState.delete(intent.id);
+    void refreshIntents();
+  });
+  wrap.appendChild(cancelBtn);
+
+  return wrap;
+}
+
+function renderDeviceHoursPanel(intent, assignments = []) {
+  const panel = document.createElement("div");
+  panel.className = "device-hours";
+
+  const assignmentByDevice = new Map();
+  for (const asg of assignments) {
+    assignmentByDevice.set(String(asg.device_id), asg);
+  }
+
+  const editor = hoursEditorState.get(intent.id);
+  const hours = intent.device_hours || [];
+  if (hours.length) {
+    const list = document.createElement("ul");
+    list.className = "device-hours-list";
+    for (const dh of hours) {
+      const editingThis =
+        editor && editor.mode === "edit" && editor.deviceId === dh.device_id;
+      if (editingThis) continue;
+      const item = document.createElement("li");
+      const label = document.createElement("span");
+      label.className = "hours-label";
+      const until = hoursUntilExpiry(dh.expires_at);
+      let expiryText = "";
+      if (dh.expires_at) {
+        expiryText =
+          until === "" || until === "0"
+            ? " · expired"
+            : ` · expires in ${until}h`;
+      }
+      const asg = assignmentByDevice.get(String(dh.device_id));
+      const mixText = asg ? ` · ${asg.mix_ids.length} mixes` : "";
+      label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
+        dh.budget_seconds,
+      )}${mixText}${expiryText}`;
+      item.appendChild(label);
+
+      if (!editor) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => {
+          hoursEditorState.set(intent.id, {
+            mode: "edit",
+            deviceId: dh.device_id,
+          });
+          void refreshIntents();
+        });
+        item.appendChild(editBtn);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.addEventListener("click", () => {
+          void deleteDeviceHours(intent, dh.device_id);
+        });
+        item.appendChild(deleteBtn);
+      }
+      list.appendChild(item);
+    }
+    if (list.childElementCount) {
+      panel.appendChild(list);
+    }
+  }
+
+  if (editor) {
+    panel.appendChild(buildHoursEditor(intent, editor));
+  }
+
+  return panel;
+}
+
+async function refreshIntents({ force = false } = {}) {
+  const list = document.getElementById("intent-list");
+  if (!force && focusInside(list)) return;
   const res = await fetch("/api/intents");
   const data = await res.json();
-  const list = document.getElementById("intent-list");
   list.innerHTML = "";
   if (!data.intents.length) {
     const li = document.createElement("li");
@@ -868,6 +1208,33 @@ async function refreshIntents() {
     editBtn.textContent = "Edit";
     editBtn.addEventListener("click", () => beginEditIntent(intent));
     headingRow.appendChild(editBtn);
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.textContent = "Refresh";
+    refreshBtn.title = "Re-roll seed and recreate the shared sequence";
+    refreshBtn.addEventListener("click", async () => {
+      const status = document.getElementById("intent-status");
+      status.textContent = `Refreshing sequence “${intent.name}”…`;
+      try {
+        const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
+          method: "POST",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          status.textContent = data.detail || "Refresh sequence failed";
+          return;
+        }
+        status.textContent = data.fill_in_progress
+          ? `Refreshed “${intent.name}” · fill started`
+          : `Refreshed “${intent.name}”`;
+        await refreshIntents();
+        await refreshFiles();
+      } catch (err) {
+        status.textContent = "Refresh sequence request failed";
+        console.error(err);
+      }
+    });
+    headingRow.appendChild(refreshBtn);
     const fillNowBtn = document.createElement("button");
     fillNowBtn.type = "button";
     fillNowBtn.textContent = "Fill now";
@@ -911,6 +1278,7 @@ async function refreshIntents() {
         if (document.getElementById("intent-edit-id").value === intent.id) {
           resetIntentForm();
         }
+        hoursEditorState.delete(intent.id);
         status.textContent = `Deleted “${intent.name}”`;
         await refreshIntents();
       } catch (err) {
@@ -925,58 +1293,103 @@ async function refreshIntents() {
     meta.className = "muted";
     const tags = intent.tags.length ? intent.tags.join(", ") : "untagged only";
     const dist = intent.distribution;
-    const hours = (intent.device_hours || [])
-      .map((dh) => {
-        const budget = formatDuration(dh.budget_seconds);
-        if (!dh.expires_at) return budget;
-        const until = hoursUntilExpiry(dh.expires_at);
-        return until === "" || until === "0"
-          ? `${budget} (expired)`
-          : `${budget} (expires ${until}h)`;
-      })
-      .join(" / ");
     meta.textContent =
       `Tags: ${tags} · chances ${Math.round(dist.five * 100)}/` +
       `${Math.round(dist.four * 100)}/${Math.round(dist.three * 100)}/` +
       `${Math.round(dist.two * 100)}/${Math.round(dist.one * 100)}/` +
-      `${Math.round(dist.unrated * 100)}` +
-      ` · hours ${hours}`;
+      `${Math.round(dist.unrated * 100)}`;
     li.appendChild(meta);
 
+    let assignments = [];
+    let seq = null;
     const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
     if (seqRes.ok) {
-      const seq = await seqRes.json();
-      const seqTitle = document.createElement("p");
-      seqTitle.textContent = `Shared sequence (${seq.entries.length})`;
-      li.appendChild(seqTitle);
-      const seqList = document.createElement("ol");
-      seqList.className = "seq-list";
-      for (const entry of seq.entries) {
-        const item = document.createElement("li");
-        const dur =
-          entry.duration_seconds != null ? ` · ${formatDuration(entry.duration_seconds)}` : "";
-        item.textContent = `${entry.title || entry.mix_id} (${entry.bucket})${dur}`;
-        seqList.appendChild(item);
-      }
-      li.appendChild(seqList);
-
-      if (seq.assignments?.length) {
-        const asgTitle = document.createElement("p");
-        asgTitle.textContent = "Assignments";
-        li.appendChild(asgTitle);
-        const asgList = document.createElement("ul");
-        asgList.className = "asg-list";
-        for (const asg of seq.assignments) {
-          const item = document.createElement("li");
-          const name = asg.device_name || asg.device_id;
-          item.textContent =
-            `${name}: ${asg.mix_ids.length} mixes · ` +
-            `${formatDuration(asg.budget_seconds)} budget`;
-          asgList.appendChild(item);
-        }
-        li.appendChild(asgList);
-      }
+      seq = await seqRes.json();
+      assignments = seq.assignments || [];
     }
+
+    li.appendChild(renderDeviceHoursPanel(intent, assignments));
+
+    const footer = document.createElement("div");
+    footer.className = "intent-footer";
+
+    if (seq) {
+      const seqKey = `${intent.id}:sequence`;
+      const seqExpanded = expandedIntentPanes.has(seqKey);
+      const seqPane = document.createElement("div");
+      seqPane.className = "intent-pane intent-pane-sequence";
+      const seqToggle = document.createElement("button");
+      seqToggle.type = "button";
+      seqToggle.className = "intent-pane-toggle";
+      seqToggle.setAttribute("aria-expanded", seqExpanded ? "true" : "false");
+      seqToggle.textContent = `${seqExpanded ? "▾" : "▸"} Shared sequence (${seq.entries.length})`;
+      const seqBody = document.createElement("div");
+      seqBody.className = "intent-pane-body";
+      seqBody.hidden = !seqExpanded;
+      if (seq.entries.length) {
+        const table = document.createElement("table");
+        table.className = "intent-seq-table";
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        for (const label of ["#", "Title", "Bucket", "Duration"]) {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        for (const entry of seq.entries) {
+          const tr = document.createElement("tr");
+          const pos = document.createElement("td");
+          pos.textContent = String(entry.position + 1);
+          tr.appendChild(pos);
+          const title = document.createElement("td");
+          title.textContent = entry.title || entry.mix_id;
+          tr.appendChild(title);
+          const bucket = document.createElement("td");
+          bucket.textContent = entry.bucket;
+          tr.appendChild(bucket);
+          const dur = document.createElement("td");
+          dur.textContent =
+            entry.duration_seconds != null ? formatDuration(entry.duration_seconds) : "—";
+          tr.appendChild(dur);
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        seqBody.appendChild(table);
+      } else {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "Empty sequence";
+        seqBody.appendChild(empty);
+      }
+      seqToggle.addEventListener("click", () => {
+        const open = seqBody.hidden;
+        seqBody.hidden = !open;
+        seqToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        seqToggle.textContent = `${open ? "▾" : "▸"} Shared sequence (${seq.entries.length})`;
+        if (open) expandedIntentPanes.add(seqKey);
+        else expandedIntentPanes.delete(seqKey);
+      });
+      seqPane.appendChild(seqToggle);
+      seqPane.appendChild(seqBody);
+      footer.appendChild(seqPane);
+    }
+
+    const editor = hoursEditorState.get(intent.id);
+    if (!editor) {
+      const assignBtn = document.createElement("button");
+      assignBtn.type = "button";
+      assignBtn.textContent = "Assign";
+      assignBtn.addEventListener("click", () => {
+        hoursEditorState.set(intent.id, { mode: "add" });
+        void refreshIntents();
+      });
+      footer.appendChild(assignBtn);
+    }
+
+    li.appendChild(footer);
 
     list.appendChild(li);
   }
@@ -1019,18 +1432,37 @@ document.getElementById("pair-form").addEventListener("submit", async (event) =>
   }
 });
 
+function minDurationSecondsFromForm() {
+  const minutes = Number(document.getElementById("min-duration-minutes").value);
+  return Number.isFinite(minutes) ? Math.max(0, Math.round(minutes * 60)) : 1200;
+}
+
+async function postRefreshArtists(artistIds) {
+  const body = { min_duration_seconds: minDurationSecondsFromForm() };
+  if (artistIds != null) {
+    body.artist_ids = artistIds;
+  }
+  const res = await fetch("/api/artists/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, detail: data.detail || "Refresh artists failed" };
+  }
+  return { ok: true, ...data };
+}
+
 document.getElementById("artists-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const status = document.getElementById("artists-status");
   const raw = document.getElementById("artist-urls").value;
   const urls = raw
-    .split(/\r?\n/)
+    .split(/[\s,]+/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const minutes = Number(document.getElementById("min-duration-minutes").value);
-  const min_duration_seconds = Number.isFinite(minutes)
-    ? Math.max(0, Math.round(minutes * 60))
-    : 1200;
+  const min_duration_seconds = minDurationSecondsFromForm();
   status.textContent = "Adding artists…";
   try {
     const res = await fetch("/api/artists", {
@@ -1047,6 +1479,23 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
     await refreshMixes();
   } catch (err) {
     status.textContent = "Add artists request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("refresh-all-artists").addEventListener("click", async () => {
+  const status = document.getElementById("artists-status");
+  status.textContent = "Refreshing all artists…";
+  try {
+    const data = await postRefreshArtists(null);
+    if (!data.ok) {
+      status.textContent = data.detail || "Refresh artists failed";
+      return;
+    }
+    status.textContent = `Refreshed · ${data.added} new mix(es) · ${data.artists} artists`;
+    await refreshMixes();
+  } catch (err) {
+    status.textContent = "Refresh artists request failed";
     console.error(err);
   }
 });
@@ -1078,44 +1527,6 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
     return;
   }
 
-  // Refresh device id before collect — open tab after serve restart can be stale.
-  await refreshHealth();
-  await refreshPeers();
-  renderHoursFields();
-
-  const device_hours = [];
-  for (const input of document.querySelectorAll("#intent-hours input[data-device-id]")) {
-    const hours = Number(input.value);
-    if (!Number.isFinite(hours) || hours <= 0) {
-      status.textContent = "Each device needs hours greater than 0";
-      return;
-    }
-    const deviceId = input.dataset.deviceId;
-    const expiresInput = document.querySelector(
-      `#intent-hours input[data-expires-for="${deviceId}"]`,
-    );
-    let expires_at = null;
-    if (expiresInput && expiresInput.value !== "") {
-      const until = Number(expiresInput.value);
-      if (!Number.isFinite(until) || until < 0) {
-        status.textContent = "Expires in must be a non-negative number of hours";
-        return;
-      }
-      if (until > 0) {
-        expires_at = new Date(Date.now() + until * 3600 * 1000).toISOString();
-      }
-    }
-    device_hours.push({
-      device_id: deviceId,
-      budget_seconds: Math.round(hours * 3600),
-      expires_at,
-    });
-  }
-  if (!device_hours.length) {
-    status.textContent = "No devices available for hours";
-    return;
-  }
-
   const body = {
     name,
     tags,
@@ -1127,7 +1538,6 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
       one: one / 100,
       unrated: unrated / 100,
     },
-    device_hours,
   };
 
   status.textContent = editId ? "Saving intent…" : "Creating intent…";
@@ -1146,8 +1556,7 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
           : detail?.[0]?.msg || (editId ? "Update intent failed" : "Create intent failed");
       return;
     }
-    const fileCount = data.files ?? 0;
-    const filling = data.fill_in_progress ? " · filling caches…" : ` · ${fileCount} cached`;
+    const filling = data.fill_in_progress ? " · filling caches…" : "";
     status.textContent = editId
       ? `Updated “${data.intent.name}”${filling}`
       : `Created “${data.intent.name}”${filling}`;
@@ -1247,6 +1656,34 @@ document.getElementById("player-tags").addEventListener("input", async (event) =
 
 document.getElementById("player-play").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
+  const btn = document.getElementById("player-play");
+  if (btn.dataset.playing === "true") {
+    status.textContent = "Pausing…";
+    try {
+      const res = await fetch("/api/player/pause", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          position_seconds: Math.max(0, lastKnownPositionSeconds),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        status.textContent = data.detail || "Pause failed";
+        return;
+      }
+      status.textContent = "Paused";
+      lastPlayheadCommitAt = Date.now();
+      if (data.played) {
+        await showLaterFeatures(data.later || []);
+      }
+      await refreshPlayer();
+    } catch (err) {
+      status.textContent = "Pause request failed";
+      console.error(err);
+    }
+    return;
+  }
   const intentId = document.getElementById("player-intent").value;
   if (!intentId) {
     status.textContent = "Choose an intent";
@@ -1266,10 +1703,38 @@ document.getElementById("player-play").addEventListener("click", async () => {
     }
     status.textContent = `Playing “${data.mix.title}”`;
     document.getElementById("later-panel").hidden = true;
+    lastPlayheadCommitAt = Date.now();
     await refreshPlayer();
     await refreshFiles();
   } catch (err) {
     status.textContent = "Play request failed";
+    console.error(err);
+  }
+});
+
+document.getElementById("player-skip").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const intentId = document.getElementById("player-intent").value;
+  status.textContent = "Skipping…";
+  try {
+    const body = intentId ? { intent_id: intentId } : {};
+    const res = await fetch("/api/player/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Skip failed";
+      return;
+    }
+    status.textContent = `Playing “${data.mix.title}”`;
+    document.getElementById("later-panel").hidden = true;
+    lastPlayheadCommitAt = Date.now();
+    await refreshPlayer();
+    await refreshFiles();
+  } catch (err) {
+    status.textContent = "Skip request failed";
     console.error(err);
   }
 });
@@ -1279,6 +1744,7 @@ document.getElementById("player-stop").addEventListener("click", async () => {
   try {
     await fetch("/api/player/stop", { method: "POST" });
     status.textContent = "Stopped (mix left in place if under 75%)";
+    lastPlayheadCommitAt = 0;
     await refreshPlayer();
   } catch (err) {
     status.textContent = "Stop request failed";
@@ -1299,18 +1765,19 @@ if (playerSeekbar) {
   });
   playerSeekbar.addEventListener("input", () => {
     playerSeekDragging = true;
+    const position = Math.round(Number(playerSeekbar.value || 0));
+    lastKnownPositionSeconds = position;
     const currentEl = document.getElementById("player-time-current");
     if (currentEl) {
-      currentEl.textContent = formatClock(Number(playerSeekbar.value || 0));
+      currentEl.textContent = formatClock(position);
     }
-    document.getElementById("player-position").value = String(
-      Math.round(Number(playerSeekbar.value || 0)),
-    );
   });
   playerSeekbar.addEventListener("change", async () => {
     playerSeekDragging = false;
     const status = document.getElementById("player-status");
     const position = Math.round(Number(playerSeekbar.value || 0));
+    lastKnownPositionSeconds = position;
+    lastPlayheadCommitAt = Date.now();
     try {
       const res = await fetch("/api/player/seek", {
         method: "POST",
@@ -1340,36 +1807,6 @@ if (playerSeekbar) {
     }
   });
 }
-
-document.getElementById("player-seek").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
-  const position = Number(document.getElementById("player-position").value || 0);
-  try {
-    const res = await fetch("/api/player/playhead", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ position_seconds: position }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      status.textContent = data.detail || "Playhead update failed";
-      return;
-    }
-    status.textContent = data.played
-      ? `Playhead ${position}s · marked played`
-      : `Playhead ${position}s`;
-    if (data.played) {
-      await showLaterFeatures(data.later || []);
-    }
-    await refreshPlayer();
-    await refreshMixes();
-    await refreshFiles();
-    await refreshIntents();
-  } catch (err) {
-    status.textContent = "Playhead request failed";
-    console.error(err);
-  }
-});
 
 document.getElementById("player-mark").addEventListener("click", async () => {
   const status = document.getElementById("player-status");

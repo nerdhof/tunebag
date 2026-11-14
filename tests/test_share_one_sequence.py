@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+from datetime import datetime, timedelta
+from uuid import UUID, uuid4
+
+import pytest
 
 from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
+from mixy.domain import Platform, StarDistribution, Stars
+from mixy.reject import UNDO_SECONDS
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self._now = datetime(2024, 1, 1, 12, 0, 0)
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += timedelta(seconds=seconds)
 
 
 def _pair() -> tuple[DeviceAgent, DeviceAgent]:
@@ -14,6 +29,15 @@ def _pair() -> tuple[DeviceAgent, DeviceAgent]:
     laptop.connect(phone)
     phone.pair(laptop.pairing_payload())
     return laptop, phone
+
+
+def _pair_with_clock() -> tuple[DeviceAgent, DeviceAgent, _FakeClock]:
+    clock = _FakeClock()
+    laptop = DeviceAgent("laptop", priority=1, clock=clock)
+    phone = DeviceAgent("phone", priority=10, clock=clock)
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+    return laptop, phone, clock
 
 
 def _add_mix(
@@ -104,7 +128,7 @@ def test_several_tags_require_all_empty_tags_match_only_untagged() -> None:
 
 
 def test_rejected_excluded_and_empty_bucket_skipped() -> None:
-    laptop, _phone = _pair()
+    laptop, _phone, clock = _pair_with_clock()
     keeper = _add_mix(
         laptop,
         title="Four star keeper",
@@ -122,6 +146,8 @@ def test_rejected_excluded_and_empty_bucket_skipped() -> None:
         stars=Stars.FIVE,
     )
     laptop.reject_mix(rejected)
+    clock.advance(UNDO_SECONDS)
+    laptop.commit_pending_rejects()
 
     # No five-star candidates left; draw must still fill from other buckets.
     intent = laptop.create_intent(
@@ -204,54 +230,53 @@ def test_short_stretch_may_be_two_five_star_mixes() -> None:
         stars=Stars.THREE,
     )
 
-    # Seed chosen so both draws land in the five-star bucket.
     intent = laptop.create_intent(
         "Peak",
         tags=["peak"],
+        distribution=StarDistribution(
+            five=1.0, four=0.0, three=0.0, two=0.0, one=0.0, unrated=0.0
+        ),
         seed=7,
         device_hours=[(laptop.device_id, 2 * 3600)],
     )
     asg = laptop.assignment(intent.id, laptop.device_id)
     assert asg is not None
-    assert asg.mix_ids == [five_a, five_b]
+    assert len(asg.mix_ids) == 2
+    assert set(asg.mix_ids) == {five_a, five_b}
 
 
-def test_stops_before_overshoot_and_oversize_fills_empty() -> None:
+def test_fills_at_least_budget_and_oversize_fills_empty() -> None:
     laptop, _phone = _pair()
-    short_a = _add_mix(
+    long = _add_mix(
         laptop,
-        title="Short A",
-        duration_seconds=3600,
-        platform_id="sa",
+        title="Five twenty",
+        duration_seconds=5 * 3600 + 20 * 60,
+        platform_id="long",
         tags=["fit"],
         stars=Stars.FIVE,
     )
-    short_b = _add_mix(
+    next_mix = _add_mix(
         laptop,
-        title="Short B",
-        duration_seconds=3600,
-        platform_id="sb",
-        tags=["fit"],
-        stars=Stars.FIVE,
-    )
-    _add_mix(
-        laptop,
-        title="Would overshoot",
-        duration_seconds=3600,
-        platform_id="over",
+        title="Three hours",
+        duration_seconds=3 * 3600,
+        platform_id="three",
         tags=["fit"],
         stars=Stars.FIVE,
     )
 
+    # 8h budget: 5h20 + 3h → include both (8h20), not stop short of 8h.
     fit = laptop.create_intent(
         "Fit",
         tags=["fit"],
         seed=1,
-        device_hours=[(laptop.device_id, 7200)],
+        device_hours=[(laptop.device_id, 8 * 3600)],
     )
     fit_seq = laptop.sequence(fit.id)
     assert fit_seq is not None
-    assert [e.mix_id for e in fit_seq.entries] == [short_a, short_b]
+    fit_ids = [e.mix_id for e in fit_seq.entries]
+    assert set(fit_ids) == {long, next_mix}
+    total = sum(laptop.catalog.mixes[mid].duration_seconds for mid in fit_ids)
+    assert total == 8 * 3600 + 20 * 60
 
     oversize_only = DeviceAgent("solo")
     big = _add_mix(
@@ -271,6 +296,86 @@ def test_stops_before_overshoot_and_oversize_fills_empty() -> None:
     seq = oversize_only.sequence(intent.id)
     assert seq is not None
     assert [e.mix_id for e in seq.entries] == [big]
+
+
+def test_delete_intent_removes_sequence_on_both_devices() -> None:
+    laptop, phone = _pair()
+    _add_mix(
+        laptop,
+        title="Gone",
+        duration_seconds=3600,
+        platform_id="gone",
+        tags=["bye"],
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Temporary",
+        tags=["bye"],
+        seed=1,
+        device_hours=[(laptop.device_id, 3600), (phone.device_id, 3600)],
+    )
+    laptop.sync()
+    phone.sync()
+    assert phone.sequence(intent.id) is not None
+
+    laptop.delete_intent(intent.id)
+    laptop.sync()
+    phone.sync()
+
+    assert laptop.intents() == []
+    assert phone.intents() == []
+    assert laptop.sequence(intent.id) is None
+    assert phone.sequence(intent.id) is None
+    assert laptop.assignment(intent.id, laptop.device_id) is None
+    assert phone.assignment(intent.id, phone.device_id) is None
+
+
+def test_update_intent_changes_filter_and_hours() -> None:
+    laptop, phone = _pair()
+    deep = _add_mix(
+        laptop,
+        title="Deep",
+        duration_seconds=3600,
+        platform_id="deep1",
+        tags=["deep"],
+        stars=Stars.FIVE,
+    )
+    _add_mix(
+        laptop,
+        title="House",
+        duration_seconds=3600,
+        platform_id="house1",
+        tags=["house"],
+        stars=Stars.FIVE,
+    )
+
+    intent = laptop.create_intent(
+        "First",
+        tags=["house"],
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.update_intent(
+        intent.id,
+        name="Second",
+        tags=["deep"],
+        device_hours=[
+            (phone.device_id, 3600),
+            (laptop.device_id, 7200),
+        ],
+    )
+    laptop.sync()
+    phone.sync()
+
+    updated = phone.intents()[0]
+    assert updated.name == "Second"
+    assert updated.tags == ["deep"]
+    seq = phone.sequence(intent.id)
+    assert seq is not None
+    assert [e.mix_id for e in seq.entries] == [deep]
+    phone_asg = phone.assignment(intent.id, phone.device_id)
+    assert phone_asg is not None
+    assert phone_asg.mix_ids == [deep]
 
 
 def test_set_device_hours_rebuilds_shared_sequence() -> None:
@@ -307,3 +412,41 @@ def test_set_device_hours_rebuilds_shared_sequence() -> None:
     assert phone_asg is not None
     assert len(phone_asg.mix_ids) == 2
     assert phone_asg.mix_ids == [e.mix_id for e in rebuilt.entries[:2]]
+
+
+def test_refresh_intent_sequence_rerolls_seed() -> None:
+    laptop, _phone = _pair()
+    for i in range(8):
+        _add_mix(
+            laptop,
+            title=f"Mix {i}",
+            duration_seconds=3600,
+            platform_id=f"refresh{i}",
+            tags=["refresh"],
+            stars=Stars.FOUR,
+        )
+
+    intent = laptop.create_intent(
+        "Refresh",
+        tags=["refresh"],
+        seed=11,
+        device_hours=[(laptop.device_id, 4 * 3600)],
+    )
+    before = laptop.sequence(intent.id)
+    assert before is not None
+    assert intent.seed == 11
+
+    refreshed = laptop.refresh_intent_sequence(intent.id)
+    assert refreshed.seed != 11
+    after = laptop.sequence(intent.id)
+    assert after is not None
+    assert len(after.entries) == 4
+    asg = laptop.assignment(intent.id, laptop.device_id)
+    assert asg is not None
+    assert asg.mix_ids == [e.mix_id for e in after.entries]
+
+
+def test_refresh_intent_sequence_unknown_raises() -> None:
+    laptop, _phone = _pair()
+    with pytest.raises(KeyError, match="unknown intent"):
+        laptop.refresh_intent_sequence(uuid4())

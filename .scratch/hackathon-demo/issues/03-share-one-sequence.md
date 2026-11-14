@@ -13,7 +13,7 @@
 - [x] One seeded sequence is stored up to the largest device budget. The other device applies that sequence instead of drawing its own.
 - [x] Two hours on the phone and eight on the laptop show the same first stretch on both, plus the extra hours only on the laptop.
 - [x] A short stretch may be two five-star mixes.
-- [x] The sequence stops when the next mix would pass the largest budget. A single mix longer than the budget still fills an empty sequence.
+- [x] The sequence fills until cumulative duration is at least the largest budget (may overshoot by one mix). A single mix longer than the budget still fills an empty sequence.
 
 ## Comments
 

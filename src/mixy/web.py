@@ -39,6 +39,11 @@ class AddArtistsBody(BaseModel):
     min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS
 
 
+class RefreshArtistsBody(BaseModel):
+    artist_ids: list[UUID] | None = None
+    min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS
+
+
 class DeviceHoursBody(BaseModel):
     device_id: UUID
     budget_seconds: int = Field(gt=0)
@@ -91,6 +96,14 @@ class CurrentMixBody(BaseModel):
 class PlayBody(BaseModel):
     intent_id: UUID
     mix_id: UUID | None = None
+
+
+class SkipBody(BaseModel):
+    intent_id: UUID | None = None
+
+
+class PauseBody(BaseModel):
+    position_seconds: float | None = Field(default=None, ge=0)
 
 
 class PlayheadBody(BaseModel):
@@ -440,6 +453,42 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         agent.stop()
         return {"ok": True, "playing": agent.is_playing()}
 
+    @app.post("/api/player/pause")
+    def player_pause(body: PauseBody = PauseBody()) -> dict:
+        try:
+            agent.pause(body.position_seconds)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        current = agent.current_mix()
+        mix = agent.mix(current) if current is not None else None
+        played = bool(mix.played) if mix is not None else False
+        return {
+            "ok": True,
+            "playing": agent.is_playing(),
+            "position_seconds": agent.playback_position(),
+            "current_mix_id": str(current) if current is not None else None,
+            "played": played,
+            "later": agent.later_features() if played else [],
+        }
+
+    @app.post("/api/player/skip")
+    def player_skip(body: SkipBody = SkipBody()) -> dict:
+        try:
+            mix = agent.skip(body.intent_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "playing": agent.is_playing(),
+            "mix": {
+                "id": str(mix.id),
+                "title": mix.title,
+                "duration_seconds": mix.duration_seconds,
+            },
+        }
+
     @app.post("/api/player/playhead")
     def player_playhead(body: PlayheadBody) -> dict:
         try:
@@ -523,6 +572,34 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "mixes": len(agent.mixes()),
             "artists": len(agent.artists()),
         }
+
+    @app.post("/api/artists/refresh")
+    def refresh_artists(body: RefreshArtistsBody) -> dict:
+        try:
+            mixes = agent.refresh_artists(
+                body.artist_ids,
+                min_duration_seconds=body.min_duration_seconds,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"source fetch failed: {exc}") from exc
+        return {
+            "ok": True,
+            "added": len(mixes),
+            "mixes": len(agent.mixes()),
+            "artists": len(agent.artists()),
+        }
+
+    @app.delete("/api/artists/{artist_id}")
+    def delete_artist(artist_id: UUID) -> dict:
+        try:
+            agent.delete_artist(artist_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True, "deleted": str(artist_id)}
 
     @app.get("/api/tags")
     def list_tags(q: str = "") -> dict:
@@ -635,6 +712,24 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "intent": {
                 "id": str(intent.id),
                 "device_hours": [_hours_json(dh) for dh in intent.device_hours],
+            },
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
+        }
+
+    @app.post("/api/intents/{intent_id}/refresh-sequence")
+    def refresh_intent_sequence(intent_id: UUID) -> dict:
+        try:
+            intent = agent.refresh_intent_sequence(intent_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        agent.request_fill()
+        return {
+            "ok": True,
+            "intent": {
+                "id": str(intent.id),
+                "name": intent.name,
+                "seed": intent.seed,
             },
             "files": len(agent.files()),
             "fill_in_progress": agent.fill_in_progress,
