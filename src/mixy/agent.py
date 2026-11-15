@@ -44,11 +44,13 @@ from mixy.domain import (
     StarBucket,
     StarDistribution,
     Stars,
+    new_id,
 )
 from mixy.events import Event, EventLog, EventType
 from mixy.pairing import (
     DeviceIdentity,
     generate_identity,
+    resolve_persisted_identity,
     short_code_from_key,
 )
 from mixy.pairing import (
@@ -87,19 +89,35 @@ class DeviceAgent:
         player: AudioPlayer | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self._identity = identity or generate_identity(name)
+        # Persist identity/log only for an explicit data_dir so in-process multi-agent
+        # tests (default ~/.mixy) do not collide on one identity.json.
+        persist = data_dir is not None
+        self.catalog = Catalog(data_dir=data_dir)
+        self.data_dir = self.catalog.data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        if persist:
+            self._identity, device_id = resolve_persisted_identity(
+                self.data_dir / "identity.json",
+                name=name,
+                identity=identity,
+            )
+        else:
+            self._identity = identity or generate_identity(name)
+            device_id = new_id()
         self._private_key = _load_private_key(self._identity.private_key_pem)
         self.device = Device(
+            id=device_id,
             name=name,
             public_key_pem=self._identity.public_key_pem,
             priority=priority,
         )
         self.base_url = base_url
         self.source = source if source is not None else default_source()
-        self.catalog = Catalog(data_dir=data_dir)
         self.catalog.local_device_id = self.device.id
         self.catalog.add_device(self.device)
-        self._log = EventLog()
+        self._log = EventLog(
+            path=(self.data_dir / "events.jsonl") if persist else None
+        )
         self._activity = ActivityLog()
         self._reachable: list[DeviceAgent] = []
         self._peer_urls: dict[UUID, str] = {}
@@ -115,6 +133,8 @@ class DeviceAgent:
         self._pending_sequences: dict[UUID, Sequence] = {}
         self._pending_assignments: dict[tuple[UUID, UUID], Assignment | None] = {}
         self._event_seq = 0
+        # Serialize append/ingest/apply against background sync threads.
+        self._event_lock = threading.Lock()
         # Local-only (not events): simulated link mode, reject undo window, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
@@ -141,8 +161,8 @@ class DeviceAgent:
         self._download_bytes: int = 0
         self._download_total_bytes: int | None = None
         self._download_lock = threading.Lock()
-        self.data_dir = self.catalog.data_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        if persist:
+            self._replay_event_log()
 
     def note(self, message: str, *, level: int = logging.INFO) -> None:
         """Record an operational progress line (terminal + UI activity feed)."""
@@ -1505,19 +1525,36 @@ class DeviceAgent:
     def _trusts_public_key(self, public_key_pem: str) -> bool:
         return any(d.public_key_pem == public_key_pem for d in self.peers())
 
+    def _replay_event_log(self) -> None:
+        """Rebuild Catalog from the durable Event log (cold start; no re-append)."""
+        with self._event_lock:
+            for event in self._log.all():
+                if event.device_id == self.device.id:
+                    if not self._verify(event, self.public_key_pem):
+                        raise InvalidSignature("event signature mismatch")
+                    self._event_seq = max(self._event_seq, int(event.seq))
+                else:
+                    author = self.catalog.devices.get(event.device_id)
+                    # Unknown author: still apply; event was verified when ingested to this log.
+                    if author is not None and not self._verify(event, author.public_key_pem):
+                        raise InvalidSignature("event signature mismatch")
+                self._seen_event_ids.add(event.id)
+                self._apply(event)
+
     def _append_and_apply(self, event_type: EventType, payload: dict[str, Any]) -> Event:
-        self._event_seq += 1
-        event = Event(
-            type=event_type,
-            device_id=self.device.id,
-            created_at=self._clock(),
-            seq=self._event_seq,
-            payload=payload,
-        )
-        event.signature = self._sign(event)
-        self._log.append(event)
-        self._seen_event_ids.add(event.id)
-        self._apply(event)
+        with self._event_lock:
+            self._event_seq += 1
+            event = Event(
+                type=event_type,
+                device_id=self.device.id,
+                created_at=self._clock(),
+                seq=self._event_seq,
+                payload=payload,
+            )
+            event.signature = self._sign(event)
+            self._log.append(event)
+            self._seen_event_ids.add(event.id)
+            self._apply(event)
         self._schedule_auto_sync()
         return event
 
@@ -1603,18 +1640,19 @@ class DeviceAgent:
             self.note(f"auto-sync nudge failed ({peer_url}): {exc}", level=logging.WARNING)
 
     def _ingest(self, event: Event) -> None:
-        if event.id in self._seen_event_ids:
-            return
-        if event.device_id == self.device.id:
-            return
-        author = self.catalog.devices.get(event.device_id)
-        if author is None:
-            return
-        if not self._verify(event, author.public_key_pem):
-            raise InvalidSignature("event signature mismatch")
-        self._seen_event_ids.add(event.id)
-        self._log.append(event)
-        self._apply(event)
+        with self._event_lock:
+            if event.id in self._seen_event_ids:
+                return
+            if event.device_id == self.device.id:
+                return
+            author = self.catalog.devices.get(event.device_id)
+            if author is None:
+                return
+            if not self._verify(event, author.public_key_pem):
+                raise InvalidSignature("event signature mismatch")
+            self._seen_event_ids.add(event.id)
+            self._log.append(event)
+            self._apply(event)
 
     def _upsert_intent_and_rebuild(self, intent: Intent) -> None:
         self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))

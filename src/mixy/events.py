@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import Any, TextIO
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -39,17 +41,37 @@ class Event(BaseModel):
 
 
 class EventLog:
-    def __init__(self) -> None:
+    """In-memory event list; optionally durable as append-only JSONL."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path
         self._events: list[Event] = []
+        self._lock = threading.Lock()
+        self._file: TextIO | None = None
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file():
+                for line in path.read_text().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self._events.append(Event.model_validate_json(line))
+            self._file = path.open("a", encoding="utf-8")
 
     def append(self, event: Event) -> Event:
-        self._events.append(event)
+        with self._lock:
+            self._events.append(event)
+            if self._file is not None:
+                self._file.write(event.model_dump_json() + "\n")
+                self._file.flush()
         return event
 
     def since(self, after: datetime | None = None) -> list[Event]:
-        if after is None:
-            return list(self._events)
-        return [event for event in self._events if event.created_at > after]
+        with self._lock:
+            if after is None:
+                return list(self._events)
+            return [event for event in self._events if event.created_at > after]
 
     def all(self) -> list[Event]:
-        return list(self._events)
+        with self._lock:
+            return list(self._events)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 from mixy import __version__
 from mixy.agent import DeviceAgent
@@ -37,7 +38,12 @@ def main(argv: list[str] | None = None) -> None:
             datefmt="%H:%M:%S",
         )
         base_url = f"http://{args.host}:{args.port}"
-        agent = DeviceAgent(args.name, priority=args.priority, base_url=base_url)
+        agent = DeviceAgent(
+            args.name,
+            priority=args.priority,
+            base_url=base_url,
+            data_dir=Path.home() / ".mixy",
+        )
         app = create_app(agent)
         print(f"mixy agent {args.name!r} at {base_url}", flush=True)
         print(f"short_code={agent.short_code()}", flush=True)
