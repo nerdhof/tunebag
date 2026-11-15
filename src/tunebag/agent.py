@@ -28,9 +28,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-from mixy.activity import ActivityEntry, ActivityLog
-from mixy.catalog import Catalog
-from mixy.domain import (
+from tunebag.activity import ActivityEntry, ActivityLog
+from tunebag.catalog import Catalog
+from tunebag.discovery import (
+    DISCOVERY_REFRESH_SECONDS,
+    LanAdvertisement,
+    LanDiscovery,
+    NullLanDiscovery,
+)
+from tunebag.domain import (
     Artist,
     Assignment,
     Device,
@@ -47,20 +53,20 @@ from mixy.domain import (
     Stars,
     new_id,
 )
-from mixy.events import Event, EventLog, EventType
-from mixy.pairing import (
+from tunebag.events import Event, EventLog, EventType
+from tunebag.pairing import (
     DeviceIdentity,
     generate_identity,
     resolve_persisted_identity,
     short_code_from_key,
 )
-from mixy.pairing import (
+from tunebag.pairing import (
     pairing_payload as build_pairing_payload,
 )
-from mixy.player import AudioPlayer, default_player
-from mixy.reject import RejectBuffer
-from mixy.sequence import assign_by_budget, build_sequence
-from mixy.source import (
+from tunebag.player import AudioPlayer, default_player
+from tunebag.reject import RejectBuffer
+from tunebag.sequence import assign_by_budget, build_sequence
+from tunebag.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
     default_source,
@@ -70,6 +76,15 @@ _HTTP_TIMEOUT = 5.0
 PLAYED_THRESHOLD = 0.75
 PLAYHEAD_NEAR_SECONDS = 120.0
 _UNSET = object()
+# Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
+EXPLORE_DISTRIBUTION = StarDistribution(
+    five=0.1,
+    four=0.1,
+    three=0.1,
+    two=0.1,
+    one=0.1,
+    unrated=0.5,
+)
 # (device_id, budget) or (device_id, budget, expires_at)
 DeviceHoursSpec = tuple[UUID, int] | tuple[UUID, int, datetime | None]
 MergeKey = tuple[str, ...]
@@ -89,9 +104,10 @@ class DeviceAgent:
         data_dir: Path | None = None,
         player: AudioPlayer | None = None,
         clock: Callable[[], datetime] | None = None,
+        discovery: LanDiscovery | None = None,
     ) -> None:
         # Persist identity/log only for an explicit data_dir so in-process multi-agent
-        # tests (default ~/.mixy) do not collide on one identity.json.
+        # tests (default ~/.tunebag) do not collide on one identity.json.
         persist = data_dir is not None
         self.catalog = Catalog(data_dir=data_dir)
         self.data_dir = self.catalog.data_dir
@@ -114,6 +130,9 @@ class DeviceAgent:
         )
         self.base_url = base_url
         self.source = source if source is not None else default_source()
+        self._discovery: LanDiscovery = (
+            discovery if discovery is not None else NullLanDiscovery()
+        )
         self.catalog.local_device_id = self.device.id
         self.catalog.add_device(self.device)
         self._log = EventLog(
@@ -124,9 +143,12 @@ class DeviceAgent:
         # In-process meet sessions: proved until disconnect.
         self._proved_agents: set[int] = set()
         self._peer_urls: dict[UUID, str] = {}
+        self._pair_candidates: dict[str, dict[str, Any]] = {}
         self._seen_event_ids: set[UUID] = set()
         # Events whose author is not yet in Catalog; flushed on DEVICE_PAIRED / pair.
         self._unknown_author_buffer: dict[UUID, Event] = {}
+        # Sticky until local re-pair (QR / short code); remote DEVICE_PAIRED cannot undo.
+        self._unpaired_device_ids: set[UUID] = set()
         self._local_files: dict[UUID, bytes] = {}
         # Deterministic merge bookkeeping (same events ⇒ same Catalog).
         self._merge_wins: dict[MergeKey, MergeWin] = {}
@@ -166,8 +188,24 @@ class DeviceAgent:
         self._download_bytes: int = 0
         self._download_total_bytes: int | None = None
         self._download_lock = threading.Lock()
+        self._last_discovery_at: datetime | None = None
         if persist:
             self._replay_event_log()
+        self._start_discovery()
+
+    def seed_default_intents_if_empty(self) -> bool:
+        """On first durable boot (empty Event log), create the Explore intent.
+
+        Returns True if Explore was created. Idempotent for non-empty logs.
+        """
+        if self._log.all():
+            return False
+        self.create_intent(
+            "Explore",
+            tags=[],
+            distribution=EXPLORE_DISTRIBUTION,
+        )
+        return True
 
     def note(self, message: str, *, level: int = logging.INFO) -> None:
         """Record an operational progress line (terminal + UI activity feed)."""
@@ -680,7 +718,7 @@ class DeviceAgent:
             target=self._run_sync_background,
             kwargs={"fill": started_fill},
             daemon=True,
-            name="mixy-sync",
+            name="tunebag-sync",
         )
         thread.start()
         return True
@@ -739,7 +777,7 @@ class DeviceAgent:
             target=self._run_fill_background,
             kwargs={"override_intent_id": started_override},
             daemon=True,
-            name="mixy-fill",
+            name="tunebag-fill",
         )
         thread.start()
         return True
@@ -963,8 +1001,20 @@ class DeviceAgent:
                 agent.accept_pair_offer(self.pairing_payload())
                 return peer
         if url := payload.get("url"):
-            self._http_offer_pair(url)
+            peer_agent = self._discovery_agent_at(url)
+            if peer_agent is not None and peer_agent is not self:
+                peer_agent.accept_pair_offer(self.pairing_payload())
+                self.connect(peer_agent)
+                return peer
+            if not str(url).startswith("inproc://"):
+                self._http_offer_pair(url)
         return peer
+
+    def unpair(self, device_id: UUID) -> None:
+        """Revoke trust in a Peer via a replicated DEVICE_UNPAIRED event."""
+        if device_id == self.device.id:
+            raise ValueError("cannot unpair this Device")
+        self._append_and_apply(EventType.DEVICE_UNPAIRED, {"id": str(device_id)})
 
     def pair_by_short_code(self, code: str, *, peer_url: str | None = None) -> Device:
         needle = code.strip().upper()
@@ -988,6 +1038,147 @@ class DeviceAgent:
 
     def peer_urls(self) -> dict[UUID, str]:
         return dict(self._peer_urls)
+
+    def pair_candidates(self) -> list[dict[str, Any]]:
+        """Discovered advertisements whose public keys are not yet trusted."""
+        return [dict(c) for c in self._pair_candidates.values()]
+
+    def refresh_discovery(self) -> None:
+        """Browse the LAN and process advertisements (start / network / forced)."""
+        self._process_browse()
+        self._last_discovery_at = self._clock()
+
+    def on_network_change(self) -> None:
+        """Browse immediately when interfaces change."""
+        self.refresh_discovery()
+
+    def tick_discovery(self, now: datetime | None = None) -> None:
+        """Slow periodic browse while no trusted Peer has a live proved session."""
+        if self._has_live_trusted_session():
+            return
+        current = now if now is not None else self._clock()
+        if self._last_discovery_at is not None:
+            elapsed = (current - self._last_discovery_at).total_seconds()
+            if elapsed < DISCOVERY_REFRESH_SECONDS:
+                return
+        self.refresh_discovery()
+
+    def _start_discovery(self) -> None:
+        if self.base_url:
+            self._discovery.advertise(
+                LanAdvertisement(
+                    name=self.name,
+                    short_code=self.short_code(),
+                    locator=self.base_url,
+                )
+            )
+            # FakeLanDiscovery.publish registers pairing + in-process handle.
+            publish = getattr(self._discovery, "publish", None)
+            if callable(publish):
+                publish(self, locator=self.base_url)
+        self.refresh_discovery()
+
+    def _has_live_trusted_session(self) -> bool:
+        for agent in self._reachable:
+            if id(agent) in self._proved_agents and self._trusts_public_key(
+                agent.public_key_pem
+            ):
+                return True
+        return False
+
+    def _process_browse(self) -> None:
+        for ad in self._discovery.browse():
+            if self.base_url and ad.locator.rstrip("/") == self.base_url.rstrip("/"):
+                continue
+            try:
+                payload = self._fetch_discovery_pairing(ad.locator)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(
+                    f"discovery pairing fetch failed ({ad.locator}): {exc}",
+                    level=logging.WARNING,
+                )
+                continue
+            public_key_pem = payload.get("public_key_pem")
+            if not isinstance(public_key_pem, str) or not public_key_pem:
+                continue
+            if self._trusts_public_key(public_key_pem):
+                peer_id = UUID(payload["device_id"]) if "device_id" in payload else None
+                if peer_id is None:
+                    peer = next(
+                        (
+                            d
+                            for d in self.peers()
+                            if d.public_key_pem == public_key_pem
+                        ),
+                        None,
+                    )
+                    if peer is None:
+                        continue
+                    peer_id = peer.id
+                if not self._meet_discovered_peer(
+                    peer_id, ad.locator, public_key_pem
+                ):
+                    continue
+                self._pair_candidates.pop(ad.locator, None)
+                continue
+            self._pair_candidates[ad.locator] = {
+                "name": payload.get("name") or ad.name,
+                "short_code": payload.get("short_code") or ad.short_code,
+                "locator": ad.locator,
+                "public_key_pem": public_key_pem,
+                "device_id": payload.get("device_id"),
+                "priority": payload.get("priority"),
+            }
+
+    def _meet_discovered_peer(
+        self, peer_id: UUID, locator: str, public_key_pem: str
+    ) -> bool:
+        """Prove possession, then refresh Locator hint and sync."""
+        peer_agent = self._discovery_agent_at(locator)
+        if peer_agent is not None and peer_agent is not self:
+            added_here = peer_agent not in self._reachable
+            if added_here:
+                self._reachable.append(peer_agent)
+            added_there = self not in peer_agent._reachable
+            if added_there:
+                peer_agent._reachable.append(self)
+            if not self._ensure_agent_proved(peer_agent):
+                if added_here and peer_agent in self._reachable:
+                    self._reachable.remove(peer_agent)
+                if added_there and self in peer_agent._reachable:
+                    peer_agent._reachable.remove(self)
+                return False
+            self.remember_peer_url(peer_id, locator)
+            self.request_sync(fill=False)
+            peer_agent.request_sync(fill=False)
+            return True
+        if locator.startswith("inproc://"):
+            return False
+        if not self._ensure_http_peer_proved(locator, public_key_pem):
+            return False
+        self.remember_peer_url(peer_id, locator)
+        self.request_sync(fill=False)
+        return True
+
+    def _fetch_discovery_pairing(self, locator: str) -> dict[str, Any]:
+        fetch = getattr(self._discovery, "pairing_payload", None)
+        if callable(fetch):
+            try:
+                return fetch(locator)
+            except ValueError:
+                pass
+        if locator.startswith("inproc://"):
+            raise ValueError(f"no in-process pairing for {locator}")
+        return self._http_fetch_pairing(locator)
+
+    def _discovery_agent_at(self, locator: str) -> DeviceAgent | None:
+        getter = getattr(self._discovery, "agent_at", None)
+        if not callable(getter):
+            return None
+        agent = getter(locator)
+        return agent if isinstance(agent, DeviceAgent) else None
 
     def ingest_events(self, events: list[Event]) -> None:
         for event in events:
@@ -1265,6 +1456,9 @@ class DeviceAgent:
         for peer_id, url in list(self._peer_urls.items()):
             if peer_id not in trusted_ids:
                 continue
+            if str(url).startswith("inproc://"):
+                # In-process Locators sync via _reachable, not HTTP.
+                continue
             peer = self.catalog.devices.get(peer_id)
             if peer is None:
                 continue
@@ -1501,6 +1695,18 @@ class DeviceAgent:
         if folder.is_dir():
             shutil.rmtree(folder, ignore_errors=True)
 
+    def _revoke_peer(self, device_id: UUID) -> None:
+        """Drop trust, Locator hints, and buffered events for a Peer."""
+        self._unpaired_device_ids.add(device_id)
+        self.catalog.remove_device(device_id)
+        self._peer_urls.pop(device_id, None)
+        for event_id, event in list(self._unknown_author_buffer.items()):
+            if event.device_id == device_id:
+                self._unknown_author_buffer.pop(event_id, None)
+        for agent in list(self._reachable):
+            if agent.device_id == device_id:
+                self._proved_agents.discard(id(agent))
+
     def _trust_payload(self, payload: dict[str, Any]) -> Device:
         if payload.get("v") != 1:
             raise ValueError("unsupported pairing payload version")
@@ -1519,6 +1725,7 @@ class DeviceAgent:
                 (d for d in self.catalog.devices.values() if d.public_key_pem == public_key_pem),
                 None,
             )
+        self._unpaired_device_ids.discard(peer_id)
         if existing is not None:
             peer = existing
         else:
@@ -1600,6 +1807,9 @@ class DeviceAgent:
                         raise InvalidSignature("event signature mismatch")
                     self._event_seq = max(self._event_seq, int(event.seq))
                 else:
+                    if event.device_id in self._unpaired_device_ids:
+                        self._seen_event_ids.add(event.id)
+                        continue
                     author = self.catalog.devices.get(event.device_id)
                     # Unknown author: still apply; event was verified when ingested to this log.
                     if author is not None and not self._verify(event, author.public_key_pem):
@@ -1695,6 +1905,8 @@ class DeviceAgent:
         for peer_id, url in list(self._peer_urls.items()):
             if peer_id not in trusted_ids:
                 continue
+            if str(url).startswith("inproc://"):
+                continue
             self._http_nudge_sync(url)
 
     def _http_nudge_sync(self, peer_url: str) -> None:
@@ -1713,6 +1925,8 @@ class DeviceAgent:
             if event.id in self._seen_event_ids:
                 return
             if event.device_id == self.device.id:
+                return
+            if event.device_id in self._unpaired_device_ids:
                 return
             author = self.catalog.devices.get(event.device_id)
             if author is None:
@@ -1833,6 +2047,11 @@ class DeviceAgent:
             device_id = UUID(payload["id"])
             if device_id == self.device.id:
                 return
+            if device_id in self._unpaired_device_ids:
+                # Only a local re-pair (QR / short code) may restore trust.
+                if event.device_id != self.device.id:
+                    return
+                self._unpaired_device_ids.discard(device_id)
             public_key_pem = payload["public_key_pem"]
             existing = self.catalog.devices.get(device_id)
             if existing is None and any(
@@ -1852,6 +2071,12 @@ class DeviceAgent:
                 )
             )
             self._flush_buffered_events_for(device_id)
+            return
+        if event.type is EventType.DEVICE_UNPAIRED:
+            device_id = UUID(payload["id"])
+            if device_id == self.device.id:
+                return
+            self._revoke_peer(device_id)
             return
         if event.type is EventType.ARTIST_ADDED:
             artist_id = UUID(payload["id"])
