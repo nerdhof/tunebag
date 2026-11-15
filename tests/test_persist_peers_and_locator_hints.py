@@ -9,9 +9,7 @@ from tunebag.domain import Platform
 from tunebag.source import FakeSource
 
 
-def test_after_restart_paired_peers_sync_catalog_without_re_pair(
-    tmp_path: Path,
-) -> None:
+def _pair(tmp_path: Path) -> tuple[DeviceAgent, DeviceAgent, FakeSource, Path, Path]:
     src = FakeSource()
     laptop_dir = tmp_path / "laptop"
     phone_dir = tmp_path / "phone"
@@ -31,6 +29,13 @@ def test_after_restart_paired_peers_sync_catalog_without_re_pair(
     phone.pair(laptop.pairing_payload())
     laptop.wait_for_sync()
     phone.wait_for_sync()
+    return laptop, phone, src, laptop_dir, phone_dir
+
+
+def test_after_restart_paired_peers_sync_catalog_without_re_pair(
+    tmp_path: Path,
+) -> None:
+    laptop, phone, src, laptop_dir, phone_dir = _pair(tmp_path)
 
     url = "https://example.com/post-restart"
     src.bytes_by_url[url] = b"audio:post-restart"
@@ -83,3 +88,38 @@ def test_after_restart_paired_peers_sync_catalog_without_re_pair(
     assert mix2.id in {m.id for m in phone2.mixes()}
     assert mix2.id in {m.id for m in laptop2.mixes()}
     assert next(m for m in phone2.mixes() if m.id == mix2.id).title == "After restart"
+
+
+def test_locator_hints_survive_restart(tmp_path: Path) -> None:
+    laptop, phone, src, laptop_dir, _phone_dir = _pair(tmp_path)
+    hint = "http://phone.example:8765"
+    laptop.remember_peer_url(phone.device_id, hint)
+    assert laptop.peer_urls().get(phone.device_id) == hint
+
+    restarted = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=src,
+        data_dir=laptop_dir,
+    )
+
+    assert phone.device_id in {p.id for p in restarted.peers()}
+    assert restarted.peer_urls().get(phone.device_id) == hint
+
+
+def test_unpair_clears_locator_hint_across_restart(tmp_path: Path) -> None:
+    laptop, phone, src, laptop_dir, _phone_dir = _pair(tmp_path)
+    hint = "http://phone.example:8765"
+    laptop.remember_peer_url(phone.device_id, hint)
+    laptop.unpair(phone.device_id)
+    assert phone.device_id not in laptop.peer_urls()
+
+    restarted = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=src,
+        data_dir=laptop_dir,
+    )
+
+    assert phone.device_id not in {p.id for p in restarted.peers()}
+    assert phone.device_id not in restarted.peer_urls()

@@ -103,6 +103,28 @@ def resolve_persisted_identity(
     return resolved, device_id
 
 
+def load_locator_hints(path: Path) -> dict[UUID, str]:
+    """Load last-known Locator hints (device_id → URL). Missing file ⇒ empty."""
+    if not path.is_file():
+        return {}
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict):
+        return {}
+    hints: dict[UUID, str] = {}
+    for device_id, locator in raw.items():
+        if not isinstance(locator, str) or not locator:
+            continue
+        hints[UUID(device_id)] = locator
+    return hints
+
+
+def save_locator_hints(path: Path, hints: dict[UUID, str]) -> None:
+    """Persist last-known Locator hints (non-authoritative; never grant trust)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {str(device_id): locator for device_id, locator in sorted(hints.items())}
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
 def pairing_payload(
     name: str,
     public_key_pem: str,

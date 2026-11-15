@@ -57,7 +57,9 @@ from tunebag.events import Event, EventLog, EventType
 from tunebag.pairing import (
     DeviceIdentity,
     generate_identity,
+    load_locator_hints,
     resolve_persisted_identity,
+    save_locator_hints,
     short_code_from_key,
 )
 from tunebag.pairing import (
@@ -112,12 +114,14 @@ class DeviceAgent:
         clock: Callable[[], datetime] | None = None,
         discovery: LanDiscovery | None = None,
     ) -> None:
-        # Persist identity/log only for an explicit data_dir so in-process multi-agent
-        # tests (default ~/.tunebag) do not collide on one identity.json.
+        # Persist identity/log/hints only for an explicit data_dir so in-process
+        # multi-agent tests (default ~/.tunebag) do not collide on one identity.json.
         persist = data_dir is not None
+        self._persist = persist
         self.catalog = Catalog(data_dir=data_dir)
         self.data_dir = self.catalog.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._locator_hints_path = self.data_dir / "locator_hints.json"
         if persist:
             self._identity, device_id = resolve_persisted_identity(
                 self.data_dir / "identity.json",
@@ -148,7 +152,9 @@ class DeviceAgent:
         self._reachable: list[DeviceAgent] = []
         # In-process meet sessions: proved until disconnect.
         self._proved_agents: set[int] = set()
-        self._peer_urls: dict[UUID, str] = {}
+        self._peer_urls: dict[UUID, str] = (
+            load_locator_hints(self._locator_hints_path) if persist else {}
+        )
         self._pair_candidates: dict[str, dict[str, Any]] = {}
         self._seen_event_ids: set[UUID] = set()
         # Events whose author is not yet in Catalog; flushed on DEVICE_PAIRED / pair.
@@ -198,6 +204,8 @@ class DeviceAgent:
         self._last_discovery_at: datetime | None = None
         if persist:
             self._replay_event_log()
+            # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
+            self._prune_stale_locator_hints()
         self._start_discovery()
 
     def seed_default_intents_if_empty(self) -> bool:
@@ -1058,9 +1066,25 @@ class DeviceAgent:
 
     def remember_peer_url(self, peer_id: UUID, url: str) -> None:
         self._peer_urls[peer_id] = url
+        self._persist_locator_hints()
 
     def peer_urls(self) -> dict[UUID, str]:
         return dict(self._peer_urls)
+
+    def _persist_locator_hints(self) -> None:
+        if not self._persist:
+            return
+        save_locator_hints(self._locator_hints_path, self._peer_urls)
+
+    def _prune_stale_locator_hints(self) -> None:
+        """Keep only hints for currently trusted Peers; rewrite sidecar if pruned."""
+        trusted = {peer.id for peer in self.peers()}
+        stale = [peer_id for peer_id in self._peer_urls if peer_id not in trusted]
+        if not stale:
+            return
+        for peer_id in stale:
+            self._peer_urls.pop(peer_id, None)
+        self._persist_locator_hints()
 
     def pair_candidates(self) -> list[dict[str, Any]]:
         """Discovered advertisements whose public keys are not yet trusted."""
@@ -1738,7 +1762,9 @@ class DeviceAgent:
         """Drop trust, Locator hints, and buffered events for a Peer."""
         self._unpaired_device_ids.add(device_id)
         self.catalog.remove_device(device_id)
-        self._peer_urls.pop(device_id, None)
+        if device_id in self._peer_urls:
+            self._peer_urls.pop(device_id, None)
+            self._persist_locator_hints()
         for event_id, event in list(self._unknown_author_buffer.items()):
             if event.device_id == device_id:
                 self._unknown_author_buffer.pop(event_id, None)
@@ -1785,7 +1811,7 @@ class DeviceAgent:
             )
             peer = self.catalog.devices[peer.id]
         if url := payload.get("url"):
-            self._peer_urls[peer.id] = url
+            self.remember_peer_url(peer.id, url)
         return peer
 
     def _trusts_public_key(self, public_key_pem: str) -> bool:
