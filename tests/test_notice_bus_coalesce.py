@@ -1,0 +1,240 @@
+"""Issue 01 (ui-view-notices): Notice bus + coalesce on Catalog/Cache changes."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from tunebag.agent import DeviceAgent
+from tunebag.discovery import FakeLanDiscovery
+from tunebag.domain import Platform, Stars
+from tunebag.player import NullPlayer
+from tunebag.reject import UNDO_SECONDS
+from tunebag.source import FakeSource
+from tunebag.ui_notices import UIViewNotice, UIViewSection
+
+
+class FakeClock:
+    def __init__(self, start: datetime | None = None) -> None:
+        self._now = start or datetime(2024, 6, 1, 12, 0, 0)
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += timedelta(seconds=seconds)
+
+
+def _agent(
+    tmp_path: Path,
+    *,
+    name: str = "laptop",
+    clock: FakeClock | None = None,
+    discovery: FakeLanDiscovery | None = None,
+    base_url: str | None = None,
+) -> tuple[DeviceAgent, FakeSource]:
+    source = FakeSource()
+    kwargs: dict = {
+        "priority": 1,
+        "source": source,
+        "data_dir": tmp_path / name,
+        "player": NullPlayer(),
+    }
+    if clock is not None:
+        kwargs["clock"] = clock
+    if discovery is not None:
+        kwargs["discovery"] = discovery
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    agent = DeviceAgent(name, **kwargs)
+    return agent, source
+
+
+def _add_mix(
+    agent: DeviceAgent,
+    source: FakeSource,
+    *,
+    title: str = "Set A",
+    platform_id: str = "a",
+    duration_seconds: int = 3600,
+) -> object:
+    url = f"https://example.com/{platform_id}"
+    source.bytes_by_url[url] = f"audio:{platform_id}".encode()
+    return agent.add_mix(
+        title=title,
+        url=url,
+        duration_seconds=duration_seconds,
+        platform=Platform.SOUNDCLOUD,
+        platform_id=platform_id,
+        artist_name="DJ Example",
+    )
+
+
+def _sections(agent: DeviceAgent) -> list[UIViewSection]:
+    return [n.section for n in agent.drain_view_notices()]
+
+
+def test_tag_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None:
+    """Tagging a Mix notifies mixes + play_history once (not per Event)."""
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source)
+    agent.drain_view_notices()
+
+    agent.tag_mix(mix.id, ["deep"])
+
+    assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+
+
+def test_rate_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None:
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source)
+    agent.drain_view_notices()
+
+    agent.rate_mix(mix.id, Stars.FIVE)
+
+    assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+
+
+def test_add_mix_emits_single_mixes_notice(tmp_path: Path) -> None:
+    """Artist + Mix Events in one add coalesce to one mixes notice."""
+    agent, source = _agent(tmp_path)
+    agent.drain_view_notices()
+
+    _add_mix(agent, source)
+
+    assert _sections(agent) == [UIViewSection.MIXES]
+
+
+def test_reject_commit_emits_mixes_and_play_history(tmp_path: Path) -> None:
+    clock = FakeClock()
+    agent, source = _agent(tmp_path, clock=clock)
+    mix = _add_mix(agent, source)
+    agent.drain_view_notices()
+
+    agent.reject_mix(mix.id)
+    assert _sections(agent) == []
+
+    clock.advance(UNDO_SECONDS + 1)
+    agent.commit_pending_rejects()
+
+    sections = set(_sections(agent))
+    assert UIViewSection.MIXES in sections
+    assert UIViewSection.PLAY_HISTORY in sections
+
+
+def test_playhead_burst_coalesces_mixes_and_play_history(tmp_path: Path) -> None:
+    """Playhead + Last heard in one report emit each section at most once."""
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source, duration_seconds=1000)
+    agent.rate_mix(mix.id, Stars.FIVE)
+    intent = agent.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(agent.device_id, 1000)],
+    )
+    agent.fill_caches()
+    agent.play(intent.id, mix.id)
+    agent.drain_view_notices()
+
+    agent.report_playhead(120)
+
+    assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+
+
+def test_create_intent_emits_single_coalesced_intents_notice(tmp_path: Path) -> None:
+    """Upsert + Sequence + Assignments collapse to one intents notice."""
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source)
+    agent.rate_mix(mix.id, Stars.FIVE)
+    agent.drain_view_notices()
+
+    agent.create_intent(
+        "Deep",
+        seed=1,
+        device_hours=[(agent.device_id, 3600)],
+    )
+
+    assert _sections(agent) == [UIViewSection.INTENTS]
+
+
+def test_cache_file_add_and_remove_emit_cache(tmp_path: Path) -> None:
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source)
+    agent.rate_mix(mix.id, Stars.FIVE)
+    agent.create_intent(
+        "Deep",
+        seed=1,
+        device_hours=[(agent.device_id, 3600)],
+    )
+    agent.drain_view_notices()
+
+    agent.fill_caches()
+    assert UIViewSection.CACHE in set(_sections(agent))
+
+    agent.drain_view_notices()
+    agent.remove_local_file(mix.id)
+    assert _sections(agent) == [UIViewSection.CACHE]
+
+
+def test_pair_and_unpair_emit_peers(tmp_path: Path) -> None:
+    laptop, _ = _agent(tmp_path, name="laptop")
+    phone, _ = _agent(tmp_path, name="phone")
+    laptop.connect(phone)
+    laptop.drain_view_notices()
+    phone.drain_view_notices()
+
+    phone.pair(laptop.pairing_payload())
+
+    assert UIViewSection.PEERS in set(_sections(phone))
+    assert UIViewSection.PEERS in set(_sections(laptop))
+
+    phone.drain_view_notices()
+    peer_id = laptop.device_id
+    phone.unpair(peer_id)
+    assert _sections(phone) == [UIViewSection.PEERS]
+
+
+def test_pair_candidate_discovery_emits_peers(tmp_path: Path) -> None:
+    discovery = FakeLanDiscovery()
+    phone, _ = _agent(
+        tmp_path,
+        name="phone",
+        discovery=discovery,
+        base_url="inproc://phone",
+    )
+    _agent(
+        tmp_path,
+        name="stranger",
+        discovery=discovery,
+        base_url="inproc://stranger",
+    )
+    phone.drain_view_notices()
+
+    phone.refresh_discovery()
+
+    assert _sections(phone) == [UIViewSection.PEERS]
+    assert len(phone.pair_candidates()) == 1
+
+
+def test_two_subscribers_observe_same_coalesced_notices(tmp_path: Path) -> None:
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source)
+    agent.drain_view_notices()
+
+    seen_a: list[UIViewNotice] = []
+    seen_b: list[UIViewNotice] = []
+    unsub_a = agent.subscribe_view_notices(seen_a.append)
+    unsub_b = agent.subscribe_view_notices(seen_b.append)
+
+    agent.tag_mix(mix.id, ["deep"])
+
+    assert [n.section for n in seen_a] == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
+    assert [n.section for n in seen_b] == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
+    unsub_a()
+    unsub_b()

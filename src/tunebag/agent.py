@@ -14,7 +14,8 @@ import secrets
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,7 @@ from tunebag.source import (
     Source,
     default_source,
 )
+from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 
 _HTTP_TIMEOUT = 5.0
 PLAYED_THRESHOLD = 0.75
@@ -98,6 +100,31 @@ DeviceHoursSpec = tuple[UUID, int] | tuple[UUID, int, datetime | None]
 MergeKey = tuple[str, ...]
 # Author time first (causal on one Device); (device_id, seq, id) breaks ties.
 MergeWin = tuple[datetime, UUID, int, UUID]
+
+# Catalog Event → UI section notices (Device-local; see ui-view-notices spec).
+_MIXES = (UIViewSection.MIXES,)
+_MIXES_AND_HISTORY = (UIViewSection.MIXES, UIViewSection.PLAY_HISTORY)
+_INTENTS = (UIViewSection.INTENTS,)
+_PEERS = (UIViewSection.PEERS,)
+_VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
+    EventType.ARTIST_ADDED: _MIXES,
+    EventType.ARTIST_DELETED: _MIXES,
+    EventType.MIX_ADDED: _MIXES,
+    EventType.MIX_TAGGED: _MIXES_AND_HISTORY,
+    EventType.MIX_RATED: _MIXES_AND_HISTORY,
+    EventType.MIX_REJECTED: _MIXES_AND_HISTORY,
+    EventType.MIX_UNREJECTED: _MIXES_AND_HISTORY,
+    EventType.PLAYHEAD: _MIXES_AND_HISTORY,
+    EventType.PLAYED: _MIXES_AND_HISTORY,
+    EventType.LAST_HEARD: _MIXES_AND_HISTORY,
+    EventType.INTENT_UPSERTED: _INTENTS,
+    EventType.INTENT_DELETED: _INTENTS,
+    EventType.SEQUENCE_BUILT: _INTENTS,
+    EventType.ASSIGNMENT_SET: _INTENTS,
+    EventType.ASSIGNMENT_CLEARED: _INTENTS,
+    EventType.DEVICE_PAIRED: _PEERS,
+    EventType.DEVICE_UNPAIRED: _PEERS,
+}
 
 
 class DeviceAgent:
@@ -149,6 +176,7 @@ class DeviceAgent:
             path=(self.data_dir / "events.jsonl") if persist else None
         )
         self._activity = ActivityLog()
+        self._view_notices = ViewNoticeBus()
         self._reachable: list[DeviceAgent] = []
         # In-process meet sessions: proved until disconnect.
         self._proved_agents: set[int] = set()
@@ -230,6 +258,32 @@ class DeviceAgent:
 
     def activity(self) -> list[ActivityEntry]:
         return self._activity.entries()
+
+    def drain_view_notices(self) -> list[UIViewNotice]:
+        """Return coalesced UI section notices since the last drain (tests + SSE)."""
+        return self._view_notices.drain()
+
+    def subscribe_view_notices(
+        self, callback: Callable[[UIViewNotice], None]
+    ) -> Callable[[], None]:
+        """Register for live notice delivery; return an unsubscribe callable."""
+        return self._view_notices.subscribe(callback)
+
+    @contextmanager
+    def _view_notice_batch(self) -> Iterator[None]:
+        self._view_notices.begin_batch()
+        try:
+            yield
+        finally:
+            self._view_notices.end_batch()
+
+    def _mark_view_sections(self, *sections: UIViewSection) -> None:
+        self._view_notices.mark(*sections)
+
+    def _mark_view_sections_for_event(self, event_type: EventType) -> None:
+        sections = _VIEW_SECTIONS_FOR_EVENT.get(event_type)
+        if sections:
+            self._mark_view_sections(*sections)
 
     @property
     def device_id(self) -> UUID:
@@ -457,11 +511,14 @@ class DeviceAgent:
 
     def remove_local_file(self, mix_id: UUID) -> None:
         """Drop local audio for a mix so it can be fetched again."""
+        had = mix_id in self._local_files or self._blob_path(mix_id).is_file()
         self._local_files.pop(mix_id, None)
         blob = self._blob_path(mix_id)
         if blob.exists():
             blob.unlink()
         self._refresh_intent_folders()
+        if had:
+            self._mark_view_sections(UIViewSection.CACHE)
 
     def intent_folder(self, intent_id: UUID) -> Path:
         """Directory of this device's assigned files for an intent."""
@@ -610,22 +667,26 @@ class DeviceAgent:
         if self._playing and self._play_anchor_at is not None:
             self._play_anchor_position = pos
             self._play_anchor_at = self._clock()
-        self._append_and_apply(
-            EventType.PLAYHEAD,
-            {
-                "mix_id": str(mix_id),
-                "position_seconds": pos,
-            },
-        )
-        threshold = _last_heard_threshold(mix.duration_seconds)
-        if previous < threshold <= pos:
+        with self._view_notice_batch():
             self._append_and_apply(
-                EventType.LAST_HEARD,
-                {"mix_id": str(mix_id)},
+                EventType.PLAYHEAD,
+                {
+                    "mix_id": str(mix_id),
+                    "position_seconds": pos,
+                },
             )
-        mix = self.catalog.mixes[mix_id]
-        if not mix.played and mix.duration_seconds > 0:
-            if pos >= PLAYED_THRESHOLD * mix.duration_seconds:
+            threshold = _last_heard_threshold(mix.duration_seconds)
+            if previous < threshold <= pos:
+                self._append_and_apply(
+                    EventType.LAST_HEARD,
+                    {"mix_id": str(mix_id)},
+                )
+            mix = self.catalog.mixes[mix_id]
+            if (
+                not mix.played
+                and mix.duration_seconds > 0
+                and pos >= PLAYED_THRESHOLD * mix.duration_seconds
+            ):
                 self.mark_played(mix_id)
         return self.catalog.playheads[mix_id]
 
@@ -692,10 +753,11 @@ class DeviceAgent:
         if target not in self.catalog.mixes:
             raise KeyError(f"unknown mix {target}")
         if not self.catalog.mixes[target].played:
-            self._append_and_apply(EventType.PLAYED, {"mix_id": str(target)})
-            self._rebuild_all_sequences()
-            self.fill_caches()
-            self._delete_played_file_if_replaced(target)
+            with self._view_notice_batch():
+                self._append_and_apply(EventType.PLAYED, {"mix_id": str(target)})
+                self._rebuild_all_sequences()
+                self.fill_caches()
+                self._delete_played_file_if_replaced(target)
         if self._current_mix_id == target:
             self._player.stop()
             self._playing = False
@@ -858,41 +920,42 @@ class DeviceAgent:
             self.note(f"fill caches start (fill-now intent={override_intent_id})")
         else:
             self.note("fill caches start")
-        for intent in self.intents():
-            assignment = self.assignment(intent.id)
-            if assignment is None:
-                if intent.device_hours:
-                    other = ", ".join(
-                        str(dh.device_id) for dh in intent.device_hours
-                    )
-                    self.note(
-                        f"fill skip: {intent.name} has hours for {other} "
-                        f"(not this device {self.device.id})",
-                        level=logging.WARNING,
-                    )
-                continue
-            for mix_id in assignment.mix_ids:
-                try:
-                    self._ensure_local_file(
-                        intent.id,
-                        mix_id,
-                        override_intent_id=override_intent_id,
-                    )
-                except Exception as exc:
-                    # yt-dlp and platform errors vary; one bad URL must not abort the fill.
-                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                        raise
-                    mix = self.catalog.mixes.get(mix_id)
-                    label = mix.title if mix is not None else str(mix_id)
-                    self.note(
-                        f"download failed: {label}: {exc}",
-                        level=logging.WARNING,
-                    )
+        with self._view_notice_batch():
+            for intent in self.intents():
+                assignment = self.assignment(intent.id)
+                if assignment is None:
+                    if intent.device_hours:
+                        other = ", ".join(
+                            str(dh.device_id) for dh in intent.device_hours
+                        )
+                        self.note(
+                            f"fill skip: {intent.name} has hours for {other} "
+                            f"(not this device {self.device.id})",
+                            level=logging.WARNING,
+                        )
                     continue
-        # Drop leftovers from prior assignments / deleted intents before
-        # rewriting intent folders.
-        self._prune_unassigned_files()
-        self._refresh_intent_folders()
+                for mix_id in assignment.mix_ids:
+                    try:
+                        self._ensure_local_file(
+                            intent.id,
+                            mix_id,
+                            override_intent_id=override_intent_id,
+                        )
+                    except Exception as exc:
+                        # yt-dlp and platform errors vary; one bad URL must not abort the fill.
+                        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                            raise
+                        mix = self.catalog.mixes.get(mix_id)
+                        label = mix.title if mix is not None else str(mix_id)
+                        self.note(
+                            f"download failed: {label}: {exc}",
+                            level=logging.WARNING,
+                        )
+                        continue
+            # Drop leftovers from prior assignments / deleted intents before
+            # rewriting intent folders.
+            self._prune_unassigned_files()
+            self._refresh_intent_folders()
         cached = len(self.files())
         self.note(f"fill caches end · {cached} cached")
         return cached
@@ -912,54 +975,55 @@ class DeviceAgent:
         """List own uploads for each artist URL and write catalog rows only."""
         self.note(f"add artists start · {len(urls)} URL(s)")
         added: list[Mix] = []
-        for url in urls:
-            self.note(f"fetch artist list start: {url}")
-            try:
-                listing = self.source.list_uploads(url)
-            except Exception as exc:
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        with self._view_notice_batch():
+            for url in urls:
+                self.note(f"fetch artist list start: {url}")
+                try:
+                    listing = self.source.list_uploads(url)
+                except Exception as exc:
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    self.note(
+                        f"fetch artist list failed: {url}: {exc}",
+                        level=logging.WARNING,
+                    )
                     raise
+                artist = Artist(
+                    platform=listing.platform,
+                    platform_id=listing.platform_id,
+                    name=listing.name,
+                    url=listing.url,
+                )
+                self._append_and_apply(
+                    EventType.ARTIST_ADDED,
+                    {
+                        "id": str(artist.id),
+                        "platform": artist.platform.value,
+                        "platform_id": artist.platform_id,
+                        "name": artist.name,
+                        "url": artist.url,
+                    },
+                )
+                kept = 0
+                for upload in listing.uploads:
+                    if upload.duration_seconds < min_duration_seconds:
+                        continue
+                    mix = Mix(
+                        artist_id=artist.id,
+                        platform=upload.platform,
+                        platform_id=upload.platform_id,
+                        title=upload.title,
+                        url=upload.url,
+                        duration_seconds=upload.duration_seconds,
+                        size_bytes=upload.size_bytes,
+                    )
+                    self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
+                    added.append(self.catalog.mixes[mix.id])
+                    kept += 1
                 self.note(
-                    f"fetch artist list failed: {url}: {exc}",
-                    level=logging.WARNING,
+                    f"fetch artist list end: {listing.name} · "
+                    f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
                 )
-                raise
-            artist = Artist(
-                platform=listing.platform,
-                platform_id=listing.platform_id,
-                name=listing.name,
-                url=listing.url,
-            )
-            self._append_and_apply(
-                EventType.ARTIST_ADDED,
-                {
-                    "id": str(artist.id),
-                    "platform": artist.platform.value,
-                    "platform_id": artist.platform_id,
-                    "name": artist.name,
-                    "url": artist.url,
-                },
-            )
-            kept = 0
-            for upload in listing.uploads:
-                if upload.duration_seconds < min_duration_seconds:
-                    continue
-                mix = Mix(
-                    artist_id=artist.id,
-                    platform=upload.platform,
-                    platform_id=upload.platform_id,
-                    title=upload.title,
-                    url=upload.url,
-                    duration_seconds=upload.duration_seconds,
-                    size_bytes=upload.size_bytes,
-                )
-                self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
-                added.append(self.catalog.mixes[mix.id])
-                kept += 1
-            self.note(
-                f"fetch artist list end: {listing.name} · "
-                f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
-            )
         self.note(f"add artists end · {len(added)} mix(es)")
         return added
 
@@ -983,42 +1047,43 @@ class DeviceAgent:
         self.note(f"refresh artists start · {len(artists)} artist(s)")
         known = self._known_platform_keys()
         added: list[Mix] = []
-        for artist in artists:
-            self.note(f"fetch artist list start: {artist.url}")
-            try:
-                listing = self.source.list_uploads(artist.url)
-            except Exception as exc:
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        with self._view_notice_batch():
+            for artist in artists:
+                self.note(f"fetch artist list start: {artist.url}")
+                try:
+                    listing = self.source.list_uploads(artist.url)
+                except Exception as exc:
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    self.note(
+                        f"fetch artist list failed: {artist.url}: {exc}",
+                        level=logging.WARNING,
+                    )
                     raise
+                kept = 0
+                for upload in listing.uploads:
+                    if upload.duration_seconds < min_duration_seconds:
+                        continue
+                    key = (upload.platform, upload.platform_id)
+                    if key in known:
+                        continue
+                    mix = Mix(
+                        artist_id=artist.id,
+                        platform=upload.platform,
+                        platform_id=upload.platform_id,
+                        title=upload.title,
+                        url=upload.url,
+                        duration_seconds=upload.duration_seconds,
+                        size_bytes=upload.size_bytes,
+                    )
+                    self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
+                    known.add(key)
+                    added.append(self.catalog.mixes[mix.id])
+                    kept += 1
                 self.note(
-                    f"fetch artist list failed: {artist.url}: {exc}",
-                    level=logging.WARNING,
+                    f"fetch artist list end: {artist.name} · "
+                    f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
                 )
-                raise
-            kept = 0
-            for upload in listing.uploads:
-                if upload.duration_seconds < min_duration_seconds:
-                    continue
-                key = (upload.platform, upload.platform_id)
-                if key in known:
-                    continue
-                mix = Mix(
-                    artist_id=artist.id,
-                    platform=upload.platform,
-                    platform_id=upload.platform_id,
-                    title=upload.title,
-                    url=upload.url,
-                    duration_seconds=upload.duration_seconds,
-                    size_bytes=upload.size_bytes,
-                )
-                self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
-                known.add(key)
-                added.append(self.catalog.mixes[mix.id])
-                kept += 1
-            self.note(
-                f"fetch artist list end: {artist.name} · "
-                f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
-            )
         self.note(f"refresh artists end · {len(added)} mix(es)")
         return added
 
@@ -1134,6 +1199,7 @@ class DeviceAgent:
         return False
 
     def _process_browse(self) -> None:
+        before = set(self._pair_candidates)
         for ad in self._discovery.browse():
             if self.base_url and ad.locator.rstrip("/") == self.base_url.rstrip("/"):
                 continue
@@ -1178,6 +1244,9 @@ class DeviceAgent:
                 "device_id": payload.get("device_id"),
                 "priority": payload.get("priority"),
             }
+        after = set(self._pair_candidates)
+        if before != after:
+            self._mark_view_sections(UIViewSection.PEERS)
 
     def _meet_discovered_peer(
         self, peer_id: UUID, locator: str, public_key_pem: str
@@ -1234,19 +1303,21 @@ class DeviceAgent:
     def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
         if mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
-        self._append_and_apply(
-            EventType.MIX_TAGGED,
-            {"mix_id": str(mix_id), "tags": list(tags)},
-        )
+        with self._view_notice_batch():
+            self._append_and_apply(
+                EventType.MIX_TAGGED,
+                {"mix_id": str(mix_id), "tags": list(tags)},
+            )
         return self.catalog.mixes[mix_id]
 
     def rate_mix(self, mix_id: UUID, stars: Stars) -> Mix:
         if mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
-        self._append_and_apply(
-            EventType.MIX_RATED,
-            {"mix_id": str(mix_id), "stars": int(stars)},
-        )
+        with self._view_notice_batch():
+            self._append_and_apply(
+                EventType.MIX_RATED,
+                {"mix_id": str(mix_id), "stars": int(stars)},
+            )
         return self.catalog.mixes[mix_id]
 
     def reject_mix(self, mix_id: UUID) -> Mix:
@@ -1270,11 +1341,12 @@ class DeviceAgent:
             raise KeyError(f"unknown mix {mix_id}")
         if not self.catalog.mixes[mix_id].rejected:
             return self.catalog.mixes[mix_id]
-        self._append_and_apply(
-            EventType.MIX_UNREJECTED,
-            {"mix_id": str(mix_id)},
-        )
-        self._rebuild_all_sequences()
+        with self._view_notice_batch():
+            self._append_and_apply(
+                EventType.MIX_UNREJECTED,
+                {"mix_id": str(mix_id)},
+            )
+            self._rebuild_all_sequences()
         return self.catalog.mixes[mix_id]
 
     def pending_rejects(self) -> list[RejectPending]:
@@ -1284,19 +1356,20 @@ class DeviceAgent:
     def commit_pending_rejects(self) -> list[UUID]:
         """Commit rejects whose undo windows have ended; delete + rebuild."""
         committed: list[UUID] = []
-        for pending in self._rejects.ready_to_commit(now=self._clock()):
-            if pending.mix_id not in self.catalog.mixes:
-                continue
-            if self.catalog.mixes[pending.mix_id].rejected:
+        with self._view_notice_batch():
+            for pending in self._rejects.ready_to_commit(now=self._clock()):
+                if pending.mix_id not in self.catalog.mixes:
+                    continue
+                if self.catalog.mixes[pending.mix_id].rejected:
+                    committed.append(pending.mix_id)
+                    continue
+                self._append_and_apply(
+                    EventType.MIX_REJECTED,
+                    {"mix_id": str(pending.mix_id)},
+                )
+                self._rebuild_all_sequences()
+                self.fill_caches()
                 committed.append(pending.mix_id)
-                continue
-            self._append_and_apply(
-                EventType.MIX_REJECTED,
-                {"mix_id": str(pending.mix_id)},
-            )
-            self._rebuild_all_sequences()
-            self.fill_caches()
-            committed.append(pending.mix_id)
         return committed
 
     def create_intent(
@@ -1485,17 +1558,18 @@ class DeviceAgent:
             duration_seconds=duration_seconds,
             size_bytes=size_bytes,
         )
-        self._append_and_apply(
-            EventType.ARTIST_ADDED,
-            {
-                "id": str(artist.id),
-                "platform": platform.value,
-                "platform_id": artist.platform_id,
-                "name": artist.name,
-                "url": artist.url,
-            },
-        )
-        self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
+        with self._view_notice_batch():
+            self._append_and_apply(
+                EventType.ARTIST_ADDED,
+                {
+                    "id": str(artist.id),
+                    "platform": platform.value,
+                    "platform_id": artist.platform_id,
+                    "name": artist.name,
+                    "url": artist.url,
+                },
+            )
+            self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
         return self.catalog.mixes[mix.id]
 
     def export_events(self) -> list[Event]:
@@ -1674,6 +1748,7 @@ class DeviceAgent:
         blob = self._blob_path(mix_id)
         blob.parent.mkdir(parents=True, exist_ok=True)
         blob.write_bytes(data)
+        self._mark_view_sections(UIViewSection.CACHE)
 
     def _local_file_size(self, mix_id: UUID) -> int | None:
         blob = self._blob_path(mix_id)
@@ -1896,6 +1971,7 @@ class DeviceAgent:
             self._log.append(event)
             self._seen_event_ids.add(event.id)
             self._apply(event)
+        self._mark_view_sections_for_event(event_type)
         self._schedule_auto_sync()
         return event
 
@@ -2033,14 +2109,16 @@ class DeviceAgent:
             self._commit_foreign_event(event, author.public_key_pem)
 
     def _upsert_intent_and_rebuild(self, intent: Intent) -> None:
-        self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))
-        self._rebuild_sequence_for_intent(intent)
-        self._prune_unassigned_files()
+        with self._view_notice_batch():
+            self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))
+            self._rebuild_sequence_for_intent(intent)
+            self._prune_unassigned_files()
 
     def _rebuild_all_sequences(self) -> None:
-        for intent in self.intents():
-            self._rebuild_sequence_for_intent(intent)
-        self._prune_unassigned_files()
+        with self._view_notice_batch():
+            for intent in self.intents():
+                self._rebuild_sequence_for_intent(intent)
+            self._prune_unassigned_files()
 
     def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
         active_devices = {dh.device_id for dh in intent.device_hours}
