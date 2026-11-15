@@ -184,6 +184,8 @@ def test_pair_and_unpair_emit_peers(tmp_path: Path) -> None:
     phone.drain_view_notices()
 
     phone.pair(laptop.pairing_payload())
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
 
     assert UIViewSection.PEERS in set(_sections(phone))
     assert UIViewSection.PEERS in set(_sections(laptop))
@@ -192,6 +194,8 @@ def test_pair_and_unpair_emit_peers(tmp_path: Path) -> None:
     peer_id = laptop.device_id
     phone.unpair(peer_id)
     assert _sections(phone) == [UIViewSection.PEERS]
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
 
 
 def test_pair_candidate_discovery_emits_peers(tmp_path: Path) -> None:

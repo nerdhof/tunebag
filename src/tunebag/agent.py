@@ -177,6 +177,9 @@ class DeviceAgent:
         )
         self._activity = ActivityLog()
         self._view_notices = ViewNoticeBus()
+        # When set, peer Event applies accumulate sections here and flush once at
+        # the end of sync/ingest_events (avoids holding a bus batch across threads).
+        self._ingest_notice_sink: set[UIViewSection] | None = None
         self._reachable: list[DeviceAgent] = []
         # In-process meet sessions: proved until disconnect.
         self._proved_agents: set[int] = set()
@@ -277,12 +280,35 @@ class DeviceAgent:
         finally:
             self._view_notices.end_batch()
 
+    @contextmanager
+    def _ingest_notice_pass(self) -> Iterator[None]:
+        """Coalesce UI notices for one sync/ingest pass without a shared bus batch."""
+        owns_sink = self._ingest_notice_sink is None
+        if owns_sink:
+            self._ingest_notice_sink = set()
+        try:
+            yield
+            if owns_sink and self._ingest_notice_sink:
+                self._mark_view_sections(*self._ingest_notice_sink)
+        finally:
+            if owns_sink:
+                self._ingest_notice_sink = None
+
     def _mark_view_sections(self, *sections: UIViewSection) -> None:
         self._view_notices.mark(*sections)
 
     def _mark_view_sections_for_event(self, event_type: EventType) -> None:
         sections = _VIEW_SECTIONS_FOR_EVENT.get(event_type)
         if sections:
+            self._mark_view_sections(*sections)
+
+    def _record_view_sections_for_event(self, event_type: EventType) -> None:
+        sections = _VIEW_SECTIONS_FOR_EVENT.get(event_type)
+        if not sections:
+            return
+        if self._ingest_notice_sink is not None:
+            self._ingest_notice_sink.update(sections)
+        else:
             self._mark_view_sections(*sections)
 
     @property
@@ -1297,8 +1323,9 @@ class DeviceAgent:
         return agent if isinstance(agent, DeviceAgent) else None
 
     def ingest_events(self, events: list[Event]) -> None:
-        for event in events:
-            self._ingest(event)
+        with self._ingest_notice_pass():
+            for event in events:
+                self._ingest(event)
 
     def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
         if mix_id not in self.catalog.mixes:
@@ -1579,34 +1606,35 @@ class DeviceAgent:
         self.commit_pending_rejects()
         self.apply_expired_hours()
         self.note("sync start")
-        for agent in list(self._reachable):
-            if not self._trusts_public_key(agent.public_key_pem):
-                continue
-            if not self._ensure_agent_proved(agent):
-                continue
-            before = len(self._seen_event_ids)
-            for event in agent.export_events():
-                self._ingest(event)
-            ingested = len(self._seen_event_ids) - before
-            self.note(f"sync peer {agent.name}: {ingested} new event(s)")
-        trusted_ids = {peer.id for peer in self.peers()}
-        for peer_id, url in list(self._peer_urls.items()):
-            if peer_id not in trusted_ids:
-                continue
-            if str(url).startswith("inproc://"):
-                # In-process Locators sync via _reachable, not HTTP.
-                continue
-            peer = self.catalog.devices.get(peer_id)
-            if peer is None:
-                continue
-            # HTTP Locators have no durable socket: challenge on every pull.
-            if not self._ensure_http_peer_proved(url, peer.public_key_pem):
-                continue
-            label = peer.name
-            before = len(self._seen_event_ids)
-            self.ingest_events(self._http_fetch_events(url))
-            ingested = len(self._seen_event_ids) - before
-            self.note(f"sync peer {label} ({url}): {ingested} new event(s)")
+        with self._ingest_notice_pass():
+            for agent in list(self._reachable):
+                if not self._trusts_public_key(agent.public_key_pem):
+                    continue
+                if not self._ensure_agent_proved(agent):
+                    continue
+                before = len(self._seen_event_ids)
+                for event in agent.export_events():
+                    self._ingest(event)
+                ingested = len(self._seen_event_ids) - before
+                self.note(f"sync peer {agent.name}: {ingested} new event(s)")
+            trusted_ids = {peer.id for peer in self.peers()}
+            for peer_id, url in list(self._peer_urls.items()):
+                if peer_id not in trusted_ids:
+                    continue
+                if str(url).startswith("inproc://"):
+                    # In-process Locators sync via _reachable, not HTTP.
+                    continue
+                peer = self.catalog.devices.get(peer_id)
+                if peer is None:
+                    continue
+                # HTTP Locators have no durable socket: challenge on every pull.
+                if not self._ensure_http_peer_proved(url, peer.public_key_pem):
+                    continue
+                label = peer.name
+                before = len(self._seen_event_ids)
+                self.ingest_events(self._http_fetch_events(url))
+                ingested = len(self._seen_event_ids) - before
+                self.note(f"sync peer {label} ({url}): {ingested} new event(s)")
         # Peer may have applied our expiry; drop exclusive locals after ingest.
         self.apply_expired_hours()
         self._prune_unassigned_files()
@@ -2083,6 +2111,7 @@ class DeviceAgent:
         self._seen_event_ids.add(event.id)
         self._log.append(event)
         self._apply(event)
+        self._record_view_sections_for_event(event.type)
 
     def _flush_buffered_events_for(self, author_id: UUID) -> None:
         """Verify and apply buffered events for a newly known author.
