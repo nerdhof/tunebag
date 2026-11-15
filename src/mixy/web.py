@@ -34,6 +34,10 @@ class AcceptPairBody(BaseModel):
     payload: dict[str, Any]
 
 
+class ProveBody(BaseModel):
+    nonce: str = Field(min_length=1)
+
+
 class AddArtistsBody(BaseModel):
     urls: list[str]
     min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS
@@ -199,6 +203,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     @app.get("/api/events")
     def events() -> dict:
         return {"events": [event.model_dump(mode="json") for event in agent.export_events()]}
+
+    @app.post("/api/prove")
+    def prove(body: ProveBody) -> dict:
+        """Challenge–response: sign a meet nonce with this Device's private key."""
+        return {"signature": agent.prove_possession(body.nonce)}
 
     @app.get("/api/activity")
     def activity() -> dict:

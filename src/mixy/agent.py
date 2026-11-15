@@ -10,6 +10,7 @@ import base64
 import json
 import logging
 import random
+import secrets
 import shutil
 import threading
 import time
@@ -120,6 +121,8 @@ class DeviceAgent:
         )
         self._activity = ActivityLog()
         self._reachable: list[DeviceAgent] = []
+        # In-process meet sessions: proved until disconnect.
+        self._proved_agents: set[int] = set()
         self._peer_urls: dict[UUID, str] = {}
         self._seen_event_ids: set[UUID] = set()
         self._local_files: dict[UUID, bytes] = {}
@@ -217,6 +220,14 @@ class DeviceAgent:
             self._reachable.remove(other)
         if self in other._reachable:
             other._reachable.remove(self)
+        # Proof lasts only for the live meet; reconnect must challenge again.
+        self._proved_agents.discard(id(other))
+        other._proved_agents.discard(id(self))
+
+    def prove_possession(self, nonce: str) -> str:
+        """Sign a meet challenge nonce with this Device's private key."""
+        signature = self._private_key.sign(nonce.encode("utf-8"))
+        return base64.b64encode(signature).decode("ascii")
 
     def peers(self) -> list[Device]:
         return [d for d in self.catalog.devices.values() if d.id != self.device.id]
@@ -1241,6 +1252,8 @@ class DeviceAgent:
         for agent in list(self._reachable):
             if not self._trusts_public_key(agent.public_key_pem):
                 continue
+            if not self._ensure_agent_proved(agent):
+                continue
             before = len(self._seen_event_ids)
             for event in agent.export_events():
                 self._ingest(event)
@@ -1251,7 +1264,12 @@ class DeviceAgent:
             if peer_id not in trusted_ids:
                 continue
             peer = self.catalog.devices.get(peer_id)
-            label = peer.name if peer is not None else str(peer_id)
+            if peer is None:
+                continue
+            # HTTP Locators have no durable socket: challenge on every pull.
+            if not self._ensure_http_peer_proved(url, peer.public_key_pem):
+                continue
+            label = peer.name
             before = len(self._seen_event_ids)
             self.ingest_events(self._http_fetch_events(url))
             ingested = len(self._seen_event_ids) - before
@@ -1525,6 +1543,52 @@ class DeviceAgent:
     def _trusts_public_key(self, public_key_pem: str) -> bool:
         return any(d.public_key_pem == public_key_pem for d in self.peers())
 
+    def _verify_possession(self, nonce: str, signature: str, public_key_pem: str) -> bool:
+        try:
+            _load_public_key(public_key_pem).verify(
+                base64.b64decode(signature),
+                nonce.encode("utf-8"),
+            )
+        except (InvalidSignature, ValueError, TypeError):
+            return False
+        return True
+
+    def _ensure_agent_proved(self, peer: DeviceAgent) -> bool:
+        """Challenge an in-process Peer; proof lasts until disconnect."""
+        key = id(peer)
+        if key in self._proved_agents:
+            return True
+        if not self._trusts_public_key(peer.public_key_pem):
+            return False
+        nonce = secrets.token_urlsafe(32)
+        try:
+            signature = peer.prove_possession(nonce)
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(f"meet proof failed for {peer.name}: {exc}", level=logging.WARNING)
+            return False
+        if not self._verify_possession(nonce, signature, peer.public_key_pem):
+            self.note(f"meet proof failed for {peer.name}", level=logging.WARNING)
+            return False
+        self._proved_agents.add(key)
+        return True
+
+    def _ensure_http_peer_proved(self, url: str, public_key_pem: str) -> bool:
+        """Challenge an HTTP Locator before Event log sync (every pull)."""
+        nonce = secrets.token_urlsafe(32)
+        try:
+            signature = self._http_prove(url, nonce)
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(f"meet proof failed ({url}): {exc}", level=logging.WARNING)
+            return False
+        if not self._verify_possession(nonce, signature, public_key_pem):
+            self.note(f"meet proof failed ({url})", level=logging.WARNING)
+            return False
+        return True
+
     def _replay_event_log(self) -> None:
         """Rebuild Catalog from the durable Event log (cold start; no re-append)."""
         with self._event_lock:
@@ -1614,7 +1678,10 @@ class DeviceAgent:
             return False
         return self._merge_beats(key, event)
     def _schedule_auto_sync(self) -> None:
-        """Pull on this device and nudge trusted reachable peers to pull too."""
+        """Pull on this device and nudge trusted reachable peers to pull too.
+
+        Each side's ``sync`` still runs the key-proof meet gate before ingest.
+        """
         self.request_sync()
         for peer in list(self._reachable):
             if not self._trusts_public_key(peer.public_key_pem):
@@ -1957,6 +2024,18 @@ class DeviceAgent:
             response = client.get(f"{peer_url.rstrip('/')}/api/pairing")
             response.raise_for_status()
             return response.json()
+
+    def _http_prove(self, peer_url: str, nonce: str) -> str:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.post(
+                f"{peer_url.rstrip('/')}/api/prove",
+                json={"nonce": nonce},
+            )
+            response.raise_for_status()
+            signature = response.json().get("signature")
+        if not isinstance(signature, str) or not signature:
+            raise ValueError("peer prove response missing signature")
+        return signature
 
     def _http_fetch_events(self, peer_url: str) -> list[Event]:
         with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
