@@ -60,10 +60,15 @@ def _ytdlp_fetch(
         on_progress(downloaded, total_int)
 
     formats = ["bestaudio/best"]
-    # hearthis.app CDN (Cloudflare) sometimes 403s the preferred /download/ URL;
-    # retry with the /listen/ stream format id from HearThisAtIE.
+    # hearthis.app CDN (Cloudflare) often 403s /download/ (even with Referer).
+    # Prefer the /listen/ stream first. Selecting format id "mp3" is not enough:
+    # when the download file is also mp3, yt-dlp renames formats to mp3-0/mp3-1
+    # and a bare mp3 preference still picks the higher-quality /download/ URL.
     if _is_hearthis(source_url):
-        formats.append("mp3/bestaudio/best")
+        formats = [
+            "bestaudio[url*=listen]/bestaudio/best",
+            "bestaudio/best",
+        ]
 
     last_error: BaseException | None = None
     with tempfile.TemporaryDirectory() as tmp:

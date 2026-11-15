@@ -59,7 +59,18 @@ def test_hearthis_fetch_sends_permalink_referer(monkeypatch: pytest.MonkeyPatch)
     assert headers.get("Referer") == "https://hearthis.at/"
 
 
-def test_hearthis_403_retries_with_stream_format(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hearthis_prefers_listen_stream_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    data = fetch_audio_bytes("https://hearthis.at/tasmo/echochamber280/")
+
+    assert data == b"fake-audio"
+    assert _FakeYDL.download_calls == 1
+    assert _FakeYDL.instances[0].opts["format"] == "bestaudio[url*=listen]/bestaudio/best"
+    assert _FakeYDL.instances[0].opts["http_headers"]["Referer"] == "https://hearthis.at/"
+
+
+def test_hearthis_403_retries_with_download_format(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
     _FakeYDL.fail_on_call = 1
 
@@ -67,6 +78,6 @@ def test_hearthis_403_retries_with_stream_format(monkeypatch: pytest.MonkeyPatch
 
     assert data == b"fake-audio"
     assert _FakeYDL.download_calls == 2
-    assert _FakeYDL.instances[0].opts["format"] == "bestaudio/best"
-    assert _FakeYDL.instances[1].opts["format"] == "mp3/bestaudio/best"
+    assert _FakeYDL.instances[0].opts["format"] == "bestaudio[url*=listen]/bestaudio/best"
+    assert _FakeYDL.instances[1].opts["format"] == "bestaudio/best"
     assert _FakeYDL.instances[1].opts["http_headers"]["Referer"] == "https://hearthis.at/"
