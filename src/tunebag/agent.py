@@ -80,6 +80,9 @@ LAST_HEARD_FLOOR_SECONDS = 120.0
 LAST_HEARD_DURATION_FRACTION = 0.05
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
+# Well-known id + seed so independently seeded devices merge to one Explore on pair.
+EXPLORE_INTENT_ID = UUID("00000000-0000-4000-8000-000000000001")
+EXPLORE_SEED = 1
 EXPLORE_DISTRIBUTION = StarDistribution(
     five=0.1,
     four=0.1,
@@ -208,6 +211,8 @@ class DeviceAgent:
             "Explore",
             tags=[],
             distribution=EXPLORE_DISTRIBUTION,
+            seed=EXPLORE_SEED,
+            intent_id=EXPLORE_INTENT_ID,
         )
         return True
 
@@ -1278,10 +1283,12 @@ class DeviceAgent:
         distribution: StarDistribution | None = None,
         seed: int | None = None,
         device_hours: list[DeviceHoursSpec] | None = None,
+        intent_id: UUID | None = None,
     ) -> Intent:
         hours = _device_hours_from_spec(list(device_hours or []))
         self._require_known_devices([dh.device_id for dh in hours])
         intent = Intent(
+            id=intent_id if intent_id is not None else new_id(),
             name=name,
             tags=list(tags or []),
             distribution=distribution or StarDistribution(),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tunebag.agent import DeviceAgent
+from tunebag.agent import EXPLORE_INTENT_ID, EXPLORE_SEED, DeviceAgent
 from tunebag.domain import Platform
 from tunebag.source import ArtistListing, FakeSource, Upload
 
@@ -30,6 +30,8 @@ def test_first_boot_seeds_explore_intent(tmp_path: Path) -> None:
     intents = first.intents()
     assert len(intents) == 1
     explore = intents[0]
+    assert explore.id == EXPLORE_INTENT_ID
+    assert explore.seed == EXPLORE_SEED
     assert explore.name == "Explore"
     assert explore.tags == []
     assert explore.distribution.five == 0.1
@@ -40,15 +42,35 @@ def test_first_boot_seeds_explore_intent(tmp_path: Path) -> None:
     assert explore.distribution.unrated == 0.5
     assert explore.device_hours == []
 
-    explore_id = explore.id
-    first.delete_intent(explore_id)
+    first.delete_intent(EXPLORE_INTENT_ID)
     assert first.intents() == []
 
     # Restart does not recreate Explore once the Event log is non-empty.
     second = DeviceAgent("laptop", data_dir=data_dir)
     assert second.seed_default_intents_if_empty() is False
     assert second.intents() == []
-    assert explore_id not in second.catalog.intents
+    assert EXPLORE_INTENT_ID not in second.catalog.intents
+
+
+def test_paired_devices_share_one_explore_intent(tmp_path: Path) -> None:
+    laptop = DeviceAgent("laptop", data_dir=tmp_path / "laptop")
+    phone = DeviceAgent("phone", data_dir=tmp_path / "phone")
+    assert laptop.seed_default_intents_if_empty() is True
+    assert phone.seed_default_intents_if_empty() is True
+    assert laptop.intents()[0].id == EXPLORE_INTENT_ID
+    assert phone.intents()[0].id == EXPLORE_INTENT_ID
+
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+    laptop.sync()
+    phone.sync()
+
+    assert len(laptop.intents()) == 1
+    assert len(phone.intents()) == 1
+    assert laptop.intents()[0].id == EXPLORE_INTENT_ID
+    assert phone.intents()[0].id == EXPLORE_INTENT_ID
+    assert laptop.intents()[0].seed == EXPLORE_SEED
+    assert phone.intents()[0].seed == EXPLORE_SEED
 
 
 def _source_with_artist() -> FakeSource:
