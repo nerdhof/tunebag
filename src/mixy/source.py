@@ -26,6 +26,7 @@ class Upload:
     title: str
     url: str
     duration_seconds: int
+    size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -333,6 +334,7 @@ def _hearthis_upload(
         title=str(title),
         url=str(permalink),
         duration_seconds=duration_seconds,
+        size_bytes=_optional_size_bytes(item),
     )
 
 
@@ -349,4 +351,19 @@ def _soundcloud_upload(track: dict) -> Upload | None:
         title=str(title),
         url=str(permalink),
         duration_seconds=int(duration_ms) // 1000,
+        size_bytes=_optional_size_bytes(track),
     )
+
+
+def _optional_size_bytes(raw: dict) -> int | None:
+    for key in ("original_content_size", "filesize", "file_size", "size"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            continue
+        if size > 0:
+            return size
+    return None

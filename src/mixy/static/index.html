@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>mixy</title>
-    <link rel="stylesheet" href="/static/app.css?v=23" />
+    <link rel="stylesheet" href="/static/app.css?v=31" />
   </head>
   <body>
     <main>
@@ -13,42 +13,59 @@
         Distributed music cache. Companion player for play, stars, reject, tags, and playhead.
       </p>
       <section id="status">
-        <p class="status-left">API: <span id="health">checking…</span></p>
-        <p class="status-mid">Device: <span id="device-name">…</span></p>
-        <p class="status-right">Cached audio: <strong id="cache-count">…</strong></p>
+        <p class="status-left"><span class="status-label">API:</span> <span id="health">checking…</span></p>
+        <p class="status-mid"><span class="status-label">Device:</span> <span id="device-name">…</span></p>
+        <p class="status-right"><span class="status-label">Cached audio:</span> <strong id="cache-count">…</strong></p>
       </section>
       <section id="player">
-        <h2>Player</h2>
-        <p class="muted">
-          The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
-          stop playback. Rate and tag here or from the catalog list.
-        </p>
+        <h2 class="section-heading">
+          Player
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Player"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
+              stop playback. Rate and tag here or from the catalog list.
+            </span>
+          </span>
+        </h2>
         <label>
           Intent
-          <select id="player-intent"></select>
+          <select id="player-intent" title="Which intent sequence to play"></select>
         </label>
         <p id="player-now" class="muted">Nothing playing</p>
-        <div class="form-row player-transport" aria-label="Player controls">
-          <button type="button" id="player-play">Play</button>
-          <button type="button" id="player-skip">Skip</button>
-          <span id="player-time-current" class="seek-time">0:00</span>
-          <input
-            id="player-seekbar"
-            type="range"
-            min="0"
-            max="0"
-            step="1"
-            value="0"
-            disabled
-          />
-          <span id="player-time-total" class="seek-time">0:00</span>
-          <button type="button" id="player-stop">Stop</button>
-          <button type="button" id="player-mark">Mark played</button>
+        <div class="player-transport" aria-label="Player controls">
+          <div class="player-symbols form-row">
+            <button type="button" id="player-play" aria-label="Play" data-tip="Play">▶</button>
+            <button type="button" id="player-skip" aria-label="Skip" data-tip="Skip">⏭</button>
+            <button type="button" id="player-stop" aria-label="Stop" data-tip="Stop">⏹</button>
+            <button type="button" id="player-mark" aria-label="Mark played" data-tip="Mark played">✓</button>
+          </div>
+          <div class="player-seek form-row">
+            <span id="player-time-current" class="seek-time">0:00</span>
+            <input
+              id="player-seekbar"
+              type="range"
+              min="0"
+              max="0"
+              step="1"
+              value="0"
+              disabled
+              title="Seek within the current mix"
+            />
+            <span id="player-time-total" class="seek-time">0:00</span>
+          </div>
         </div>
         <div class="form-row player-meta" aria-label="Rate and tag">
-          <label class="inline-field">
+          <label class="inline-field" title="Rate the current mix from 1 to 5 stars">
             Stars
-            <select id="player-stars">
+            <select id="player-stars" title="Rate the current mix from 1 to 5 stars">
               <option value="">—</option>
               <option value="1">1</option>
               <option value="2">2</option>
@@ -57,15 +74,30 @@
               <option value="5">5</option>
             </select>
           </label>
-          <button type="button" id="player-rate">Rate</button>
-          <label class="inline-field grow">
+          <button type="button" id="player-reject" aria-label="Reject" data-tip="Reject">✕</button>
+          <button
+            type="button"
+            id="player-undo-reject"
+            hidden
+            aria-label="Undo reject"
+            data-tip="Undo reject"
+          >
+            ↺
+          </button>
+          <label class="inline-field grow player-tags-field" title="Comma-separated tags for the current mix">
             Tags
-            <input id="player-tags" type="text" list="tag-suggestions" placeholder="tribal, deep" />
+            <span class="player-tags-row">
+              <input
+                id="player-tags"
+                type="text"
+                list="tag-suggestions"
+                placeholder="tribal, deep"
+                title="Comma-separated tags for the current mix"
+              />
+              <button type="button" id="player-tag" aria-label="Save tags" data-tip="Save tags">✓</button>
+            </span>
             <datalist id="tag-suggestions"></datalist>
           </label>
-          <button type="button" id="player-tag">Save tags</button>
-          <button type="button" id="player-reject">Reject</button>
-          <button type="button" id="player-undo-reject" hidden>Undo reject</button>
         </div>
         <p id="player-reject-status" class="muted" hidden></p>
         <p id="player-status" class="muted" role="status"></p>
@@ -76,16 +108,42 @@
         </div>
       </section>
       <section id="activity">
-        <h2>Activity</h2>
-        <p class="muted">Live progress from artist listing, sync, and downloads.</p>
+        <h2 class="section-heading">
+          Activity
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Activity"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Live progress from artist listing, sync, and downloads.
+            </span>
+          </span>
+        </h2>
         <ul id="activity-list" aria-live="polite"></ul>
       </section>
       <section id="intents">
-        <h2>Intents</h2>
-        <p class="muted">
-          A plan is a tag filter and star mix. Assign hours (and optional expiry) per device after
-          creating; both share one seeded sequence, and the smaller budget is the opening stretch.
-        </p>
+        <h2 class="section-heading">
+          Intents
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Intents"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              A plan is a tag filter and star mix. Assign hours (and optional expiry) per device after
+              creating; both share one seeded sequence, and the smaller budget is the opening stretch.
+            </span>
+          </span>
+        </h2>
         <ul id="intent-list"></ul>
         <hr class="intent-list-rule" />
         <form id="intent-form">
@@ -95,39 +153,47 @@
               Name
               <input id="intent-name" type="text" required placeholder="Deep house commute" />
             </label>
-            <label class="inline-field grow">
+            <label class="inline-field grow" title="Only mixes with these tags are eligible">
               Tags
-              <input id="intent-tags" type="text" placeholder="deep, house" autocomplete="off" />
+              <input
+                id="intent-tags"
+                type="text"
+                placeholder="deep, house"
+                autocomplete="off"
+                title="Only mixes with these tags are eligible"
+              />
             </label>
-            <button type="submit" id="intent-submit">Create intent</button>
-            <button type="button" id="intent-cancel" hidden>Cancel edit</button>
+            <button type="submit" id="intent-submit" aria-label="Create intent" data-tip="Create intent">✚</button>
+            <button type="button" id="intent-cancel" hidden aria-label="Cancel edit" data-tip="Cancel">×</button>
           </div>
           <details id="intent-chances">
-            <summary>Star chances (must sum to 100%)</summary>
+            <summary class="has-tip" data-tip="30 | 20 | 10 | 10 | 0 | 30">
+              Star chances: ▃▂▁▁⠀▃
+            </summary>
             <div class="chance-grid">
-              <label>
+              <label title="Share of the sequence for 5★ mixes">
                 5★
-                <input id="chance-five" type="number" min="0" max="100" step="1" value="30" />
+                <select id="chance-five" title="Share of the sequence for 5★ mixes"></select>
               </label>
-              <label>
+              <label title="Share of the sequence for 4★ mixes">
                 4★
-                <input id="chance-four" type="number" min="0" max="100" step="1" value="20" />
+                <select id="chance-four" title="Share of the sequence for 4★ mixes"></select>
               </label>
-              <label>
+              <label title="Share of the sequence for 3★ mixes">
                 3★
-                <input id="chance-three" type="number" min="0" max="100" step="1" value="10" />
+                <select id="chance-three" title="Share of the sequence for 3★ mixes"></select>
               </label>
-              <label>
+              <label title="Share of the sequence for 2★ mixes">
                 2★
-                <input id="chance-two" type="number" min="0" max="100" step="1" value="5" />
+                <select id="chance-two" title="Share of the sequence for 2★ mixes"></select>
               </label>
-              <label>
+              <label title="Share of the sequence for 1★ mixes">
                 1★
-                <input id="chance-one" type="number" min="0" max="100" step="1" value="5" />
+                <select id="chance-one" title="Share of the sequence for 1★ mixes"></select>
               </label>
-              <label>
+              <label title="Share of the sequence for unrated mixes">
                 —
-                <input id="chance-unrated" type="number" min="0" max="100" step="1" value="30" />
+                <select id="chance-unrated" title="Share of the sequence for unrated mixes"></select>
               </label>
             </div>
           </details>
@@ -135,7 +201,23 @@
         <p id="intent-status" class="muted" role="status"></p>
       </section>
       <section id="catalog">
-        <h2>Catalog</h2>
+        <h2 class="section-heading">
+          Catalog
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Catalog"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Browse mixes by artist. Add SoundCloud or hearthis.at artist URLs, refresh listings, and
+              edit tags inline.
+            </span>
+          </span>
+        </h2>
         <div id="catalog-table-wrap">
           <table id="catalog-table">
             <thead>
@@ -170,24 +252,46 @@
               value="20"
             />
           </label>
-          <button type="submit">Add artists</button>
-          <button type="button" id="refresh-all-artists">Refresh all</button>
+          <button type="submit" aria-label="Add artists" data-tip="Add artists">✚</button>
+          <button
+            type="button"
+            id="refresh-all-artists"
+            aria-label="Refresh all artists"
+            data-tip="Refresh all"
+          >
+            ↻
+          </button>
         </form>
         <p id="artists-status" class="muted" role="status"></p>
       </section>
       <section id="cache">
-        <h2>Cache</h2>
-        <p class="muted">
-          Audio on this device for its assigned hours. Creating or updating an intent fills
-          automatically; use the button to retry. On a metered link, origin downloads stay at the
-          current mix plus one ahead per intent; peer copies still fill.
-        </p>
+        <h2 class="section-heading">
+          Cache
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Cache"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Audio on this device for its assigned hours. Creating or updating an intent fills
+              automatically; use the button to retry. On a metered link, origin downloads stay at the
+              current mix plus one ahead per intent; peer copies still fill.
+            </span>
+          </span>
+        </h2>
         <div class="controls">
-          <label class="metered-toggle">
+          <label
+            class="metered-toggle"
+            title="Simulate a metered link: origin downloads stay at current + one ahead"
+          >
             <input type="checkbox" id="metered-toggle" />
             Metered link (simulated)
           </label>
-          <button type="button" id="fill-btn">Fill caches</button>
+          <button type="button" id="fill-btn" aria-label="Fill caches" data-tip="Fill caches">⬇</button>
         </div>
         <p id="fill-status" class="muted" role="status"></p>
         <div id="cache-table-wrap">
@@ -197,6 +301,7 @@
                 <th>Intent</th>
                 <th>Title</th>
                 <th>Length</th>
+                <th>Size</th>
                 <th>Status</th>
                 <th>Action</th>
               </tr>
@@ -206,17 +311,44 @@
         </div>
       </section>
       <section id="peers">
-        <h2>Peers</h2>
+        <h2 class="section-heading">
+          Peers
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Peers"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Paired devices that can sync catalogs and copy cached audio.
+            </span>
+          </span>
+        </h2>
         <ul id="peer-list"></ul>
-        <button type="button" id="sync-btn">Sync catalog</button>
+        <button type="button" id="sync-btn" aria-label="Sync catalog" data-tip="Sync catalog">⇄</button>
         <p id="sync-status" class="muted" role="status"></p>
       </section>
       <section id="pairing">
-        <h2>Pair</h2>
-        <p class="muted">
-          Scan the QR on the other device, or enter its short code and URL when the camera is not
-          used.
-        </p>
+        <h2 class="section-heading">
+          Pair
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Pair"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Scan the QR on the other device, or enter its short code and URL when the camera is not
+              used.
+            </span>
+          </span>
+        </h2>
         <p>Short code: <strong id="short-code">…</strong></p>
         <img id="qr" alt="Pairing QR code" width="180" height="180" />
         <details>
@@ -246,16 +378,21 @@
                 autocomplete="off"
               />
             </label>
-            <button type="submit">Pair</button>
+            <button type="submit" aria-label="Pair" data-tip="Pair">Pair</button>
           </div>
           <label>
             Or paste full payload
-            <textarea id="pair-payload" rows="3" placeholder='{"v":1,"name":"…"}'></textarea>
+            <textarea
+              id="pair-payload"
+              rows="3"
+              placeholder='{"v":1,"name":"…"}'
+              title="Paste the full pairing QR payload JSON"
+            ></textarea>
           </label>
         </form>
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=21"></script>
+    <script src="/static/app.js?v=29"></script>
   </body>
 </html>

@@ -59,3 +59,30 @@ def test_composite_rejects_unknown_host() -> None:
     source = CompositeSource(soundcloud=_Stub("sc"), hearthis=_Stub("ht"))
     with pytest.raises(ValueError, match="unsupported artist URL host"):
         source.list_uploads("https://bandcamp.com/artist")
+
+
+def test_soundcloud_upload_reads_optional_size_bytes() -> None:
+    from mixy.source import _soundcloud_upload
+
+    upload = _soundcloud_upload(
+        {
+            "id": 99,
+            "title": "Set",
+            "permalink_url": "https://soundcloud.com/dj/set",
+            "duration": 3_600_000,
+            "original_content_size": 50_000_000,
+        }
+    )
+    assert upload is not None
+    assert upload.size_bytes == 50_000_000
+
+    bare = _soundcloud_upload(
+        {
+            "id": 100,
+            "title": "Bare",
+            "permalink_url": "https://soundcloud.com/dj/bare",
+            "duration": 3_600_000,
+        }
+    )
+    assert bare is not None
+    assert bare.size_bytes is None

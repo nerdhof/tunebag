@@ -288,6 +288,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                             "duration_seconds": mix["duration_seconds"],
                             "status": mix["status"],
                             **(
+                                {"size_bytes": mix["size_bytes"]}
+                                if "size_bytes" in mix
+                                else {}
+                            ),
+                            **(
                                 {
                                     "downloaded_bytes": mix["downloaded_bytes"],
                                     "total_bytes": mix["total_bytes"],
@@ -311,12 +316,13 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 for mix in agent.files()
             ],
             "groups": groups,
+            "cache_summary": agent.cache_summary(),
             "downloading_mix_id": None if downloading is None else str(downloading),
         }
 
     @app.get("/api/mixes")
     def mixes() -> dict:
-        artists_by_id = {a.id: a.name for a in agent.artists()}
+        artists_by_id = {a.id: a for a in agent.artists()}
         pending_until = {
             str(p.mix_id): p.undo_until.isoformat() for p in agent.pending_rejects()
         }
@@ -325,10 +331,20 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 {
                     "id": str(mix.id),
                     "artist_id": str(mix.artist_id),
-                    "artist": artists_by_id.get(mix.artist_id, "Unknown"),
+                    "artist": (
+                        artists_by_id[mix.artist_id].name
+                        if mix.artist_id in artists_by_id
+                        else "Unknown"
+                    ),
+                    "artist_url": (
+                        artists_by_id[mix.artist_id].url
+                        if mix.artist_id in artists_by_id
+                        else None
+                    ),
                     "title": mix.title,
                     "url": mix.url,
                     "duration_seconds": mix.duration_seconds,
+                    "size_bytes": mix.size_bytes,
                     "tags": mix.tags,
                     "stars": int(mix.stars) if mix.stars is not None else None,
                     "played": mix.played,
@@ -422,6 +438,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "current_mix_id": str(current) if current is not None else None,
             "title": mix.title if mix is not None else None,
             "duration_seconds": mix.duration_seconds if mix is not None else None,
+            "size_bytes": (
+                int(mix.size_bytes)
+                if mix is not None and mix.size_bytes is not None
+                else None
+            ),
             "position_seconds": agent.playback_position(),
             "stars": int(mix.stars) if mix is not None and mix.stars is not None else None,
             "tags": mix.tags if mix is not None else [],

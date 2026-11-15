@@ -87,7 +87,7 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 - Star draw chances are always probabilities, at every budget. The shared sequence is produced with one seed and fills until its duration is at least the largest device budget, including the mix that crosses it. Smaller hours take a duration prefix of that sequence. An empty bucket is skipped and the remaining chances are rescaled. Rejected mixes are not candidates.
 - The distribution shape is six buckets named five, four, three, two, one, and unrated, required to sum to 1, defaulting to 0.3, 0.2, 0.1, 0.05, 0.05, and 0.3.
 - Pairing exchanges a device name and an Ed25519 public key. The laptop shows the QR payload. The short code is derived from that key. The laptop's fetch priority is ahead of the phone's.
-- The hackathon demo uses manual Sync, explicit peer URL or QR (no LAN discovery), and in-memory peers/event log (restart clears pairing). Auto-sync, LAN discovery, and persistence are issues 10–12.
+- The hackathon demo uses auto-sync when a trusted peer is reachable (Sync remains a manual override), explicit peer URL or QR (no LAN discovery), and in-memory peers/event log (restart clears pairing). LAN discovery and persistence are issues 11–12.
 - Reachability is a heartbeat. For each assigned mix, the highest-priority reachable device whose own hours include that mix downloads it from the source URL. Other devices take the file from that peer. If the preferred device is unreachable, the device that has the mix in its hours downloads it.
 - Artist ingest lists own uploads and writes catalog rows only. Download of audio uses the source URL directly and does not consult the existing download archive, so a mix removed from disk can be fetched again. SoundCloud and hearthis.at URLs are resolved by a Source adapter selected by host. Add applies a configurable minimum duration (default 20 minutes) before writing mix rows.
 - Artist refresh (issue 09) reuses the same `list_uploads` path. It is idempotent on platform ids, never resurrects a committed reject, applies the same min-duration rule, and writes catalog rows only (no audio).
@@ -117,7 +117,6 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 - Foobar or Vanilla Music reading or writing signals.
 - A server, a blockchain, and splitting a mix into tracks.
 - Publishing the GitHub remote. That is repo setup, not this demo.
-- Auto-sync without the Sync button (issue 10).
 - LAN peer discovery (issue 11).
 - Persisting peers, peer URLs, and the event log across agent restart (issue 12).
 

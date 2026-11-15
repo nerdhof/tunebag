@@ -16,6 +16,177 @@ let lastKnownPositionSeconds = 0;
 let playheadCommitInFlight = false;
 const PLAYHEAD_COMMIT_MS = 10000;
 
+/** Compact action glyphs; always set aria-label + data-tip (hover name). */
+const BTN = {
+  edit: "✎",
+  refresh: "↻",
+  fill: "⬇",
+  delete: "⌫",
+  reject: "✕",
+  add: "✚",
+  save: "✓",
+  cancel: "×",
+  sync: "⇄",
+  setCurrent: "◉",
+  clearCurrent: "○",
+};
+
+function setSymbolButton(btn, symbol, label) {
+  btn.textContent = symbol;
+  btn.removeAttribute("title");
+  btn.setAttribute("aria-label", label);
+  btn.dataset.tip = label;
+}
+
+/** First click arms (“really delete?”); second click runs onConfirm. */
+function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
+  setSymbolButton(btn, BTN.delete, label);
+  let armed = false;
+  let resetTimer = null;
+
+  const reset = () => {
+    armed = false;
+    btn.classList.remove("confirm-pending");
+    setSymbolButton(btn, BTN.delete, label);
+    if (resetTimer) {
+      clearTimeout(resetTimer);
+      resetTimer = null;
+    }
+  };
+
+  btn.addEventListener("click", async (event) => {
+    if (stopPropagation) event.stopPropagation();
+    if (!armed) {
+      armed = true;
+      btn.classList.add("confirm-pending");
+      btn.textContent = "really delete?";
+      btn.setAttribute("aria-label", "really delete?");
+      btn.dataset.tip = "really delete?";
+      if (actionTipActive === btn) showActionTip(btn);
+      resetTimer = setTimeout(reset, 4000);
+      return;
+    }
+    reset();
+    await onConfirm(event);
+  });
+}
+
+let actionTipEl = null;
+let actionTipActive = null;
+
+function actionTipLabel(el) {
+  if (!(el instanceof Element)) return "";
+  return (
+    el.dataset.tip ||
+    el.getAttribute("aria-label") ||
+    el.getAttribute("title") ||
+    ""
+  );
+}
+
+function ensureActionTip() {
+  if (actionTipEl) return actionTipEl;
+  actionTipEl = document.createElement("div");
+  actionTipEl.className = "action-tip";
+  actionTipEl.hidden = true;
+  document.body.appendChild(actionTipEl);
+  return actionTipEl;
+}
+
+function positionActionTip(el) {
+  const tip = ensureActionTip();
+  const rect = el.getBoundingClientRect();
+  const tipRect = tip.getBoundingClientRect();
+  let left = rect.left + rect.width / 2;
+  let top = rect.top - 8;
+  const pad = 8;
+  left = Math.max(pad + tipRect.width / 2, Math.min(left, window.innerWidth - pad - tipRect.width / 2));
+  if (top - tipRect.height < pad) {
+    top = rect.bottom + 8;
+    tip.dataset.placement = "below";
+  } else {
+    tip.dataset.placement = "above";
+  }
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function showActionTip(el) {
+  const text = actionTipLabel(el);
+  if (!text || el.classList.contains("section-info-btn")) return;
+  const tip = ensureActionTip();
+  actionTipActive = el;
+  tip.textContent = text;
+  tip.hidden = false;
+  positionActionTip(el);
+}
+
+function hideActionTip(el) {
+  if (el && actionTipActive !== el) return;
+  actionTipActive = null;
+  if (actionTipEl) actionTipEl.hidden = true;
+}
+
+const ACTION_TIP_SELECTOR =
+  "button[aria-label], button[data-tip], button[title], a[aria-label], a[title], .has-tip[data-tip]";
+
+function initActionTips() {
+  ensureActionTip();
+  document.addEventListener("pointerover", (event) => {
+    const el = event.target.closest(ACTION_TIP_SELECTOR);
+    if (!el) return;
+    showActionTip(el);
+  });
+  document.addEventListener("pointerout", (event) => {
+    const el = event.target.closest(ACTION_TIP_SELECTOR);
+    if (!el || !actionTipLabel(el)) return;
+    const next = event.relatedTarget instanceof Element
+      ? event.relatedTarget.closest(ACTION_TIP_SELECTOR)
+      : null;
+    if (next === el) return;
+    hideActionTip(el);
+  });
+  document.addEventListener(
+    "scroll",
+    () => {
+      if (actionTipActive) positionActionTip(actionTipActive);
+    },
+    true,
+  );
+}
+
+function initSectionInfo() {
+  for (const info of document.querySelectorAll(".section-info")) {
+    const btn = info.querySelector(".section-info-btn");
+    if (!btn) continue;
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = !info.classList.contains("open");
+      for (const other of document.querySelectorAll(".section-info.open")) {
+        if (other !== info) {
+          other.classList.remove("open");
+          other.querySelector(".section-info-btn")?.setAttribute("aria-expanded", "false");
+        }
+      }
+      info.classList.toggle("open", open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+  document.addEventListener("click", () => {
+    for (const info of document.querySelectorAll(".section-info.open")) {
+      info.classList.remove("open");
+      info.querySelector(".section-info-btn")?.setAttribute("aria-expanded", "false");
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    for (const info of document.querySelectorAll(".section-info.open")) {
+      info.classList.remove("open");
+      info.querySelector(".section-info-btn")?.setAttribute("aria-expanded", "false");
+    }
+  });
+}
+
 function fillInProgressFromEntries(entries) {
   let inProgress = false;
   for (const entry of entries) {
@@ -41,17 +212,203 @@ function requestFilesRefresh({ force = false } = {}) {
   return filesRefreshInFlight;
 }
 
+const CHANCE_IDS = [
+  "chance-five",
+  "chance-four",
+  "chance-three",
+  "chance-two",
+  "chance-one",
+  "chance-unrated",
+];
+const CHANCE_STAR_IDS = CHANCE_IDS.slice(0, 5);
+const CHANCE_DEFAULTS = {
+  "chance-five": 30,
+  "chance-four": 20,
+  "chance-three": 10,
+  "chance-two": 10,
+  "chance-one": 0,
+  "chance-unrated": 30,
+};
+/** One block per 0, 10, …, 90/100%. */
+const CHANCE_BLOCKS = "⠀▁▂▃▄▅▆▇▉▀";
+
+function chanceBlock(pct) {
+  const idx = Math.max(0, Math.min(CHANCE_BLOCKS.length - 1, Math.round(pct / 10)));
+  return CHANCE_BLOCKS[idx];
+}
+
+function formatChanceBlocksFromPct(chances) {
+  return CHANCE_IDS.map((id) => chanceBlock(chances[id])).join("");
+}
+
+function formatChancePercentsFromPct(chances) {
+  return CHANCE_IDS.map((id) => chances[id]).join(" | ");
+}
+
+function distToChancePcts(dist) {
+  return {
+    "chance-five": Math.round(dist.five * 100),
+    "chance-four": Math.round(dist.four * 100),
+    "chance-three": Math.round(dist.three * 100),
+    "chance-two": Math.round(dist.two * 100),
+    "chance-one": Math.round(dist.one * 100),
+    "chance-unrated": Math.round(dist.unrated * 100),
+  };
+}
+
+function formatChanceBlocks(dist) {
+  return formatChanceBlocksFromPct(distToChancePcts(dist));
+}
+
+function formatChancePercents(dist) {
+  return formatChancePercentsFromPct(distToChancePcts(dist));
+}
+
+function updateChanceSummary() {
+  const summary = document.querySelector("#intent-chances > summary");
+  if (!summary) return;
+  const chances = readChances();
+  summary.textContent = `Star chances: ${formatChanceBlocksFromPct(chances)}`;
+  summary.removeAttribute("title");
+  summary.classList.add("has-tip");
+  summary.dataset.tip = formatChancePercentsFromPct(chances);
+}
+
+function snapChancePct(n) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n / 10) * 10));
+}
+
+function readChances() {
+  const chances = {};
+  for (const id of CHANCE_IDS) {
+    chances[id] = Number(document.getElementById(id).value);
+  }
+  return chances;
+}
+
+function writeChances(chances) {
+  for (const id of CHANCE_IDS) {
+    document.getElementById(id).value = String(chances[id]);
+  }
+  updateChanceSummary();
+}
+
+function sumChances(chances, ids = CHANCE_IDS) {
+  return ids.reduce((sum, id) => sum + chances[id], 0);
+}
+
+/** Reduce lowest positive among `ids` until `need` is removed (10% steps). */
+function reduceLowestPositive(chances, ids, need) {
+  let remaining = need;
+  while (remaining > 0) {
+    let bestId = null;
+    let bestVal = Infinity;
+    for (const id of ids) {
+      const val = chances[id];
+      if (val > 0 && val < bestVal) {
+        bestId = id;
+        bestVal = val;
+      }
+    }
+    if (bestId == null) break;
+    const take = Math.min(bestVal, remaining);
+    chances[bestId] -= take;
+    remaining -= take;
+  }
+  return remaining;
+}
+
+function rebalanceChances(changedId) {
+  const chances = readChances();
+  let total = sumChances(chances);
+  if (total === 100) {
+    updateChanceSummary();
+    return;
+  }
+
+  if (changedId !== "chance-unrated") {
+    const starsSum = sumChances(chances, CHANCE_STAR_IDS);
+    const rest = 100 - starsSum;
+    if (rest >= 0) {
+      chances["chance-unrated"] = rest;
+    } else {
+      chances["chance-unrated"] = 0;
+      const others = CHANCE_STAR_IDS.filter((id) => id !== changedId);
+      reduceLowestPositive(chances, others, -rest);
+      total = sumChances(chances);
+      if (total > 100) {
+        reduceLowestPositive(chances, CHANCE_STAR_IDS, total - 100);
+      }
+    }
+  } else if (total < 100) {
+    chances["chance-five"] = Math.min(100, chances["chance-five"] + (100 - total));
+    total = sumChances(chances);
+    if (total < 100) {
+      // five was capped; put leftover on next stars high→low
+      for (const id of CHANCE_STAR_IDS) {
+        if (total >= 100) break;
+        const room = 100 - chances[id];
+        const add = Math.min(room, 100 - total);
+        chances[id] += add;
+        total += add;
+      }
+    }
+  } else {
+    reduceLowestPositive(chances, CHANCE_STAR_IDS, total - 100);
+  }
+  writeChances(chances);
+}
+
+function fillChanceSelect(select, selected) {
+  select.innerHTML = "";
+  for (let pct = 0; pct <= 100; pct += 10) {
+    const option = document.createElement("option");
+    option.value = String(pct);
+    option.textContent = String(pct);
+    if (pct === selected) option.selected = true;
+    select.appendChild(option);
+  }
+}
+
+function initChanceSelects() {
+  for (const id of CHANCE_IDS) {
+    const select = document.getElementById(id);
+    fillChanceSelect(select, CHANCE_DEFAULTS[id]);
+    select.addEventListener("change", () => rebalanceChances(id));
+  }
+  updateChanceSummary();
+}
+
+function setChancesFromDist(dist) {
+  const chances = {
+    "chance-five": snapChancePct(dist.five * 100),
+    "chance-four": snapChancePct(dist.four * 100),
+    "chance-three": snapChancePct(dist.three * 100),
+    "chance-two": snapChancePct(dist.two * 100),
+    "chance-one": snapChancePct(dist.one * 100),
+    "chance-unrated": snapChancePct(dist.unrated * 100),
+  };
+  const total = sumChances(chances);
+  if (total !== 100) {
+    const starsSum = sumChances(chances, CHANCE_STAR_IDS);
+    const rest = 100 - starsSum;
+    if (rest >= 0) {
+      chances["chance-unrated"] = rest;
+    } else {
+      chances["chance-unrated"] = 0;
+      reduceLowestPositive(chances, CHANCE_STAR_IDS, -rest);
+    }
+  }
+  writeChances(chances);
+}
+
 function resetIntentForm() {
   document.getElementById("intent-edit-id").value = "";
   document.getElementById("intent-name").value = "";
   document.getElementById("intent-tags").value = "";
-  document.getElementById("chance-five").value = "30";
-  document.getElementById("chance-four").value = "20";
-  document.getElementById("chance-three").value = "10";
-  document.getElementById("chance-two").value = "5";
-  document.getElementById("chance-one").value = "5";
-  document.getElementById("chance-unrated").value = "30";
-  document.getElementById("intent-submit").textContent = "Create intent";
+  writeChances({ ...CHANCE_DEFAULTS });
+  setSymbolButton(document.getElementById("intent-submit"), BTN.add, "Create intent");
   document.getElementById("intent-cancel").hidden = true;
 }
 
@@ -67,15 +424,9 @@ function beginEditIntent(intent) {
   document.getElementById("intent-edit-id").value = intent.id;
   document.getElementById("intent-name").value = intent.name;
   document.getElementById("intent-tags").value = intent.tags.join(", ");
-  const dist = intent.distribution;
-  document.getElementById("chance-five").value = String(Math.round(dist.five * 100));
-  document.getElementById("chance-four").value = String(Math.round(dist.four * 100));
-  document.getElementById("chance-three").value = String(Math.round(dist.three * 100));
-  document.getElementById("chance-two").value = String(Math.round(dist.two * 100));
-  document.getElementById("chance-one").value = String(Math.round(dist.one * 100));
-  document.getElementById("chance-unrated").value = String(Math.round(dist.unrated * 100));
+  setChancesFromDist(intent.distribution);
   document.getElementById("intent-chances").open = true;
-  document.getElementById("intent-submit").textContent = "Save changes";
+  setSymbolButton(document.getElementById("intent-submit"), BTN.save, "Save changes");
   document.getElementById("intent-cancel").hidden = false;
   document.getElementById("intent-form").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -274,15 +625,48 @@ function cacheGroupKey(group) {
 
 function formatCacheOverview(overview) {
   const parts = ["cached", "loading", "pending"].map((status) => {
-    const bucket = overview?.[status] || { count: 0, duration_seconds: 0 };
-    return `${status}: ${bucket.count} (${formatHms(bucket.duration_seconds)})`;
+    const bucket = overview?.[status] || {
+      count: 0,
+      duration_seconds: 0,
+      size_bytes: 0,
+    };
+    const detail =
+      Number(bucket.size_bytes) > 0
+        ? `${formatHms(bucket.duration_seconds)}, ${formatBytes(bucket.size_bytes)}`
+        : formatHms(bucket.duration_seconds);
+    return `${status}: ${bucket.count} (${detail})`;
   });
   return parts.join(", ");
+}
+
+function formatBytes(bytes) {
+  const n = Math.max(0, Number(bytes) || 0);
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  if (unit === 0) {
+    return `${Math.round(value)} ${units[unit]}`;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
 }
 
 function formatMb(bytes) {
   const n = Number(bytes) || 0;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatCacheSummary(summary) {
+  const count = Number(summary?.count) || 0;
+  if (count <= 0) {
+    return "0";
+  }
+  const duration = formatDuration(summary?.duration_seconds || 0);
+  const size = formatBytes(summary?.size_bytes || 0);
+  return `${count}, ${duration}, ${size}`;
 }
 
 function renderDownloadProgress(file) {
@@ -347,6 +731,18 @@ function setCacheGroupExpanded(groupKey, expanded) {
   else expandedCacheIntents.delete(groupKey);
 }
 
+function artistGroupSummary(mixes) {
+  let durationSeconds = 0;
+  for (const mix of mixes) {
+    durationSeconds += Number(mix.duration_seconds) || 0;
+  }
+  const count = mixes.length;
+  if (count <= 0) {
+    return "0";
+  }
+  return `${count}, ${formatDuration(durationSeconds)}`;
+}
+
 function groupMixesByArtist(mixes) {
   const groups = new Map();
   for (const mix of mixes) {
@@ -354,8 +750,15 @@ function groupMixesByArtist(mixes) {
     const artistName = mix.artist || "Unknown";
     let group = groups.get(artistId);
     if (!group) {
-      group = { artistId, artistName, mixes: [] };
+      group = {
+        artistId,
+        artistName,
+        artistUrl: mix.artist_url || null,
+        mixes: [],
+      };
       groups.set(artistId, group);
+    } else if (!group.artistUrl && mix.artist_url) {
+      group.artistUrl = mix.artist_url;
     }
     group.mixes.push(mix);
   }
@@ -431,14 +834,30 @@ async function refreshMixes({ force = false } = {}) {
     artistLabel.appendChild(toggle);
     artistLabel.appendChild(
       document.createTextNode(
-        `${group.artistName} (${group.mixes.length})`,
+        `${group.artistName} (${artistGroupSummary(group.mixes)})`,
       ),
     );
+    if (group.artistUrl) {
+      const link = document.createElement("a");
+      link.className = "artist-link";
+      link.href = group.artistUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.removeAttribute("title");
+      link.setAttribute("aria-label", "Open artist page");
+      link.dataset.tip = "Open artist page";
+      link.textContent = "↗";
+      link.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      artistLabel.appendChild(document.createTextNode(" "));
+      artistLabel.appendChild(link);
+    }
     artistInner.appendChild(artistLabel);
     const refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
     refreshBtn.className = "artist-refresh";
-    refreshBtn.textContent = "Refresh";
+    setSymbolButton(refreshBtn, BTN.refresh, "Refresh artist");
     refreshBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       const status = document.getElementById("artists-status");
@@ -460,36 +879,31 @@ async function refreshMixes({ force = false } = {}) {
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
     deleteBtn.className = "artist-delete";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      if (
-        !window.confirm(
-          `Delete artist “${group.artistName}” and its mixes?`,
-        )
-      ) {
-        return;
-      }
-      const status = document.getElementById("artists-status");
-      status.textContent = "Deleting…";
-      try {
-        const res = await fetch(`/api/artists/${group.artistId}`, {
-          method: "DELETE",
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          status.textContent = data.detail || "Delete artist failed";
-          return;
+    bindConfirmDelete(deleteBtn, {
+      label: "Delete artist",
+      stopPropagation: true,
+      onConfirm: async () => {
+        const status = document.getElementById("artists-status");
+        status.textContent = "Deleting…";
+        try {
+          const res = await fetch(`/api/artists/${group.artistId}`, {
+            method: "DELETE",
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            status.textContent = data.detail || "Delete artist failed";
+            return;
+          }
+          expandedCatalogArtists.delete(group.artistId);
+          status.textContent = `Deleted “${group.artistName}”`;
+          await refreshMixes();
+          await refreshIntents();
+          await refreshFiles();
+        } catch (err) {
+          status.textContent = "Delete artist request failed";
+          console.error(err);
         }
-        expandedCatalogArtists.delete(group.artistId);
-        status.textContent = `Deleted “${group.artistName}”`;
-        await refreshMixes();
-        await refreshIntents();
-        await refreshFiles();
-      } catch (err) {
-        status.textContent = "Delete artist request failed";
-        console.error(err);
-      }
+      },
     });
     artistInner.appendChild(deleteBtn);
     artistCell.appendChild(artistInner);
@@ -545,7 +959,7 @@ async function refreshMixes({ force = false } = {}) {
       tagRow.appendChild(tagInput);
       const saveBtn = document.createElement("button");
       saveBtn.type = "button";
-      saveBtn.textContent = "Save";
+      setSymbolButton(saveBtn, BTN.save, "Save tags");
       saveBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
         const tags = tagInput.value
@@ -691,7 +1105,11 @@ async function maybeCommitPlayhead(playing) {
 function updatePlayPauseButton(playing) {
   const btn = document.getElementById("player-play");
   if (!btn) return;
-  btn.textContent = playing ? "Pause" : "Play";
+  const label = playing ? "Pause" : "Play";
+  btn.textContent = playing ? "⏸" : "▶";
+  btn.removeAttribute("title");
+  btn.setAttribute("aria-label", label);
+  btn.dataset.tip = label;
   btn.dataset.playing = playing ? "true" : "false";
 }
 
@@ -710,12 +1128,15 @@ async function refreshPlayer() {
     updatePlayPauseButton(false);
     return;
   }
-  const state = data.playing ? "Playing" : "Paused/stopped";
   const pos = Math.round(data.position_seconds || 0);
   if (!playerSeekDragging) {
     lastKnownPositionSeconds = pos;
   }
-  now.textContent = `${state}: ${data.title} @ ${pos}s / ${formatDuration(data.duration_seconds || 0)}`;
+  const title = data.title || "Untitled";
+  now.textContent =
+    data.size_bytes != null && Number(data.size_bytes) > 0
+      ? `${title} (${formatBytes(data.size_bytes)})`
+      : title;
   const starsEl = document.getElementById("player-stars");
   const tagsEl = document.getElementById("player-tags");
   if (document.activeElement !== starsEl) {
@@ -753,7 +1174,6 @@ async function showLaterFeatures(features) {
     "player-stop",
     "player-mark",
     "player-seekbar",
-    "player-rate",
     "player-reject",
     "player-undo-reject",
     "player-tag",
@@ -776,14 +1196,20 @@ async function refreshFiles({ force = false } = {}) {
   const data = await res.json();
   const countEl = document.getElementById("cache-count");
   if (countEl) {
-    countEl.textContent = String(data.files.length);
+    countEl.textContent = formatCacheSummary(
+      data.cache_summary || {
+        count: data.files.length,
+        duration_seconds: 0,
+        size_bytes: 0,
+      },
+    );
   }
   body.innerHTML = "";
   const groups = Array.isArray(data.groups) ? data.groups : [];
   if (!groups.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = 6;
     td.className = "muted";
     td.textContent =
       "No assigned audio yet — create an intent with hours, or press Fill caches";
@@ -805,7 +1231,7 @@ async function refreshFiles({ force = false } = {}) {
     header.setAttribute("role", "button");
 
     const intentCell = document.createElement("td");
-    intentCell.colSpan = 5;
+    intentCell.colSpan = 6;
     const toggle = document.createElement("span");
     toggle.className = "cache-intent-toggle";
     toggle.setAttribute("aria-hidden", "true");
@@ -851,6 +1277,13 @@ async function refreshFiles({ force = false } = {}) {
       length.textContent = formatDuration(file.duration_seconds || 0);
       tr.appendChild(length);
 
+      const size = document.createElement("td");
+      size.textContent =
+        file.size_bytes != null && Number(file.size_bytes) > 0
+          ? formatBytes(file.size_bytes)
+          : "—";
+      tr.appendChild(size);
+
       const statusCell = document.createElement("td");
       const isCurrent = currentMixId === file.id;
       if (file.status === "loading") {
@@ -865,7 +1298,11 @@ async function refreshFiles({ force = false } = {}) {
       if (file.status === "cached") {
         const currentBtn = document.createElement("button");
         currentBtn.type = "button";
-        currentBtn.textContent = isCurrent ? "Clear current" : "Set current";
+        if (isCurrent) {
+          setSymbolButton(currentBtn, BTN.clearCurrent, "Clear current");
+        } else {
+          setSymbolButton(currentBtn, BTN.setCurrent, "Set current");
+        }
         currentBtn.addEventListener("click", async (event) => {
           event.stopPropagation();
           const status = document.getElementById("fill-status");
@@ -948,9 +1385,6 @@ async function saveDeviceHours(intentId, deviceId, hoursValue, expiresValue) {
 async function deleteDeviceHours(intent, deviceId) {
   const status = document.getElementById("intent-status");
   const name = deviceName(deviceId);
-  if (!window.confirm(`Remove hours for ${name} from “${intent.name}”?`)) {
-    return;
-  }
   const remaining = (intent.device_hours || [])
     .filter((dh) => dh.device_id !== deviceId)
     .map((dh) => ({
@@ -1026,7 +1460,7 @@ function buildHoursEditor(intent, editor) {
     wrap.appendChild(empty);
     const cancel = document.createElement("button");
     cancel.type = "button";
-    cancel.textContent = "Cancel";
+    setSymbolButton(cancel, BTN.cancel, "Cancel");
     cancel.addEventListener("click", () => {
       hoursEditorState.delete(intent.id);
       void refreshIntents();
@@ -1090,7 +1524,11 @@ function buildHoursEditor(intent, editor) {
 
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
-  saveBtn.textContent = editor.mode === "edit" ? "Save" : "Add";
+  if (editor.mode === "edit") {
+    setSymbolButton(saveBtn, BTN.save, "Save hours");
+  } else {
+    setSymbolButton(saveBtn, BTN.add, "Add hours");
+  }
   saveBtn.addEventListener("click", async () => {
     const deviceId = editor.mode === "edit" ? fixedDeviceId : deviceSelect.value;
     await saveDeviceHours(intent.id, deviceId, hoursInput.value, expiresInput.value);
@@ -1099,7 +1537,7 @@ function buildHoursEditor(intent, editor) {
 
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
-  cancelBtn.textContent = "Cancel";
+  setSymbolButton(cancelBtn, BTN.cancel, "Cancel");
   cancelBtn.addEventListener("click", () => {
     hoursEditorState.delete(intent.id);
     void refreshIntents();
@@ -1148,7 +1586,7 @@ function renderDeviceHoursPanel(intent, assignments = []) {
       if (!editor) {
         const editBtn = document.createElement("button");
         editBtn.type = "button";
-        editBtn.textContent = "Edit";
+        setSymbolButton(editBtn, BTN.edit, "Edit hours");
         editBtn.addEventListener("click", () => {
           hoursEditorState.set(intent.id, {
             mode: "edit",
@@ -1160,9 +1598,9 @@ function renderDeviceHoursPanel(intent, assignments = []) {
 
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
-        deleteBtn.textContent = "Delete";
-        deleteBtn.addEventListener("click", () => {
-          void deleteDeviceHours(intent, dh.device_id);
+        bindConfirmDelete(deleteBtn, {
+          label: "Remove hours",
+          onConfirm: () => deleteDeviceHours(intent, dh.device_id),
         });
         item.appendChild(deleteBtn);
       }
@@ -1205,13 +1643,12 @@ async function refreshIntents({ force = false } = {}) {
     headingRow.appendChild(heading);
     const editBtn = document.createElement("button");
     editBtn.type = "button";
-    editBtn.textContent = "Edit";
+    setSymbolButton(editBtn, BTN.edit, "Edit intent");
     editBtn.addEventListener("click", () => beginEditIntent(intent));
     headingRow.appendChild(editBtn);
     const refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
-    refreshBtn.textContent = "Refresh";
-    refreshBtn.title = "Re-roll seed and recreate the shared sequence";
+    setSymbolButton(refreshBtn, BTN.refresh, "Refresh");
     refreshBtn.addEventListener("click", async () => {
       const status = document.getElementById("intent-status");
       status.textContent = `Refreshing sequence “${intent.name}”…`;
@@ -1237,67 +1674,67 @@ async function refreshIntents({ force = false } = {}) {
     headingRow.appendChild(refreshBtn);
     const fillNowBtn = document.createElement("button");
     fillNowBtn.type = "button";
-    fillNowBtn.textContent = "Fill now";
-    fillNowBtn.title = "Top up this intent to full hours once (metered override)";
+    setSymbolButton(fillNowBtn, BTN.fill, "Fill");
     fillNowBtn.addEventListener("click", async () => {
       const status = document.getElementById("intent-status");
-      status.textContent = `Fill now “${intent.name}”…`;
+      status.textContent = `Fill “${intent.name}”…`;
       try {
         const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          status.textContent = data.detail || "Fill now failed";
+          status.textContent = data.detail || "Fill failed";
           return;
         }
         status.textContent = data.fill_in_progress
-          ? `Fill now “${intent.name}” started · ${data.files} cached so far`
-          : `Fill now “${intent.name}” · ${data.files} cached`;
+          ? `Fill “${intent.name}” started · ${data.files} cached so far`
+          : `Fill “${intent.name}” · ${data.files} cached`;
         await refreshFiles();
       } catch (err) {
-        status.textContent = "Fill now request failed";
+        status.textContent = "Fill request failed";
         console.error(err);
       }
     });
     headingRow.appendChild(fillNowBtn);
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", async () => {
-      if (!window.confirm(`Delete intent “${intent.name}”?`)) {
-        return;
-      }
-      const status = document.getElementById("intent-status");
-      status.textContent = "Deleting…";
-      try {
-        const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          status.textContent = data.detail || "Delete intent failed";
-          return;
+    bindConfirmDelete(deleteBtn, {
+      label: "Delete intent",
+      onConfirm: async () => {
+        const status = document.getElementById("intent-status");
+        status.textContent = "Deleting…";
+        try {
+          const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            status.textContent = data.detail || "Delete intent failed";
+            return;
+          }
+          if (document.getElementById("intent-edit-id").value === intent.id) {
+            resetIntentForm();
+          }
+          hoursEditorState.delete(intent.id);
+          status.textContent = `Deleted “${intent.name}”`;
+          await refreshIntents();
+        } catch (err) {
+          status.textContent = "Delete intent request failed";
+          console.error(err);
         }
-        if (document.getElementById("intent-edit-id").value === intent.id) {
-          resetIntentForm();
-        }
-        hoursEditorState.delete(intent.id);
-        status.textContent = `Deleted “${intent.name}”`;
-        await refreshIntents();
-      } catch (err) {
-        status.textContent = "Delete intent request failed";
-        console.error(err);
-      }
+      },
     });
     headingRow.appendChild(deleteBtn);
     li.appendChild(headingRow);
 
-    const meta = document.createElement("p");
-    meta.className = "muted";
-    const tags = intent.tags.length ? intent.tags.join(", ") : "untagged only";
-    const dist = intent.distribution;
-    meta.textContent =
-      `Tags: ${tags} · chances ${Math.round(dist.five * 100)}/` +
-      `${Math.round(dist.four * 100)}/${Math.round(dist.three * 100)}/` +
-      `${Math.round(dist.two * 100)}/${Math.round(dist.one * 100)}/` +
-      `${Math.round(dist.unrated * 100)}`;
+    const meta = document.createElement("div");
+    meta.className = "intent-meta muted";
+    const tagsEl = document.createElement("span");
+    tagsEl.className = "intent-meta-tags";
+    tagsEl.textContent = `Tags: ${intent.tags.length ? intent.tags.join(", ") : "-"}`;
+    const chancesEl = document.createElement("span");
+    chancesEl.className = "intent-meta-chances has-tip";
+    chancesEl.textContent = `Chances: ${formatChanceBlocks(intent.distribution)}`;
+    chancesEl.dataset.tip = formatChancePercents(intent.distribution);
+    meta.appendChild(tagsEl);
+    meta.appendChild(chancesEl);
     li.appendChild(meta);
 
     let assignments = [];
@@ -1381,7 +1818,7 @@ async function refreshIntents({ force = false } = {}) {
     if (!editor) {
       const assignBtn = document.createElement("button");
       assignBtn.type = "button";
-      assignBtn.textContent = "Assign";
+      setSymbolButton(assignBtn, BTN.add, "Assign hours");
       assignBtn.addEventListener("click", () => {
         hoursEditorState.set(intent.id, { mode: "add" });
         void refreshIntents();
@@ -1515,14 +1952,9 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
     .value.split(/[,]+/)
     .map((tag) => tag.trim())
     .filter(Boolean);
-  const five = Number(document.getElementById("chance-five").value);
-  const four = Number(document.getElementById("chance-four").value);
-  const three = Number(document.getElementById("chance-three").value);
-  const two = Number(document.getElementById("chance-two").value);
-  const one = Number(document.getElementById("chance-one").value);
-  const unrated = Number(document.getElementById("chance-unrated").value);
-  const total = five + four + three + two + one + unrated;
-  if (Math.abs(total - 100) > 0.01) {
+  const chances = readChances();
+  const total = sumChances(chances);
+  if (total !== 100) {
     status.textContent = `Star chances must sum to 100% (got ${total})`;
     return;
   }
@@ -1531,12 +1963,12 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
     name,
     tags,
     distribution: {
-      five: five / 100,
-      four: four / 100,
-      three: three / 100,
-      two: two / 100,
-      one: one / 100,
-      unrated: unrated / 100,
+      five: chances["chance-five"] / 100,
+      four: chances["chance-four"] / 100,
+      three: chances["chance-three"] / 100,
+      two: chances["chance-two"] / 100,
+      one: chances["chance-one"] / 100,
+      unrated: chances["chance-unrated"] / 100,
     },
   };
 
@@ -1834,16 +2266,15 @@ document.getElementById("player-mark").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("player-rate").addEventListener("click", async () => {
+document.getElementById("player-stars").addEventListener("change", async () => {
   const status = document.getElementById("player-status");
+  const stars = document.getElementById("player-stars").value;
+  if (!stars) {
+    return;
+  }
   const player = await (await fetch("/api/player")).json();
   if (!player.current_mix_id) {
     status.textContent = "Nothing to rate";
-    return;
-  }
-  const stars = document.getElementById("player-stars").value;
-  if (!stars) {
-    status.textContent = "Choose 1–5 stars";
     return;
   }
   try {
@@ -1950,6 +2381,9 @@ document.getElementById("player-tag").addEventListener("click", async () => {
 });
 
 (async () => {
+  initSectionInfo();
+  initActionTips();
+  initChanceSelects();
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();

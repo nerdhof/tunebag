@@ -24,6 +24,7 @@ def test_mixes_api_includes_artist_fields(tmp_path: Path) -> None:
         platform=Platform.SOUNDCLOUD,
         platform_id="a",
         artist_name="DJ Example",
+        size_bytes=4_000_000,
     )
 
     client = TestClient(create_app(agent))
@@ -36,7 +37,9 @@ def test_mixes_api_includes_artist_fields(tmp_path: Path) -> None:
     assert row["id"] == str(mix.id)
     assert row["artist_id"] == str(mix.artist_id)
     assert row["artist"] == "DJ Example"
+    assert row["artist_url"] == "https://example.com/a"
     assert row["title"] == "Set A"
+    assert row["size_bytes"] == 4_000_000
 
 
 def test_delete_artists_api_removes_artist_and_mixes(tmp_path: Path) -> None:

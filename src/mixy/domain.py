@@ -52,6 +52,7 @@ class Mix(BaseModel):
     title: str
     url: str
     duration_seconds: int
+    size_bytes: int | None = None
     tags: list[str] = Field(default_factory=list)
     stars: Stars | None = None
     rejected: bool = False

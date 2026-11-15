@@ -28,6 +28,7 @@ def _source_with_two_artists() -> FakeSource:
                     title="Alpha Long Set",
                     url="https://soundcloud.com/dj-alpha/long",
                     duration_seconds=3600,
+                    size_bytes=12_345_678,
                 ),
                 Upload(
                     platform=Platform.SOUNDCLOUD,
@@ -70,6 +71,7 @@ def test_one_artist_url_adds_catalog_rows_without_audio() -> None:
     assert [m.title for m in laptop.mixes()] == ["Alpha Long Set"]
     long = laptop.mixes()[0]
     assert long.duration_seconds == 3600
+    assert long.size_bytes == 12_345_678
     assert long.url == "https://soundcloud.com/dj-alpha/long"
     assert [a.name for a in laptop.artists()] == ["DJ Alpha"]
     assert laptop.files() == []
