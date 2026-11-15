@@ -2722,6 +2722,58 @@ document.getElementById("play-history-show-rejected")?.addEventListener("change"
   await refreshMixes({ force: true });
 });
 
+/** Notice section taxonomy mirrored from DeviceAgent UI view notices. */
+const VIEW_NOTICE_SECTIONS = ["mixes", "play_history", "intents", "peers", "cache"];
+
+async function refreshAllViewSurfaces() {
+  await refreshPeers();
+  await refreshMixes({ force: true });
+  await refreshPlayHistory();
+  await refreshIntents({ force: true });
+  await refreshFiles({ force: true });
+}
+
+async function refreshViewSections(sections) {
+  const wanted = new Set(sections);
+  // Independent branches: a burst may name both mixes and play_history.
+  if (wanted.has("mixes")) {
+    await refreshMixes({ force: true });
+  }
+  if (wanted.has("play_history") && !wanted.has("mixes")) {
+    // refreshMixes already refreshes Play history when mixes are included.
+    await refreshPlayHistory();
+  }
+  if (wanted.has("intents")) {
+    await refreshIntents({ force: true });
+  }
+  if (wanted.has("peers")) {
+    await refreshPeers();
+  }
+  if (wanted.has("cache")) {
+    await refreshFiles({ force: true });
+  }
+}
+
+function connectViewNotices() {
+  const es = new EventSource("/api/view-notices");
+  es.addEventListener("open", () => {
+    void refreshAllViewSurfaces();
+  });
+  es.addEventListener("notice", (event) => {
+    let section = null;
+    try {
+      const payload = JSON.parse(event.data);
+      section = payload?.section;
+    } catch (err) {
+      console.error("view notice parse failed", err);
+      return;
+    }
+    if (!section || !VIEW_NOTICE_SECTIONS.includes(section)) return;
+    void refreshViewSections([section]);
+  });
+  return es;
+}
+
 (async () => {
   initSectionInfo();
   initActionTips();
@@ -2745,5 +2797,6 @@ document.getElementById("play-history-show-rejected")?.addEventListener("change"
   await refreshIntents();
   await refreshPlayerIntents();
   await refreshPlayer();
+  connectViewNotices();
   setInterval(refreshActivity, 1000);
 })();

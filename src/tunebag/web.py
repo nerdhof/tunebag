@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ import httpx
 import qrcode
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,6 +23,7 @@ from tunebag.agent import DeviceAgent, DeviceHoursSpec
 from tunebag.domain import StarDistribution, Stars
 from tunebag.pairing import payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
+from tunebag.ui_notices import UIViewNotice
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -212,6 +216,26 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     @app.get("/api/activity")
     def activity() -> dict:
         return {"entries": [entry.as_dict() for entry in agent.activity()]}
+
+    @app.get("/api/view-notices", response_class=EventSourceResponse)
+    async def view_notices() -> AsyncIterator[ServerSentEvent]:
+        """Observe-only SSE of coalesced UI section notices for this Device."""
+        queue: asyncio.Queue[UIViewNotice] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def on_notice(notice: UIViewNotice) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, notice)
+
+        unsubscribe = agent.subscribe_view_notices(on_notice)
+        try:
+            while True:
+                notice = await queue.get()
+                yield ServerSentEvent(
+                    data={"section": notice.section.value},
+                    event="notice",
+                )
+        finally:
+            unsubscribe()
 
     @app.post("/api/pair")
     def pair(body: PairBody) -> dict:
