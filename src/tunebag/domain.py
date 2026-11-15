@@ -57,6 +57,7 @@ class Mix(BaseModel):
     stars: Stars | None = None
     rejected: bool = False
     played: bool = False
+    last_heard_at: datetime | None = None
     added_at: datetime = Field(default_factory=datetime.utcnow)
 
     @field_validator("tags")

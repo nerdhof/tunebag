@@ -358,6 +358,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "stars": int(mix.stars) if mix.stars is not None else None,
                     "played": mix.played,
                     "rejected": mix.rejected,
+                    "last_heard_at": (
+                        mix.last_heard_at.isoformat()
+                        if mix.last_heard_at is not None
+                        else None
+                    ),
                     "reject_pending_until": pending_until.get(str(mix.id)),
                 }
                 for mix in agent.mixes()

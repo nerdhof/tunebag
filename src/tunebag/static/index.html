@@ -200,6 +200,38 @@
         </form>
         <p id="intent-status" class="muted" role="status"></p>
       </section>
+      <section id="play-history">
+        <h2 class="section-heading">
+          Play history
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Play history"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Mixes with a Last heard, newest first. Last heard is recorded when listening crosses
+              max(120 seconds, 5% of duration). Rate, tag, and resume land in a later pass.
+            </span>
+          </span>
+        </h2>
+        <div id="play-history-table-wrap">
+          <table id="play-history-table">
+            <thead>
+              <tr>
+                <th>Last heard</th>
+                <th>Artist</th>
+                <th>Title</th>
+                <th>Length</th>
+              </tr>
+            </thead>
+            <tbody id="play-history-body"></tbody>
+          </table>
+        </div>
+      </section>
       <section id="catalog">
         <h2 class="section-heading">
           Catalog
@@ -400,6 +432,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=30"></script>
+    <script src="/static/app.js?v=31"></script>
   </body>
 </html>

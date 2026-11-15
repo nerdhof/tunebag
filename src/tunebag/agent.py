@@ -75,6 +75,9 @@ from tunebag.source import (
 _HTTP_TIMEOUT = 5.0
 PLAYED_THRESHOLD = 0.75
 PLAYHEAD_NEAR_SECONDS = 120.0
+# Meaningful listen: position reaches max(120s, 5% of duration); rising edge only.
+LAST_HEARD_FLOOR_SECONDS = 120.0
+LAST_HEARD_DURATION_FRACTION = 0.05
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 EXPLORE_DISTRIBUTION = StarDistribution(
@@ -157,6 +160,7 @@ class DeviceAgent:
         self._played_mix_ids: set[UUID] = set()
         self._pending_tags: dict[UUID, list[str]] = {}
         self._pending_stars: dict[UUID, Stars] = {}
+        self._pending_last_heard: dict[UUID, datetime] = {}
         self._pending_sequences: dict[UUID, Sequence] = {}
         self._pending_assignments: dict[tuple[UUID, UUID], Assignment | None] = {}
         self._event_seq = 0
@@ -573,7 +577,11 @@ class DeviceAgent:
         return self._playing_intent_id
 
     def report_playhead(self, position_seconds: float) -> Playhead:
-        """Update the playhead for the current mix; mark played at or past 75%."""
+        """Update the playhead for the current mix; mark played at or past 75%.
+
+        Emits Last heard on the rising edge when position crosses
+        max(120s, 5% of duration) from below.
+        """
         mix_id = self._current_mix_id
         if mix_id is None:
             raise ValueError("no current mix")
@@ -581,6 +589,10 @@ class DeviceAgent:
         if mix is None:
             raise KeyError(f"unknown mix {mix_id}")
         pos = float(position_seconds)
+        previous = 0.0
+        existing_head = self.catalog.playheads.get(mix_id)
+        if existing_head is not None:
+            previous = float(existing_head.position_seconds)
         self._playback_position = pos
         if self._playing and self._play_anchor_at is not None:
             self._play_anchor_position = pos
@@ -592,6 +604,12 @@ class DeviceAgent:
                 "position_seconds": pos,
             },
         )
+        threshold = _last_heard_threshold(mix.duration_seconds)
+        if previous < threshold <= pos:
+            self._append_and_apply(
+                EventType.LAST_HEARD,
+                {"mix_id": str(mix_id)},
+            )
         mix = self.catalog.mixes[mix_id]
         if not mix.played and mix.duration_seconds > 0:
             if pos >= PLAYED_THRESHOLD * mix.duration_seconds:
@@ -2148,6 +2166,11 @@ class DeviceAgent:
                     if mix_id in self._played_mix_ids
                     else (existing.played if existing is not None else False)
                 ),
+                last_heard_at=(
+                    self._pending_last_heard.get(mix_id)
+                    if mix_id in self._pending_last_heard
+                    else (existing.last_heard_at if existing is not None else None)
+                ),
             )
             self.catalog.add_mix(mix)
             return
@@ -2278,6 +2301,16 @@ class DeviceAgent:
             mix = self.catalog.mixes.get(mix_id)
             if mix is not None and not mix.played:
                 self.catalog.add_mix(mix.model_copy(update={"played": True}))
+            return
+        if event.type is EventType.LAST_HEARD:
+            mix_id = UUID(payload["mix_id"])
+            if not self._merge_beats(("last_heard", str(mix_id)), event):
+                return
+            heard_at = event.created_at
+            self._pending_last_heard[mix_id] = heard_at
+            mix = self.catalog.mixes.get(mix_id)
+            if mix is not None:
+                self.catalog.add_mix(mix.model_copy(update={"last_heard_at": heard_at}))
             return
 
     def _sign(self, event: Event) -> str:
@@ -2483,6 +2516,14 @@ def _load_later_features() -> list[str]:
         if in_planned and line.startswith("- "):
             features.append(line[2:].strip())
     return features
+
+
+def _last_heard_threshold(duration_seconds: int) -> float:
+    """Meaningful-listen threshold: max(120s, 5% of duration)."""
+    return max(
+        LAST_HEARD_FLOOR_SECONDS,
+        LAST_HEARD_DURATION_FRACTION * float(duration_seconds),
+    )
 
 
 def _safe_filename(title: str, mix_id: UUID) -> str:

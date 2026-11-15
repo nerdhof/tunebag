@@ -1084,6 +1084,58 @@ async function refreshMixes({ force = false } = {}) {
     }
   }
   await refreshTagSuggestions();
+  await refreshPlayHistory(data.mixes);
+}
+
+function formatLastHeard(ts) {
+  if (!ts) return "";
+  const match = String(ts).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
+  if (match) return `${match[1]} ${match[2]}`;
+  return String(ts);
+}
+
+async function refreshPlayHistory(mixes) {
+  const body = document.getElementById("play-history-body");
+  if (!body) return;
+  let rows = mixes;
+  if (!Array.isArray(rows)) {
+    const res = await fetch("/api/mixes");
+    const data = await res.json();
+    rows = data.mixes || [];
+  }
+  const heard = rows
+    .filter((mix) => mix.last_heard_at)
+    .slice()
+    .sort((a, b) => String(b.last_heard_at).localeCompare(String(a.last_heard_at)));
+  body.replaceChildren();
+  if (!heard.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "muted";
+    td.textContent = "No listens yet";
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  for (const mix of heard) {
+    const tr = document.createElement("tr");
+    tr.className = "play-history-row";
+    tr.dataset.mixId = mix.id;
+    const heardCell = document.createElement("td");
+    heardCell.textContent = formatLastHeard(mix.last_heard_at);
+    tr.appendChild(heardCell);
+    const artistCell = document.createElement("td");
+    artistCell.textContent = mix.artist || "Unknown";
+    tr.appendChild(artistCell);
+    const titleCell = document.createElement("td");
+    titleCell.textContent = mix.title || "";
+    tr.appendChild(titleCell);
+    const lengthCell = document.createElement("td");
+    lengthCell.textContent = formatDuration(mix.duration_seconds || 0);
+    tr.appendChild(lengthCell);
+    body.appendChild(tr);
+  }
 }
 
 async function refreshTagSuggestions() {
