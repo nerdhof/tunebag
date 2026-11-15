@@ -4,11 +4,15 @@
 
 **Blocked by:** 01: Last heard from play; 02: Un-reject + Catalog reject UX
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] Play history rows support Rate and Tag against the Mix’s Catalog fields (same LWW behaviour as player / existing APIs)
-- [ ] Play history Reject uses the same pending undo pipeline as player and Catalog; committed rejected rows show Un-reject
-- [ ] Play history has a Rejected filter chip defaulting off; rejected rows are muted when shown
-- [ ] Resume from a History row loads that Mix into the player at the Catalog Playhead
-- [ ] Catalog mix rows do not gain star-edit controls (display only); annotate workflow stays on History + player
-- [ ] End-to-end behaviour verified via DeviceAgent where possible, plus the History/Catalog UI contracts the browser needs
+- [x] Play history rows support Rate and Tag against the Mix’s Catalog fields (same LWW behaviour as player / existing APIs)
+- [x] Play history Reject uses the same pending undo pipeline as player and Catalog; committed rejected rows show Un-reject
+- [x] Play history has a Rejected filter chip defaulting off; rejected rows are muted when shown
+- [x] Resume from a History row loads that Mix into the player at the Catalog Playhead
+- [x] Catalog mix rows do not gain star-edit controls (display only); annotate workflow stays on History + player
+- [x] End-to-end behaviour verified via DeviceAgent where possible, plus the History/Catalog UI contracts the browser needs
+
+## Comments
+
+- Implemented: Play history Rejected filter (`#play-history-show-rejected`, `showRejectedHistory` default off); rows get Rate (`history-stars` → `/rate`), Tag, Reject/undo/Un-reject (same pending timer via `scheduleCatalogRejectRefresh`), muted `.mix-rejected`, Resume → `POST /api/player/play` with `mix_id` at Catalog Playhead. Catalog rating stays text-only. Tests in `tests/test_play_history_annotate_resume.py`.

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tunebag</title>
-    <link rel="stylesheet" href="/static/app.css?v=33" />
+    <link rel="stylesheet" href="/static/app.css?v=34" />
   </head>
   <body>
     <main>
@@ -213,11 +213,18 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              Mixes with a Last heard, newest first. Last heard is recorded when listening crosses
-              max(120 seconds, 5% of duration). Rate, tag, and resume land in a later pass.
+              Mixes with a Last heard, newest first. Rate, tag, reject (20s undo) or Un-reject, and
+              resume at the Catalog Playhead from each row. Rejected mixes stay hidden unless the
+              Rejected filter is on (muted when shown).
             </span>
           </span>
         </h2>
+        <div class="catalog-toolbar">
+          <label class="filter-chip" title="Show rejected mixes (muted)">
+            <input type="checkbox" id="play-history-show-rejected" />
+            Rejected
+          </label>
+        </div>
         <div id="play-history-table-wrap">
           <table id="play-history-table">
             <thead>
@@ -226,6 +233,9 @@
                 <th>Artist</th>
                 <th>Title</th>
                 <th>Length</th>
+                <th>Rating</th>
+                <th>Tags</th>
+                <th></th>
               </tr>
             </thead>
             <tbody id="play-history-body"></tbody>
@@ -432,6 +442,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=31"></script>
+    <script src="/static/app.js?v=32"></script>
   </body>
 </html>

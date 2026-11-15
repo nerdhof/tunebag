@@ -730,6 +730,55 @@ button:disabled {
   opacity: 0.72;
 }
 
+#play-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+#play-history-table th,
+#play-history-table td {
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+#play-history-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  z-index: 1;
+  font-weight: 600;
+}
+
+#play-history-table .play-history-row.mix-rejected {
+  color: var(--muted);
+  opacity: 0.72;
+}
+
+#play-history-table .tag-cell {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+#play-history-table .history-reject,
+#play-history-table .history-undo-reject,
+#play-history-table .history-un-reject,
+#play-history-table .history-resume,
+#play-history-table .history-tag {
+  margin: 0;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+#play-history-table .history-stars {
+  max-width: 4.5rem;
+}
+
 #catalog-table .catalog-reject,
 #catalog-table .catalog-undo-reject,
 #catalog-table .catalog-un-reject {

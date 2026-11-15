@@ -8,6 +8,8 @@ const expandedIntentPanes = new Set();
 const hoursEditorState = new Map();
 /** Catalog Rejected filter (default off). */
 let showRejectedCatalog = false;
+/** Play history Rejected filter (default off). */
+let showRejectedHistory = false;
 let rejectUndoTimer = null;
 /** @type {Map<string, number>} mixId → timeout handle for catalog reject undo refresh */
 const catalogRejectTimers = new Map();
@@ -34,6 +36,7 @@ const BTN = {
   sync: "⇄",
   setCurrent: "◉",
   clearCurrent: "○",
+  resume: "▶",
 };
 
 function setSymbolButton(btn, symbol, label) {
@@ -1105,13 +1108,14 @@ async function refreshPlayHistory(mixes) {
   }
   const heard = rows
     .filter((mix) => mix.last_heard_at)
+    .filter((mix) => showRejectedHistory || !mix.rejected)
     .slice()
     .sort((a, b) => String(b.last_heard_at).localeCompare(String(a.last_heard_at)));
   body.replaceChildren();
   if (!heard.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 4;
+    td.colSpan = 7;
     td.className = "muted";
     td.textContent = "No listens yet";
     tr.appendChild(td);
@@ -1121,7 +1125,9 @@ async function refreshPlayHistory(mixes) {
   for (const mix of heard) {
     const tr = document.createElement("tr");
     tr.className = "play-history-row";
+    if (mix.rejected) tr.classList.add("mix-rejected");
     tr.dataset.mixId = mix.id;
+
     const heardCell = document.createElement("td");
     heardCell.textContent = formatLastHeard(mix.last_heard_at);
     tr.appendChild(heardCell);
@@ -1134,6 +1140,180 @@ async function refreshPlayHistory(mixes) {
     const lengthCell = document.createElement("td");
     lengthCell.textContent = formatDuration(mix.duration_seconds || 0);
     tr.appendChild(lengthCell);
+
+    const ratingCell = document.createElement("td");
+    const starsSelect = document.createElement("select");
+    starsSelect.className = "history-stars";
+    starsSelect.setAttribute("aria-label", "Rate mix");
+    const blankOpt = document.createElement("option");
+    blankOpt.value = "";
+    blankOpt.textContent = "—";
+    starsSelect.appendChild(blankOpt);
+    for (let s = 1; s <= 5; s += 1) {
+      const opt = document.createElement("option");
+      opt.value = String(s);
+      opt.textContent = `${s}★`;
+      starsSelect.appendChild(opt);
+    }
+    if (mix.stars != null) starsSelect.value = String(mix.stars);
+    starsSelect.addEventListener("change", async (event) => {
+      event.stopPropagation();
+      const stars = Number(starsSelect.value);
+      if (!stars) return;
+      const rateRes = await fetch(`/api/mixes/${mix.id}/rate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stars }),
+      });
+      if (rateRes.ok) {
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+      }
+    });
+    ratingCell.appendChild(starsSelect);
+    tr.appendChild(ratingCell);
+
+    const tagsCell = document.createElement("td");
+    const tagRow = document.createElement("div");
+    tagRow.className = "tag-cell history-tag-cell";
+    const tagInput = document.createElement("input");
+    tagInput.type = "text";
+    tagInput.className = "history-tags";
+    tagInput.setAttribute("list", "tag-suggestions");
+    tagInput.placeholder = "tags";
+    tagInput.value = (mix.tags || []).join(", ");
+    tagInput.addEventListener("click", (event) => event.stopPropagation());
+    tagRow.appendChild(tagInput);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "history-tag";
+    setSymbolButton(saveBtn, BTN.save, "Save tags");
+    saveBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const tags = tagInput.value
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+      const saveRes = await fetch(`/api/mixes/${mix.id}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tags }),
+      });
+      if (saveRes.ok) {
+        const saved = await saveRes.json();
+        tagInput.value = (saved.mix?.tags || tags).join(", ");
+        await refreshTagSuggestions();
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+      }
+    });
+    tagRow.appendChild(saveBtn);
+
+    const rejectBtn = document.createElement("button");
+    rejectBtn.type = "button";
+    rejectBtn.className = "history-reject";
+    const undoBtn = document.createElement("button");
+    undoBtn.type = "button";
+    undoBtn.className = "history-undo-reject";
+    const unRejectBtn = document.createElement("button");
+    unRejectBtn.type = "button";
+    unRejectBtn.className = "history-un-reject";
+    setSymbolButton(rejectBtn, BTN.reject, "Reject mix");
+    setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
+    setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject mix");
+
+    const pendingUntil = mix.reject_pending_until;
+    if (pendingUntil) {
+      rejectBtn.hidden = true;
+      unRejectBtn.hidden = true;
+      undoBtn.hidden = false;
+      scheduleCatalogRejectRefresh(mix.id, pendingUntil);
+    } else if (mix.rejected) {
+      rejectBtn.hidden = true;
+      undoBtn.hidden = true;
+      unRejectBtn.hidden = false;
+      clearCatalogRejectTimer(mix.id);
+    } else {
+      rejectBtn.hidden = false;
+      undoBtn.hidden = true;
+      unRejectBtn.hidden = true;
+      clearCatalogRejectTimer(mix.id);
+    }
+
+    rejectBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
+      if (res.ok) {
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+      }
+    });
+    undoBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const res = await fetch(`/api/mixes/${mix.id}/undo-reject`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        clearCatalogRejectTimer(mix.id);
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+      }
+    });
+    unRejectBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const res = await fetch(`/api/mixes/${mix.id}/un-reject`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+        await refreshIntents();
+      }
+    });
+    tagRow.appendChild(rejectBtn);
+    tagRow.appendChild(undoBtn);
+    tagRow.appendChild(unRejectBtn);
+    tagsCell.appendChild(tagRow);
+    tr.appendChild(tagsCell);
+
+    const actionsCell = document.createElement("td");
+    const resumeBtn = document.createElement("button");
+    resumeBtn.type = "button";
+    resumeBtn.className = "history-resume";
+    setSymbolButton(resumeBtn, BTN.resume, "Resume at Catalog Playhead");
+    resumeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const intentId = document.getElementById("player-intent")?.value;
+      const status = document.getElementById("player-status");
+      if (!intentId) {
+        if (status) status.textContent = "Choose an intent";
+        return;
+      }
+      if (status) status.textContent = "Resuming…";
+      try {
+        const res = await fetch("/api/player/play", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ intent_id: intentId, mix_id: mix.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (status) status.textContent = data.detail || "Resume failed";
+          return;
+        }
+        if (status) status.textContent = `Playing “${data.mix.title}”`;
+        document.getElementById("later-panel").hidden = true;
+        lastPlayheadCommitAt = Date.now();
+        await refreshPlayer();
+        await refreshFiles();
+      } catch (err) {
+        if (status) status.textContent = "Resume request failed";
+        console.error(err);
+      }
+    });
+    actionsCell.appendChild(resumeBtn);
+    tr.appendChild(actionsCell);
+
     body.appendChild(tr);
   }
 }
@@ -2537,6 +2717,11 @@ document.getElementById("catalog-show-rejected")?.addEventListener("change", asy
   await refreshMixes({ force: true });
 });
 
+document.getElementById("play-history-show-rejected")?.addEventListener("change", async (event) => {
+  showRejectedHistory = Boolean(event.target.checked);
+  await refreshMixes({ force: true });
+});
+
 (async () => {
   initSectionInfo();
   initActionTips();
@@ -2545,6 +2730,11 @@ document.getElementById("catalog-show-rejected")?.addEventListener("change", asy
   if (rejectedFilter) {
     rejectedFilter.checked = false;
     showRejectedCatalog = false;
+  }
+  const historyRejectedFilter = document.getElementById("play-history-show-rejected");
+  if (historyRejectedFilter) {
+    historyRejectedFilter.checked = false;
+    showRejectedHistory = false;
   }
   await refreshHealth();
   await refreshActivity();
