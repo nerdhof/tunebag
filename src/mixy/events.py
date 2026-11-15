@@ -32,6 +32,8 @@ class Event(BaseModel):
     type: EventType
     device_id: UUID
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Per-author monotonic counter for last-by-(device_id, seq) merge (signed).
+    seq: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
     signature: str | None = None  # set when device keys are wired
 

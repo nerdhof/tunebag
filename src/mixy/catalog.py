@@ -74,10 +74,9 @@ class Catalog:
         return device
 
     def set_playhead(self, playhead: Playhead) -> Playhead:
-        existing = self.playheads.get(playhead.mix_id)
-        if existing is None or playhead.updated_at >= existing.updated_at:
-            self.playheads[playhead.mix_id] = playhead
-        return self.playheads[playhead.mix_id]
+        """Store Playhead as given; hybrid merge is decided by the DeviceAgent."""
+        self.playheads[playhead.mix_id] = playhead
+        return playhead
 
     def all_tags(self) -> list[str]:
         tags: set[str] = set()
