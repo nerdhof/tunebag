@@ -19,6 +19,7 @@ class EventType(str, Enum):
     MIX_TAGGED = "mix_tagged"
     MIX_RATED = "mix_rated"
     MIX_REJECTED = "mix_rejected"
+    MIX_UNREJECTED = "mix_unrejected"
     INTENT_UPSERTED = "intent_upserted"
     INTENT_DELETED = "intent_deleted"
     SEQUENCE_BUILT = "sequence_built"

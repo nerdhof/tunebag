@@ -6,7 +6,11 @@ const expandedCacheIntents = new Set();
 const expandedIntentPanes = new Set();
 /** @type {Map<string, {mode: "add"|"edit", deviceId?: string}>} */
 const hoursEditorState = new Map();
+/** Catalog Rejected filter (default off). */
+let showRejectedCatalog = false;
 let rejectUndoTimer = null;
+/** @type {Map<string, number>} mixId → timeout handle for catalog reject undo refresh */
+const catalogRejectTimers = new Map();
 let fillWasInProgress = false;
 let lastFilesRefreshAt = 0;
 let filesRefreshInFlight = null;
@@ -23,6 +27,7 @@ const BTN = {
   fill: "⬇",
   delete: "⌫",
   reject: "✕",
+  unreject: "↺",
   add: "✚",
   save: "✓",
   cancel: "×",
@@ -733,14 +738,18 @@ function setCacheGroupExpanded(groupKey, expanded) {
 
 function artistGroupSummary(mixes) {
   let durationSeconds = 0;
+  let rejected = 0;
   for (const mix of mixes) {
     durationSeconds += Number(mix.duration_seconds) || 0;
+    if (mix.rejected) rejected += 1;
   }
   const count = mixes.length;
   if (count <= 0) {
     return "0";
   }
-  return `${count}, ${formatDuration(durationSeconds)}`;
+  const base = `${count}, ${formatDuration(durationSeconds)}`;
+  if (rejected <= 0) return base;
+  return `${base} · ${rejected} rejected`;
 }
 
 function groupMixesByArtist(mixes) {
@@ -793,6 +802,28 @@ function setArtistExpanded(artistId, expanded) {
   else expandedCatalogArtists.delete(artistId);
 }
 
+function clearCatalogRejectTimer(mixId) {
+  const handle = catalogRejectTimers.get(mixId);
+  if (handle != null) {
+    clearTimeout(handle);
+    catalogRejectTimers.delete(mixId);
+  }
+}
+
+function scheduleCatalogRejectRefresh(mixId, untilIso) {
+  clearCatalogRejectTimer(mixId);
+  if (!untilIso) return;
+  const untilMs = Date.parse(untilIso);
+  if (Number.isNaN(untilMs)) return;
+  const delay = Math.max(0, untilMs - Date.now()) + 50;
+  const handle = setTimeout(async () => {
+    catalogRejectTimers.delete(mixId);
+    await refreshMixes({ force: true });
+    await refreshPlayer();
+  }, delay);
+  catalogRejectTimers.set(mixId, handle);
+}
+
 async function refreshMixes({ force = false } = {}) {
   const body = document.getElementById("catalog-body");
   if (!force && focusInside(body)) return;
@@ -812,6 +843,9 @@ async function refreshMixes({ force = false } = {}) {
   }
 
   for (const group of groupMixesByArtist(data.mixes)) {
+    const visibleMixes = showRejectedCatalog
+      ? group.mixes
+      : group.mixes.filter((mix) => !mix.rejected);
     const expanded = expandedCatalogArtists.has(group.artistId);
     const header = document.createElement("tr");
     header.className = "artist-row";
@@ -924,9 +958,10 @@ async function refreshMixes({ force = false } = {}) {
     });
     body.appendChild(header);
 
-    for (const mix of group.mixes) {
+    for (const mix of visibleMixes) {
       const tr = document.createElement("tr");
       tr.className = "mix-row";
+      if (mix.rejected) tr.classList.add("mix-rejected");
       tr.dataset.artistId = group.artistId;
       tr.dataset.mixId = mix.id;
       tr.hidden = !expanded;
@@ -978,6 +1013,71 @@ async function refreshMixes({ force = false } = {}) {
         }
       });
       tagRow.appendChild(saveBtn);
+
+      const rejectBtn = document.createElement("button");
+      rejectBtn.type = "button";
+      rejectBtn.className = "catalog-reject";
+      const undoBtn = document.createElement("button");
+      undoBtn.type = "button";
+      undoBtn.className = "catalog-undo-reject";
+      const unRejectBtn = document.createElement("button");
+      unRejectBtn.type = "button";
+      unRejectBtn.className = "catalog-un-reject";
+      setSymbolButton(rejectBtn, BTN.reject, "Reject mix");
+      setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
+      setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject mix");
+
+      const pendingUntil = mix.reject_pending_until;
+      if (pendingUntil) {
+        rejectBtn.hidden = true;
+        unRejectBtn.hidden = true;
+        undoBtn.hidden = false;
+        scheduleCatalogRejectRefresh(mix.id, pendingUntil);
+      } else if (mix.rejected) {
+        rejectBtn.hidden = true;
+        undoBtn.hidden = true;
+        unRejectBtn.hidden = false;
+        clearCatalogRejectTimer(mix.id);
+      } else {
+        rejectBtn.hidden = false;
+        undoBtn.hidden = true;
+        unRejectBtn.hidden = true;
+        clearCatalogRejectTimer(mix.id);
+      }
+
+      rejectBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
+        if (res.ok) {
+          await refreshMixes({ force: true });
+          await refreshPlayer();
+        }
+      });
+      undoBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const res = await fetch(`/api/mixes/${mix.id}/undo-reject`, {
+          method: "POST",
+        });
+        if (res.ok) {
+          clearCatalogRejectTimer(mix.id);
+          await refreshMixes({ force: true });
+          await refreshPlayer();
+        }
+      });
+      unRejectBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const res = await fetch(`/api/mixes/${mix.id}/un-reject`, {
+          method: "POST",
+        });
+        if (res.ok) {
+          await refreshMixes({ force: true });
+          await refreshPlayer();
+          await refreshIntents();
+        }
+      });
+      tagRow.appendChild(rejectBtn);
+      tagRow.appendChild(undoBtn);
+      tagRow.appendChild(unRejectBtn);
       tagsCell.appendChild(tagRow);
       tr.appendChild(tagsCell);
       body.appendChild(tr);
@@ -2380,10 +2480,20 @@ document.getElementById("player-tag").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("catalog-show-rejected")?.addEventListener("change", async (event) => {
+  showRejectedCatalog = Boolean(event.target.checked);
+  await refreshMixes({ force: true });
+});
+
 (async () => {
   initSectionInfo();
   initActionTips();
   initChanceSelects();
+  const rejectedFilter = document.getElementById("catalog-show-rejected");
+  if (rejectedFilter) {
+    rejectedFilter.checked = false;
+    showRejectedCatalog = false;
+  }
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();

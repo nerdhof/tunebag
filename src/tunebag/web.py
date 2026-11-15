@@ -417,6 +417,21 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             },
         }
 
+    @app.post("/api/mixes/{mix_id}/un-reject")
+    def un_reject(mix_id: UUID) -> dict:
+        try:
+            mix = agent.un_reject_mix(mix_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "mix": {
+                "id": str(mix.id),
+                "rejected": mix.rejected,
+                "reject_pending_until": None,
+            },
+        }
+
     @app.post("/api/mixes/{mix_id}/tags")
     def tag_mix(mix_id: UUID, body: TagBody) -> dict:
         try:
@@ -570,6 +585,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
     @app.get("/api/artists")
     def artists() -> dict:
+        mixes = agent.mixes()
         return {
             "artists": [
                 {
@@ -577,6 +593,10 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "name": artist.name,
                     "url": artist.url,
                     "platform": artist.platform.value,
+                    "mixes": sum(1 for m in mixes if m.artist_id == artist.id),
+                    "rejected_mixes": sum(
+                        1 for m in mixes if m.artist_id == artist.id and m.rejected
+                    ),
                 }
                 for artist in agent.artists()
             ]

@@ -617,6 +617,37 @@ button:disabled {
   border-radius: 8px;
 }
 
+.catalog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.65rem;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-chip:has(input:checked) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.filter-chip input {
+  margin: 0;
+}
+
 #catalog-table {
   width: 100%;
   border-collapse: collapse;
@@ -692,6 +723,20 @@ button:disabled {
 
 #catalog-table .mix-row[hidden] {
   display: none;
+}
+
+#catalog-table .mix-row.mix-rejected {
+  color: var(--muted);
+  opacity: 0.72;
+}
+
+#catalog-table .catalog-reject,
+#catalog-table .catalog-undo-reject,
+#catalog-table .catalog-un-reject {
+  margin: 0;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.85rem;
+  flex-shrink: 0;
 }
 
 #catalog-table .tag-cell {

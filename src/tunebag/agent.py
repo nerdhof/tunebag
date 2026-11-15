@@ -1216,6 +1216,20 @@ class DeviceAgent:
         """Cancel a pending reject during the undo window."""
         return self._rejects.undo(mix_id)
 
+    def un_reject_mix(self, mix_id: UUID) -> Mix:
+        """Clear a committed Reject so the Mix may re-enter sequences again."""
+        self.commit_pending_rejects()
+        if mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        if not self.catalog.mixes[mix_id].rejected:
+            return self.catalog.mixes[mix_id]
+        self._append_and_apply(
+            EventType.MIX_UNREJECTED,
+            {"mix_id": str(mix_id)},
+        )
+        self._rebuild_all_sequences()
+        return self.catalog.mixes[mix_id]
+
     def pending_rejects(self) -> list[RejectPending]:
         self.commit_pending_rejects()
         return self._rejects.pending()
@@ -2159,11 +2173,22 @@ class DeviceAgent:
             return
         if event.type is EventType.MIX_REJECTED:
             mix_id = UUID(payload["mix_id"])
+            if not self._merge_beats(("reject", str(mix_id)), event):
+                return
             self._rejected_mix_ids.add(mix_id)
             mix = self.catalog.mixes.get(mix_id)
             if mix is not None:
                 self.catalog.add_mix(mix.model_copy(update={"rejected": True}))
             self.remove_local_file(mix_id)
+            return
+        if event.type is EventType.MIX_UNREJECTED:
+            mix_id = UUID(payload["mix_id"])
+            if not self._merge_beats(("reject", str(mix_id)), event):
+                return
+            self._rejected_mix_ids.discard(mix_id)
+            mix = self.catalog.mixes.get(mix_id)
+            if mix is not None:
+                self.catalog.add_mix(mix.model_copy(update={"rejected": False}))
             return
         if event.type is EventType.INTENT_UPSERTED:
             intent_id = UUID(payload["id"])

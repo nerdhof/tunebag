@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tunebag</title>
-    <link rel="stylesheet" href="/static/app.css?v=32" />
+    <link rel="stylesheet" href="/static/app.css?v=33" />
   </head>
   <body>
     <main>
@@ -214,10 +214,17 @@
             </button>
             <span class="section-info-tip" role="tooltip">
               Browse mixes by artist. Add SoundCloud or hearthis.at artist URLs, refresh listings, and
-              edit tags inline.
+              edit tags inline. Reject starts a 20s undo window; Un-reject restores sequence eligibility
+              without refetching audio.
             </span>
           </span>
         </h2>
+        <div class="catalog-toolbar">
+          <label class="filter-chip" title="Show rejected mixes (muted)">
+            <input type="checkbox" id="catalog-show-rejected" />
+            Rejected
+          </label>
+        </div>
         <div id="catalog-table-wrap">
           <table id="catalog-table">
             <thead>
