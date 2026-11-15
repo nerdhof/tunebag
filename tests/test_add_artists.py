@@ -7,9 +7,9 @@ from uuid import uuid4
 
 import pytest
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.source import ArtistListing, FakeSource, Upload
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.source import ArtistListing, FakeSource, Upload
 
 
 def _source_with_two_artists() -> FakeSource:

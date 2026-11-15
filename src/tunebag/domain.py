@@ -1,4 +1,4 @@
-"""Canonical domain types for mixy.
+"""Canonical domain types for Tunebag.
 
 See CONTEXT.md for vocabulary. Keep this module aligned with that glossary.
 """

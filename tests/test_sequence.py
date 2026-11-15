@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from mixy.domain import (
+from tunebag.domain import (
     DeviceHours,
     Intent,
     Mix,
@@ -14,7 +14,7 @@ from mixy.domain import (
     StarBucket,
     Stars,
 )
-from mixy.sequence import assign_by_budget, build_sequence
+from tunebag.sequence import assign_by_budget, build_sequence
 
 
 def _five_star_mixes(n: int) -> list[Mix]:

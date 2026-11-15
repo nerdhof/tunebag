@@ -8,7 +8,7 @@ Listening to DJ mixes is a manual loop. Mixes are downloaded from SoundCloud and
 
 ## Solution
 
-A listener runs mixy on the laptop and on the phone. Each device keeps the full catalog and only the audio its hours require. The listener adds artists, pairs the devices, and creates an intent: a tag filter and a star mix, with hours and an optional expiry per device. Both devices share one sequence. The phone's hours are the opening stretch of the laptop's hours. The laptop downloads that shared stretch and hands the files to the phone. The listener plays an intent in mixy's player, rates, tags, and rejects, and those signals sync when the devices can see each other. Played and rejected audio leaves the cache under the rules below. A metered link holds back new origin downloads. At the end of the demo, the listener sees the list of planned features that are not built yet.
+A listener runs Tunebag on the laptop and on the phone. Each device keeps the full catalog and only the audio its hours require. The listener adds artists, pairs the devices, and creates an intent: a tag filter and a star mix, with hours and an optional expiry per device. Both devices share one sequence. The phone's hours are the opening stretch of the laptop's hours. The laptop downloads that shared stretch and hands the files to the phone. The listener plays an intent in Tunebag's player, rates, tags, and rejects, and those signals sync when the devices can see each other. Played and rejected audio leaves the cache under the rules below. A metered link holds back new origin downloads. At the end of the demo, the listener sees the list of planned features that are not built yet.
 
 ## User Stories
 
@@ -23,7 +23,7 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 9. As a listener, I want catalog changes to sync between paired devices on the local network, so that a tag or rating made on one device appears on the other.
 10. As a listener, I want catalog sync to work on a metered link as well as on Wi-Fi, so that taste and plans travel even when audio does not.
 11. As a listener, I want catalog changes to sync automatically when a paired peer is reachable, so that I do not have to press Sync after every change.
-12. As a listener, I want to discover other mixy agents on the local network, so that I can find a peer without pasting its URL.
+12. As a listener, I want to discover other Tunebag agents on the local network, so that I can find a peer without pasting its URL.
 13. As a listener, I want previously paired peers and the catalog to survive restarting the agent, so that I do not have to pair again after a reboot.
 14. As a listener, I want to create an intent with a name, a tag filter, and a star distribution, so that "what kind of mix" is separate from "how many hours on which device".
 15. As a listener, I want an intent whose tags are several words to match only mixes that have all of those tags, so that a narrower plan does not fill with loosely related mixes.
@@ -60,7 +60,7 @@ A listener runs mixy on the laptop and on the phone. Each device keeps the full 
 46. As a listener, I want a peer copy, including over USB, to ignore the metered cap, so that local transfer does not spend mobile data.
 47. As a listener, I want a simulated metered switch in the demo, so that I can show the cap without a SIM.
 48. As a listener, I want each intent materialized as a folder of the mixes assigned to this device, so that I can see a plan as a set of files.
-49. As a listener, I want to play an intent in mixy's player, so that play, stars, reject, tags, and playhead are recorded by mixy.
+49. As a listener, I want to play an intent in Tunebag's player, so that play, stars, reject, tags, and playhead are recorded by Tunebag.
 50. As a listener, I want listening past 75% of a mix to count as played, so that finishing a set updates the catalog without an extra click.
 51. As a listener, I want an explicit Mark played control, so that the demo can advance without sitting through a long mix.
 52. As a listener, I want stopping before 75% to leave the mix in place in the sequence and on disk, so that a pause is not treated as finishing.

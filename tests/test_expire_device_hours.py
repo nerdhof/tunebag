@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.player import NullPlayer
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.player import NullPlayer
+from tunebag.source import FakeSource
 
 
 class FakeClock:

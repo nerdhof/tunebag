@@ -27,6 +27,7 @@ class EventType(str, Enum):
     PLAYED = "played"
     PLAYHEAD = "playhead"
     DEVICE_PAIRED = "device_paired"
+    DEVICE_UNPAIRED = "device_unpaired"
 
 
 class Event(BaseModel):

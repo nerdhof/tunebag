@@ -13,8 +13,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from mixy.domain import Platform
-from mixy.ytdlp_fetch import AudioFetcher, ProgressCallback, fetch_audio_bytes
+from tunebag.domain import Platform
+from tunebag.ytdlp_fetch import AudioFetcher, ProgressCallback, fetch_audio_bytes
 
 DEFAULT_MIN_DURATION_SECONDS = 20 * 60
 

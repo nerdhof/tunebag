@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform
+from tunebag.source import FakeSource
 
 
 def _add_mix(

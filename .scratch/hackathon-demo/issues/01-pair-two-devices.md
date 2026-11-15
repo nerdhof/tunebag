@@ -15,5 +15,5 @@
 
 ## Comments
 
-- Implemented `DeviceAgent` as the sole seam: QR/short-code pair, mutual peers, signed event sync. CLI is `mixy serve --name …` only; browser shows QR + short code + peer list. Tests in `tests/test_pair_two_devices.py`.
+- Implemented `DeviceAgent` as the sole seam: QR/short-code pair, mutual peers, signed event sync. CLI is `tunebag serve --name …` only; browser shows QR + short code + peer list. Tests in `tests/test_pair_two_devices.py`.
 - Manual Sync verified across two serve processes. Auto-sync, LAN discovery, and peer/catalog persistence deferred to issues 10–12.

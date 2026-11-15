@@ -7,9 +7,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, StarDistribution, Stars
-from mixy.reject import UNDO_SECONDS
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, StarDistribution, Stars
+from tunebag.reject import UNDO_SECONDS
 
 
 class _FakeClock:

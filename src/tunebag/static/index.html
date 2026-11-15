@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>mixy</title>
-    <link rel="stylesheet" href="/static/app.css?v=31" />
+    <title>Tunebag</title>
+    <link rel="stylesheet" href="/static/app.css?v=32" />
   </head>
   <body>
     <main>
-      <h1>mixy</h1>
+      <h1>Tunebag</h1>
       <p class="lede">
-        Distributed music cache. Companion player for play, stars, reject, tags, and playhead.
+        Music packed for every device. Companion player for play, rating, reject, tags, and playhead.
       </p>
       <section id="status">
         <p class="status-left"><span class="status-label">API:</span> <span id="health">checking…</span></p>
@@ -63,9 +63,9 @@
           </div>
         </div>
         <div class="form-row player-meta" aria-label="Rate and tag">
-          <label class="inline-field" title="Rate the current mix from 1 to 5 stars">
-            Stars
-            <select id="player-stars" title="Rate the current mix from 1 to 5 stars">
+          <label class="inline-field" title="Rate the current mix from 1 to 5">
+            Rating
+            <select id="player-stars" title="Rate the current mix from 1 to 5">
               <option value="">—</option>
               <option value="1">1</option>
               <option value="2">2</option>
@@ -139,7 +139,7 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              A plan is a tag filter and star mix. Assign hours (and optional expiry) per device after
+              A plan is a tag filter and rating distribution. Assign hours (and optional expiry) per device after
               creating; both share one seeded sequence, and the smaller budget is the opening stretch.
             </span>
           </span>
@@ -168,7 +168,7 @@
           </div>
           <details id="intent-chances">
             <summary class="has-tip" data-tip="30 | 20 | 10 | 10 | 0 | 30">
-              Star chances: ▃▂▁▁⠀▃
+              Rating chances: ▃▂▁▁⠀▃
             </summary>
             <div class="chance-grid">
               <label title="Share of the sequence for 5★ mixes">
@@ -393,6 +393,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=29"></script>
+    <script src="/static/app.js?v=30"></script>
   </body>
 </html>

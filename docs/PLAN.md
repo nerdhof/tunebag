@@ -1,4 +1,4 @@
-# mixy — locked hackathon plan
+# Tunebag — locked hackathon plan
 
 Shared understanding locked 2026-11-13. Do not reopen unless product decisions change.
 
@@ -7,14 +7,14 @@ Shared understanding locked 2026-11-13. Do not reopen unless product decisions c
 | Term | Meaning |
 | --- | --- |
 | Mix | One audio file (usually a DJ set). Duration of the file is the budget unit. |
-| Catalog | Artists, mixes, tags, stars, rejects, play history, intents, sequences, assignments. Fully replicated on every paired device. |
-| Sequence | Seeded ordered list of mixes for one intent, built from the tag filter and star distribution. Shared across devices. |
+| Catalog | Artists, mixes, tags, ratings, rejects, play history, intents, sequences, assignments. Fully replicated on every paired device. |
+| Sequence | Seeded ordered list of mixes for one intent, built from the tag filter and rating distribution. Shared across devices. |
 | Assignment | Which device hours cover which prefix of the sequence. Separate from whether the file is on disk. |
 | File | Audio bytes present on a device. Local only. |
-| Intent | Tag filter + star distribution. Device hours and expiry hang off the intent. |
-| Reject | Separate from stars. After a 20s local undo window, every device deletes the file and the mix never re-enters a sequence. |
+| Intent | Tag filter + rating distribution. Device hours and expiry hang off the intent. |
+| Reject | Separate from rating. After a 20s local undo window, every device deletes the file and the mix never re-enters a sequence. |
 
-Stars are 1–5. Unrated mixes may still enter a tagged sequence. The star distribution is six draw chances, 5★ through 1★ plus unrated, defaulting to 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3.
+Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating distribution is six draw chances, 5★ through 1★ plus unrated, defaulting to 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3.
 
 ## Rules
 
@@ -28,7 +28,7 @@ Stars are 1–5. Unrated mixes may still enter a tagged sequence. The star distr
 ### Intents
 
 - Tags on an intent mean AND (mix has all of them). Empty filter = untagged (exploratory).
-- Star distribution is always a draw probability, at any budget.
+- Rating distribution is always a draw probability, at any budget.
 - One seeded sequence fills until its duration is at least the largest device budget, and may include the mix that crosses that budget. Smaller budgets take the prefix (2h phone ≡ first 2h of 8h laptop).
 - Empty bucket → skip and rescale remaining probabilities.
 - A short stretch may be two 5★ mixes.
@@ -54,7 +54,7 @@ Stars are 1–5. Unrated mixes may still enter a tagged sequence. The star distr
 
 - Played = past 75% or explicit Mark played.
 - Playhead syncs; latest wins.
-- Stars and reject are separate.
+- Rating and reject are separate.
 - Tags editable from list and player; suggest existing tags.
 - Played → back of pool; delete bytes once replacement is local.
 - Reject → 20s local undo (no sync yet); then tombstone + delete everywhere.
@@ -72,6 +72,6 @@ Stars are 1–5. Unrated mixes may still enter a tagged sequence. The star distr
 3. Create an intent; set hours on both devices; set expiry on one.
 4. Watch caches fill (laptop fetches shared stretch; phone receives it).
 5. Flip metered → current + one ahead; Fill now tops up one intent.
-6. Play in our player: star / reject / tag / playhead; watch sync.
+6. Play in our player: rating / reject / tag / playhead; watch sync.
 7. Played and rejected files leave per rules above; expired device drops exclusive files.
 8. Close with later list ([LATER.md](LATER.md)).

@@ -4,11 +4,15 @@
 
 **Blocked by:** 02: Persist Identity + Event log; replay Catalog; 04: Key-proved meet
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] Unpair writes a replicated `DEVICE_UNPAIRED` event.
-- [ ] After apply, that Device’s future events are ignored for Catalog.
-- [ ] Locator hints and buffered events for that Peer are dropped.
-- [ ] Past applied Catalog effects from that author remain.
-- [ ] Re-establishing trust requires QR or short code again.
-- [ ] Agent-level test covers unpair, ignored future events, retained history, and re-pair gate.
+- [x] Unpair writes a replicated `DEVICE_UNPAIRED` event.
+- [x] After apply, that Device’s future events are ignored for Catalog.
+- [x] Locator hints and buffered events for that Peer are dropped.
+- [x] Past applied Catalog effects from that author remain.
+- [x] Re-establishing trust requires QR or short code again.
+- [x] Agent-level test covers unpair, ignored future events, retained history, and re-pair gate.
+
+## Comments
+
+- Implemented on DeviceAgent: `unpair(device_id)` appends `DEVICE_UNPAIRED`; apply revokes via `_revoke_peer` (remove from Catalog peers, drop Locator hint, clear buffered events, drop live proof). Sticky `_unpaired_device_ids` ignores that author’s future ingest (not buffered); remote `DEVICE_PAIRED` cannot restore trust — only local `pair` / short code. Past Catalog rows remain. Tests in `tests/test_unpair_device.py`.

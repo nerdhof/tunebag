@@ -1,6 +1,6 @@
-# 11: Discover mixy agents on the local network
+# 11: Discover Tunebag agents on the local network
 
-**What to build:** A Device can find other mixy agents on the LAN without the listener pasting a Locator. mDNS/DNS-SD advertise + browse; discovery refreshes reachability for already-trusted Peers after key proof; unknown ads are pair candidates only (QR or short code). See ADR 0002 and `CONTEXT.md`.
+**What to build:** A Device can find other Tunebag agents on the LAN without the listener pasting a Locator. mDNS/DNS-SD advertise + browse; discovery refreshes reachability for already-trusted Peers after key proof; unknown ads are pair candidates only (QR or short code). See ADR 0002 and `CONTEXT.md`.
 
 **Blocked by:** 01: Pair two devices
 

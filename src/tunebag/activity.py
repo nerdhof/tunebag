@@ -8,7 +8,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
-logger = logging.getLogger("mixy")
+logger = logging.getLogger("tunebag")
 
 _DEFAULT_CAPACITY = 200
 

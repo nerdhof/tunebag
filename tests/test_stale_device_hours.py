@@ -8,10 +8,10 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.source import FakeSource
-from mixy.web import create_app
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.source import FakeSource
+from tunebag.web import create_app
 
 
 def _pair(tmp_path: Path) -> tuple[DeviceAgent, DeviceAgent, FakeSource]:

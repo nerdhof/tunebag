@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from mixy.domain import RejectPending
+from tunebag.domain import RejectPending
 
 UNDO_SECONDS = 20
 

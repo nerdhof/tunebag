@@ -220,7 +220,7 @@ const CHANCE_IDS = [
   "chance-one",
   "chance-unrated",
 ];
-const CHANCE_STAR_IDS = CHANCE_IDS.slice(0, 5);
+const CHANCE_RATING_IDS = CHANCE_IDS.slice(0, 5);
 const CHANCE_DEFAULTS = {
   "chance-five": 30,
   "chance-four": 20,
@@ -268,7 +268,7 @@ function updateChanceSummary() {
   const summary = document.querySelector("#intent-chances > summary");
   if (!summary) return;
   const chances = readChances();
-  summary.textContent = `Star chances: ${formatChanceBlocksFromPct(chances)}`;
+  summary.textContent = `Rating chances: ${formatChanceBlocksFromPct(chances)}`;
   summary.removeAttribute("title");
   summary.classList.add("has-tip");
   summary.dataset.tip = formatChancePercentsFromPct(chances);
@@ -328,25 +328,25 @@ function rebalanceChances(changedId) {
   }
 
   if (changedId !== "chance-unrated") {
-    const starsSum = sumChances(chances, CHANCE_STAR_IDS);
-    const rest = 100 - starsSum;
+    const ratingsSum = sumChances(chances, CHANCE_RATING_IDS);
+    const rest = 100 - ratingsSum;
     if (rest >= 0) {
       chances["chance-unrated"] = rest;
     } else {
       chances["chance-unrated"] = 0;
-      const others = CHANCE_STAR_IDS.filter((id) => id !== changedId);
+      const others = CHANCE_RATING_IDS.filter((id) => id !== changedId);
       reduceLowestPositive(chances, others, -rest);
       total = sumChances(chances);
       if (total > 100) {
-        reduceLowestPositive(chances, CHANCE_STAR_IDS, total - 100);
+        reduceLowestPositive(chances, CHANCE_RATING_IDS, total - 100);
       }
     }
   } else if (total < 100) {
     chances["chance-five"] = Math.min(100, chances["chance-five"] + (100 - total));
     total = sumChances(chances);
     if (total < 100) {
-      // five was capped; put leftover on next stars high→low
-      for (const id of CHANCE_STAR_IDS) {
+      // five was capped; put leftover on next ratings high→low
+      for (const id of CHANCE_RATING_IDS) {
         if (total >= 100) break;
         const room = 100 - chances[id];
         const add = Math.min(room, 100 - total);
@@ -355,7 +355,7 @@ function rebalanceChances(changedId) {
       }
     }
   } else {
-    reduceLowestPositive(chances, CHANCE_STAR_IDS, total - 100);
+    reduceLowestPositive(chances, CHANCE_RATING_IDS, total - 100);
   }
   writeChances(chances);
 }
@@ -391,13 +391,13 @@ function setChancesFromDist(dist) {
   };
   const total = sumChances(chances);
   if (total !== 100) {
-    const starsSum = sumChances(chances, CHANCE_STAR_IDS);
-    const rest = 100 - starsSum;
+    const ratingsSum = sumChances(chances, CHANCE_RATING_IDS);
+    const rest = 100 - ratingsSum;
     if (rest >= 0) {
       chances["chance-unrated"] = rest;
     } else {
       chances["chance-unrated"] = 0;
-      reduceLowestPositive(chances, CHANCE_STAR_IDS, -rest);
+      reduceLowestPositive(chances, CHANCE_RATING_IDS, -rest);
     }
   }
   writeChances(chances);
@@ -1137,10 +1137,10 @@ async function refreshPlayer() {
     data.size_bytes != null && Number(data.size_bytes) > 0
       ? `${title} (${formatBytes(data.size_bytes)})`
       : title;
-  const starsEl = document.getElementById("player-stars");
+  const ratingEl = document.getElementById("player-stars");
   const tagsEl = document.getElementById("player-tags");
-  if (document.activeElement !== starsEl) {
-    starsEl.value = data.stars != null ? String(data.stars) : "";
+  if (document.activeElement !== ratingEl) {
+    ratingEl.value = data.stars != null ? String(data.stars) : "";
   }
   if (document.activeElement !== tagsEl) {
     tagsEl.value = (data.tags || []).join(", ");
@@ -1731,7 +1731,7 @@ async function refreshIntents({ force = false } = {}) {
     tagsEl.textContent = `Tags: ${intent.tags.length ? intent.tags.join(", ") : "-"}`;
     const chancesEl = document.createElement("span");
     chancesEl.className = "intent-meta-chances has-tip";
-    chancesEl.textContent = `Chances: ${formatChanceBlocks(intent.distribution)}`;
+    chancesEl.textContent = `Rating chances: ${formatChanceBlocks(intent.distribution)}`;
     chancesEl.dataset.tip = formatChancePercents(intent.distribution);
     meta.appendChild(tagsEl);
     meta.appendChild(chancesEl);
@@ -1955,7 +1955,7 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
   const chances = readChances();
   const total = sumChances(chances);
   if (total !== 100) {
-    status.textContent = `Star chances must sum to 100% (got ${total})`;
+    status.textContent = `Rating chances must sum to 100% (got ${total})`;
     return;
   }
 
@@ -2268,8 +2268,8 @@ document.getElementById("player-mark").addEventListener("click", async () => {
 
 document.getElementById("player-stars").addEventListener("change", async () => {
   const status = document.getElementById("player-status");
-  const stars = document.getElementById("player-stars").value;
-  if (!stars) {
+  const rating = document.getElementById("player-stars").value;
+  if (!rating) {
     return;
   }
   const player = await (await fetch("/api/player")).json();
@@ -2281,14 +2281,14 @@ document.getElementById("player-stars").addEventListener("change", async () => {
     const res = await fetch(`/api/mixes/${player.current_mix_id}/rate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stars: Number(stars) }),
+      body: JSON.stringify({ stars: Number(rating) }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       status.textContent = data.detail || "Rate failed";
       return;
     }
-    status.textContent = `Rated ${stars}★`;
+    status.textContent = `Rated ${rating}★`;
     await refreshMixes();
     await refreshPlayer();
   } catch (err) {

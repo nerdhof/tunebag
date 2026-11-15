@@ -12,7 +12,7 @@ import random
 from collections import defaultdict
 from uuid import UUID
 
-from mixy.domain import (
+from tunebag.domain import (
     Intent,
     Mix,
     Sequence,

@@ -4,7 +4,7 @@ Status: ready-for-agent
 
 ## Problem Statement
 
-Today a listener who kills or restarts mixy loses Catalog rows (artists, ratings, intents, pairing). Paired Devices also lose track of each other when IP addresses change across home, work, or hackspace, because reachability was treated like identity. Concurrent edits and clock skew can leave Peers disagreeing about Catalog state even after they sync.
+Today a listener who kills or restarts Tunebag loses Catalog rows (artists, ratings, intents, pairing). Paired Devices also lose track of each other when IP addresses change across home, work, or hackspace, because reachability was treated like identity. Concurrent edits and clock skew can leave Peers disagreeing about Catalog state even after they sync.
 
 ## Solution
 

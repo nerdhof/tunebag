@@ -15,11 +15,11 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from mixy import __version__
-from mixy.agent import DeviceAgent, DeviceHoursSpec
-from mixy.domain import StarDistribution, Stars
-from mixy.pairing import payload_to_qr_text
-from mixy.source import DEFAULT_MIN_DURATION_SECONDS
+from tunebag import __version__
+from tunebag.agent import DeviceAgent, DeviceHoursSpec
+from tunebag.domain import StarDistribution, Stars
+from tunebag.pairing import payload_to_qr_text
+from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -127,7 +127,7 @@ class TagBody(BaseModel):
 
 
 def create_app(agent: DeviceAgent) -> FastAPI:
-    app = FastAPI(title="mixy", version=__version__)
+    app = FastAPI(title="Tunebag", version=__version__)
     app.state.agent = agent
 
     if STATIC_DIR.exists():
@@ -825,4 +825,4 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
 
 # Default app for import without CLI name wiring.
-app = create_app(DeviceAgent("mixy"))
+app = create_app(DeviceAgent("tunebag"))

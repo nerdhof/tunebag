@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.source import ArtistListing, FakeSource, Upload
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.source import ArtistListing, FakeSource, Upload
 
 
 def test_add_artists_records_start_and_end() -> None:

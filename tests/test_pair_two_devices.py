@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform
-from mixy.pairing import generate_identity
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform
+from tunebag.pairing import generate_identity
 
 
 def test_pairing_payload_has_name_public_key_and_short_code_not_private_key() -> None:

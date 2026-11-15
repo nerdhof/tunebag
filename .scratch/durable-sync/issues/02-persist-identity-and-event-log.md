@@ -14,4 +14,4 @@
 
 ## Comments
 
-- Implemented: `identity.json` + `events.jsonl` under explicit `data_dir`; cold start empties Catalog and replays via `_apply`. CLI `serve` passes `~/.mixy`. Persistence only when `data_dir` is set so in-process multi-agent tests do not share one identity. Tests in `tests/test_persist_identity_and_event_log.py`.
+- Implemented: `identity.json` + `events.jsonl` under explicit `data_dir`; cold start empties Catalog and replays via `_apply`. CLI `serve --name` uses `~/.tunebag/<name>/` so multiple local instances do not share state. Persistence only when `data_dir` is set so in-process multi-agent tests do not share one identity. Tests in `tests/test_persist_identity_and_event_log.py`.

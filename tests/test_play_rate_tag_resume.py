@@ -9,10 +9,10 @@ from uuid import UUID
 
 import pytest
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.player import NullPlayer
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.player import NullPlayer
+from tunebag.source import FakeSource
 
 
 class _RecordingPlayer(NullPlayer):

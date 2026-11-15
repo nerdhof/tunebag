@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.source import FakeSource
 
 
 def _agent(tmp_path: Path, source: FakeSource | None = None) -> tuple[DeviceAgent, FakeSource]:

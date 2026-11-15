@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform
-from mixy.source import ArtistListing, FakeSource, Upload
-from mixy.web import create_app
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform
+from tunebag.source import ArtistListing, FakeSource, Upload
+from tunebag.web import create_app
 
 
 def test_mixes_api_includes_artist_fields(tmp_path: Path) -> None:

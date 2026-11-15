@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform
-from mixy.source import ArtistListing, FakeSource, Upload
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform
+from tunebag.source import ArtistListing, FakeSource, Upload
 
 
 def test_device_identity_survives_restart(tmp_path: Path) -> None:
@@ -19,6 +19,36 @@ def test_device_identity_survives_restart(tmp_path: Path) -> None:
 
     assert second.device_id == device_id
     assert second.public_key_pem == public_key
+
+
+def test_first_boot_seeds_explore_intent(tmp_path: Path) -> None:
+    data_dir = tmp_path / "laptop"
+    first = DeviceAgent("laptop", data_dir=data_dir)
+    assert first.intents() == []
+    assert first.seed_default_intents_if_empty() is True
+
+    intents = first.intents()
+    assert len(intents) == 1
+    explore = intents[0]
+    assert explore.name == "Explore"
+    assert explore.tags == []
+    assert explore.distribution.five == 0.1
+    assert explore.distribution.four == 0.1
+    assert explore.distribution.three == 0.1
+    assert explore.distribution.two == 0.1
+    assert explore.distribution.one == 0.1
+    assert explore.distribution.unrated == 0.5
+    assert explore.device_hours == []
+
+    explore_id = explore.id
+    first.delete_intent(explore_id)
+    assert first.intents() == []
+
+    # Restart does not recreate Explore once the Event log is non-empty.
+    second = DeviceAgent("laptop", data_dir=data_dir)
+    assert second.seed_default_intents_if_empty() is False
+    assert second.intents() == []
+    assert explore_id not in second.catalog.intents
 
 
 def _source_with_artist() -> FakeSource:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mixy.source import HearthisSource, SoundCloudSource
+from tunebag.source import HearthisSource, SoundCloudSource
 
 
 def test_soundcloud_fetch_bytes_uses_injected_fetcher() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from mixy.domain import (
+from tunebag.domain import (
     Artist,
     Assignment,
     Device,
@@ -18,7 +18,7 @@ from mixy.domain import (
 
 class Catalog:
     def __init__(self, data_dir: Path | None = None) -> None:
-        self.data_dir = data_dir or Path.home() / ".mixy"
+        self.data_dir = data_dir or Path.home() / ".tunebag"
         self.artists: dict[UUID, Artist] = {}
         self.mixes: dict[UUID, Mix] = {}
         self.intents: dict[UUID, Intent] = {}
@@ -72,6 +72,9 @@ class Catalog:
     def add_device(self, device: Device) -> Device:
         self.devices[device.id] = device
         return device
+
+    def remove_device(self, device_id: UUID) -> None:
+        self.devices.pop(device_id, None)
 
     def set_playhead(self, playhead: Playhead) -> Playhead:
         """Store Playhead as given; hybrid merge is decided by the DeviceAgent."""

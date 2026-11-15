@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from mixy.domain import Platform
-from mixy.source import ArtistListing, CompositeSource, Upload
+from tunebag.domain import Platform
+from tunebag.source import ArtistListing, CompositeSource, Upload
 
 
 class _Stub:
@@ -62,7 +62,7 @@ def test_composite_rejects_unknown_host() -> None:
 
 
 def test_soundcloud_upload_reads_optional_size_bytes() -> None:
-    from mixy.source import _soundcloud_upload
+    from tunebag.source import _soundcloud_upload
 
     upload = _soundcloud_upload(
         {

@@ -1,4 +1,4 @@
-# mixy — later / next steps
+# Tunebag — later / next steps
 
 Show these at the end of the hackathon demo. Not in the build.
 
@@ -10,7 +10,7 @@ Show these at the end of the hackathon demo. Not in the build.
 - **Profile import**: SoundCloud and hearthis.at follow lists.
 - **Artist reposts** in addition to own uploads.
 - **Search** across the catalog (and later across platforms) by tag, artist, title.
-- **Suggested tags and stars** from titles/metadata, later from audio analysis.
+- **Suggested tags and ratings** from titles/metadata, later from audio analysis.
 - **LAN peer discovery** (durable-sync issue 07; hackathon 11 wontfix): mDNS/DNS-SD advertise + browse; refresh Locator hints for trusted keys after key proof; unknown ads are pair candidates only (QR/short code). See ADR 0002.
 - **Persist peers + Event log** (durable-sync issues 02–03; hackathon 12 wontfix): survive process restart — Device identity, trusted Peer identities, last-known Locator hints, and Event log; Catalog via replay. See ADR 0001 / 0002.
 - **Catalog snapshot cache**: disposable on-disk Catalog projection for faster boot; Event log replay remains authoritative if they disagree.
@@ -18,7 +18,7 @@ Show these at the end of the hackathon demo. Not in the build.
 - **SQLite (or similar) persistence**: if JSONL Event log + sidecar JSON becomes awkward for size, query, or crash safety.
 - **Cross-network meet relay**: reach a paired Peer outside the LAN multicast domain without pasting a Locator (optional server/relay peer).
 - **Web player as a paired peer** for ad-hoc listening from anywhere (same sync protocol).
-- **Foobar (macOS) and Vanilla Music (Android)** opening intent folders as dumb consumers of files; signal capture stays in mixy until adapters exist.
+- **Foobar (macOS) and Vanilla Music (Android)** opening intent folders as dumb consumers of files; signal capture stays in Tunebag until adapters exist.
 
 ## Explicitly out of the first cut
 

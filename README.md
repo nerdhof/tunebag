@@ -1,3 +1,3 @@
-# mixy
+# Tunebag
 
-Distributed music cache for DJ mixes. Each device keeps the full catalog and only the audio its hours require.
+Tunebag — music packed for every device. Each device keeps the full catalog and only the audio its hours require.

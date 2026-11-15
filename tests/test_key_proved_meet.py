@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform
-from mixy.pairing import PersistedIdentity, generate_identity, save_persisted_identity
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform
+from tunebag.pairing import PersistedIdentity, generate_identity, save_persisted_identity
+from tunebag.source import FakeSource
 
 
 def _pair(tmp_path: Path) -> tuple[DeviceAgent, DeviceAgent, FakeSource]:

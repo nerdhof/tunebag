@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.source import FakeSource
 
 
 class FakeClock:

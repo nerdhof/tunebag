@@ -9,9 +9,9 @@ from uuid import UUID
 import pytest
 from cryptography.exceptions import InvalidSignature
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform, Stars
-from mixy.source import FakeSource
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform, Stars
+from tunebag.source import FakeSource
 
 
 class FakeClock:

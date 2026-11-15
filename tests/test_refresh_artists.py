@@ -7,10 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from mixy.agent import DeviceAgent
-from mixy.domain import Platform
-from mixy.reject import UNDO_SECONDS
-from mixy.source import ArtistListing, FakeSource, Upload
+from tunebag.agent import DeviceAgent
+from tunebag.domain import Platform
+from tunebag.reject import UNDO_SECONDS
+from tunebag.source import ArtistListing, FakeSource, Upload
 
 
 class FakeClock:
