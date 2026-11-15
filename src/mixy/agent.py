@@ -125,6 +125,8 @@ class DeviceAgent:
         self._proved_agents: set[int] = set()
         self._peer_urls: dict[UUID, str] = {}
         self._seen_event_ids: set[UUID] = set()
+        # Events whose author is not yet in Catalog; flushed on DEVICE_PAIRED / pair.
+        self._unknown_author_buffer: dict[UUID, Event] = {}
         self._local_files: dict[UUID, bytes] = {}
         # Deterministic merge bookkeeping (same events ⇒ same Catalog).
         self._merge_wins: dict[MergeKey, MergeWin] = {}
@@ -1714,12 +1716,42 @@ class DeviceAgent:
                 return
             author = self.catalog.devices.get(event.device_id)
             if author is None:
+                self._unknown_author_buffer[event.id] = event
                 return
-            if not self._verify(event, author.public_key_pem):
-                raise InvalidSignature("event signature mismatch")
-            self._seen_event_ids.add(event.id)
-            self._log.append(event)
-            self._apply(event)
+            self._unknown_author_buffer.pop(event.id, None)
+            self._commit_foreign_event(event, author.public_key_pem)
+
+    def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
+        """Verify, append, and apply a peer event. Caller must hold ``_event_lock``."""
+        if not self._verify(event, public_key_pem):
+            raise InvalidSignature("event signature mismatch")
+        self._seen_event_ids.add(event.id)
+        self._log.append(event)
+        self._apply(event)
+
+    def _flush_buffered_events_for(self, author_id: UUID) -> None:
+        """Verify and apply buffered events for a newly known author.
+
+        Caller must hold ``_event_lock``. Applying a buffered ``DEVICE_PAIRED``
+        may flush further authors. Order follows signed author time then seq.
+        """
+        pending = sorted(
+            (
+                event
+                for event in self._unknown_author_buffer.values()
+                if event.device_id == author_id
+            ),
+            key=lambda e: (e.created_at, int(e.seq), e.id),
+        )
+        for event in pending:
+            self._unknown_author_buffer.pop(event.id, None)
+            if event.id in self._seen_event_ids:
+                continue
+            author = self.catalog.devices.get(event.device_id)
+            if author is None:
+                self._unknown_author_buffer[event.id] = event
+                continue
+            self._commit_foreign_event(event, author.public_key_pem)
 
     def _upsert_intent_and_rebuild(self, intent: Intent) -> None:
         self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))
@@ -1819,6 +1851,7 @@ class DeviceAgent:
                     ),
                 )
             )
+            self._flush_buffered_events_for(device_id)
             return
         if event.type is EventType.ARTIST_ADDED:
             artist_id = UUID(payload["id"])
