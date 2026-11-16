@@ -79,7 +79,10 @@ def main(argv: list[str] | None = None) -> None:
             discovery=discovery,
         )
         if agent.seed_default_intents_if_empty():
-            print("seeded Explore intent (10|10|10|10|10|50)", flush=True)
+            print(
+                "seeded Explore intent (10|10|10|10|10|50, 8h this device)",
+                flush=True,
+            )
         stop = threading.Event()
         _start_discovery_ticker(agent, stop)
         app = create_app(agent)

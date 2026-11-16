@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from uuid import UUID
+
+import pytest
 
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, Stars
@@ -349,3 +352,105 @@ def test_removed_file_can_be_downloaded_again(tmp_path: Path) -> None:
         "https://example.com/again",
         "https://example.com/again",
     ]
+
+
+def test_refresh_mid_fill_skips_stale_assignment_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After Explore refresh mid-fill, do not keep origin-fetching the old assignment.
+
+    Live symptom: refresh re-rolls the sequence; Cache shows the new mixes as
+    pending while fill walks the pre-refresh assignment (often multi-hour sets),
+    so the UI looks stuck until that stale pass ends and a coalesced fill starts.
+    """
+    from tunebag.sequence import build_sequence
+
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    fetch_urls: list[str] = []
+
+    class GatedSource(FakeSource):
+        def fetch_bytes(self, source_url: str, *, on_progress=None) -> bytes:
+            fetch_urls.append(source_url)
+            if len(fetch_urls) == 1:
+                fetch_started.set()
+                assert release_fetch.wait(timeout=5.0), "first fetch not released"
+            return super().fetch_bytes(source_url, on_progress=on_progress)
+
+    source = GatedSource()
+    laptop = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=source,
+        data_dir=tmp_path / "laptop",
+    )
+    for i in range(8):
+        _add_mix(
+            laptop,
+            source,
+            title=f"Mix {i}",
+            duration_seconds=3600,
+            platform_id=f"refresh-mid-{i}",
+            tags=["refresh-mid"],
+            stars=Stars.FOUR,
+        )
+
+    intent = laptop.create_intent(
+        "Refresh mid fill",
+        tags=["refresh-mid"],
+        seed=1,
+        device_hours=[(laptop.device_id, 3 * 3600)],
+    )
+    before = laptop.assignment(intent.id)
+    assert before is not None
+    assert len(before.mix_ids) == 3
+    old_ids = list(before.mix_ids)
+    old_tail_urls = [laptop.catalog.mixes[mid].url for mid in old_ids[1:]]
+
+    alt_seed = None
+    new_ids: list[UUID] = []
+    for seed in range(2, 400):
+        probe = intent.model_copy(update={"seed": seed})
+        rebuilt = [
+            entry.mix_id
+            for entry in build_sequence(probe, laptop.catalog.mixes_list()).entries
+        ]
+        # Device budget is 3h; sequence may be longer — assignment is the prefix.
+        candidate = rebuilt[:3]
+        if len(candidate) == 3 and set(candidate).isdisjoint(old_ids):
+            alt_seed = seed
+            new_ids = candidate
+            break
+    assert alt_seed is not None, "could not find disjoint alternate seed for repro"
+    monkeypatch.setattr(
+        "tunebag.agent.random.randrange", lambda *_a, **_k: alt_seed
+    )
+
+    assert laptop.request_fill() is True
+    assert fetch_started.wait(timeout=2.0), "fill never started old-assignment fetch"
+
+    refreshed = laptop.refresh_intent_sequence(intent.id)
+    assert refreshed.seed == alt_seed
+    after = laptop.assignment(intent.id)
+    assert after is not None
+    assert after.mix_ids == new_ids
+
+    groups = laptop.cache_groups()
+    group = next(g for g in groups if g["id"] == intent.id)
+    assert [m["id"] for m in group["mixes"]] == new_ids
+    assert all(m["status"] == "pending" for m in group["mixes"])
+    assert laptop.downloading_mix_id == old_ids[0]
+
+    laptop.request_fill()
+    release_fetch.set()
+    laptop.wait_for_fill(timeout=5.0)
+
+    new_urls = [laptop.catalog.mixes[mid].url for mid in new_ids]
+    assert set(new_urls).issubset(set(fetch_urls))
+    # Must not keep walking the pre-refresh assignment after the sequence changed.
+    assert not set(old_tail_urls).intersection(fetch_urls), (
+        f"stale tail still fetched: {sorted(set(old_tail_urls) & set(fetch_urls))}"
+    )
+    cached_ids = {m.id for m in laptop.files()}
+    assert set(new_ids).issubset(cached_ids)
+    assert not set(old_ids).intersection(cached_ids)

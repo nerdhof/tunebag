@@ -56,15 +56,22 @@ from tunebag.domain import (
 )
 from tunebag.events import Event, EventLog, EventType
 from tunebag.pairing import (
+    PIN_MAX_ATTEMPTS,
+    PIN_TTL_SECONDS,
     DeviceIdentity,
+    confirm_transcript,
+    ephemeral_pair_offer,
+    fingerprint_from_key,
     generate_identity,
+    generate_pairing_pin,
+    join_transcript,
     load_locator_hints,
-    resolve_persisted_identity,
-    save_locator_hints,
-    short_code_from_key,
-)
-from tunebag.pairing import (
+    normalize_pin,
     pairing_payload as build_pairing_payload,
+    pins_equal,
+    resolve_persisted_identity,
+    sas_for_session,
+    save_locator_hints,
 )
 from tunebag.player import AudioPlayer, default_player
 from tunebag.reject import RejectBuffer
@@ -85,8 +92,10 @@ LAST_HEARD_DURATION_FRACTION = 0.05
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
+# Current device gets an 8h standing budget so Explore is immediately assignable.
 EXPLORE_INTENT_ID = UUID("00000000-0000-4000-8000-000000000001")
 EXPLORE_SEED = 1
+EXPLORE_DEFAULT_BUDGET_SECONDS = 8 * 3600
 EXPLORE_DISTRIBUTION = StarDistribution(
     five=0.1,
     four=0.1,
@@ -190,8 +199,10 @@ class DeviceAgent:
         self._seen_event_ids: set[UUID] = set()
         # Events whose author is not yet in Catalog; flushed on DEVICE_PAIRED / pair.
         self._unknown_author_buffer: dict[UUID, Event] = {}
-        # Sticky until local re-pair (QR / short code); remote DEVICE_PAIRED cannot undo.
+        # Sticky until local re-pair (pairing session); remote DEVICE_PAIRED cannot undo.
         self._unpaired_device_ids: set[UUID] = set()
+        # Ephemeral pairing session (host and/or guest view); never persisted.
+        self._pairing_session: dict[str, Any] | None = None
         self._local_files: dict[UUID, bytes] = {}
         # Deterministic merge bookkeeping (same events ⇒ same Catalog).
         self._merge_wins: dict[MergeKey, MergeWin] = {}
@@ -205,7 +216,10 @@ class DeviceAgent:
         self._pending_assignments: dict[tuple[UUID, UUID], Assignment | None] = {}
         self._event_seq = 0
         # Serialize append/ingest/apply against background sync threads.
-        self._event_lock = threading.Lock()
+        # RLock so a multi-event local write (intent upsert + sequence +
+        # assignments) can hold the lock across nested _append_and_apply calls
+        # while export_events waits for a consistent snapshot.
+        self._event_lock = threading.RLock()
         # Local-only (not events): simulated link mode, reject undo window, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
@@ -233,6 +247,11 @@ class DeviceAgent:
         self._download_total_bytes: int | None = None
         self._download_lock = threading.Lock()
         self._last_discovery_at: datetime | None = None
+        # Nestable: defer auto-sync until a multi-event local write finishes
+        # (e.g. INTENT_UPSERTED + SEQUENCE + ASSIGNMENTs) so peers do not pull a
+        # half-written intent and rebuild missing assignments.
+        self._auto_sync_defer_depth = 0
+        self._auto_sync_deferred = False
         if persist:
             self._replay_event_log()
             # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
@@ -252,6 +271,7 @@ class DeviceAgent:
             distribution=EXPLORE_DISTRIBUTION,
             seed=EXPLORE_SEED,
             intent_id=EXPLORE_INTENT_ID,
+            device_hours=[(self.device_id, EXPLORE_DEFAULT_BUDGET_SECONDS)],
         )
         return True
 
@@ -279,6 +299,18 @@ class DeviceAgent:
             yield
         finally:
             self._view_notices.end_batch()
+
+    @contextmanager
+    def _defer_auto_sync(self) -> Iterator[None]:
+        """Coalesce ``_schedule_auto_sync`` calls until the with-block exits."""
+        self._auto_sync_defer_depth += 1
+        try:
+            yield
+        finally:
+            self._auto_sync_defer_depth -= 1
+            if self._auto_sync_defer_depth == 0 and self._auto_sync_deferred:
+                self._auto_sync_deferred = False
+                self._schedule_auto_sync()
 
     @contextmanager
     def _ingest_notice_pass(self) -> Iterator[None]:
@@ -327,8 +359,12 @@ class DeviceAgent:
     def private_key_pem(self) -> str:
         return self._identity.private_key_pem
 
+    def fingerprint(self) -> str:
+        return fingerprint_from_key(self.public_key_pem)
+
     def short_code(self) -> str:
-        return short_code_from_key(self.public_key_pem)
+        """Discovery label alias for fingerprint (not a pairing secret)."""
+        return self.fingerprint()
 
     def pairing_payload(self) -> dict[str, Any]:
         return build_pairing_payload(
@@ -338,6 +374,14 @@ class DeviceAgent:
             priority=self.device.priority,
             url=self.base_url,
         )
+
+    def pairing_session_open(self) -> bool:
+        session = self._pairing_session
+        if session is None:
+            return False
+        if session.get("state") in {"complete", "cancelled"}:
+            return False
+        return not self._pairing_session_expired(session)
 
     def connect(self, other: DeviceAgent) -> None:
         """Mark another in-process agent reachable (test / same-host peer)."""
@@ -946,11 +990,19 @@ class DeviceAgent:
             self.note(f"fill caches start (fill-now intent={override_intent_id})")
         else:
             self.note("fill caches start")
-        with self._view_notice_batch():
-            for intent in self.intents():
+        # Do not hold a view-notice batch across downloads. A long fill would
+        # delay PEERS/INTENTS SSE until the last byte lands, so Assign hours
+        # still misses a device that paired mid-fill.
+        #
+        # Re-read the live assignment each step: Explore refresh (or peer rebuild)
+        # may replace mix_ids while a long origin fetch is in flight. Walking a
+        # stale snapshot keeps downloading mixes the Cache UI no longer lists.
+        for intent in self.intents():
+            attempted: set[UUID] = set()
+            while True:
                 assignment = self.assignment(intent.id)
                 if assignment is None:
-                    if intent.device_hours:
+                    if intent.device_hours and not attempted:
                         other = ", ".join(
                             str(dh.device_id) for dh in intent.device_hours
                         )
@@ -959,27 +1011,38 @@ class DeviceAgent:
                             f"(not this device {self.device.id})",
                             level=logging.WARNING,
                         )
+                    break
+                mix_id = next(
+                    (
+                        mid
+                        for mid in assignment.mix_ids
+                        if mid not in attempted and not self._has_local_file(mid)
+                    ),
+                    None,
+                )
+                if mix_id is None:
+                    break
+                attempted.add(mix_id)
+                try:
+                    self._ensure_local_file(
+                        intent.id,
+                        mix_id,
+                        override_intent_id=override_intent_id,
+                    )
+                except Exception as exc:
+                    # yt-dlp and platform errors vary; one bad URL must not abort the fill.
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    mix = self.catalog.mixes.get(mix_id)
+                    label = mix.title if mix is not None else str(mix_id)
+                    self.note(
+                        f"download failed: {label}: {exc}",
+                        level=logging.WARNING,
+                    )
                     continue
-                for mix_id in assignment.mix_ids:
-                    try:
-                        self._ensure_local_file(
-                            intent.id,
-                            mix_id,
-                            override_intent_id=override_intent_id,
-                        )
-                    except Exception as exc:
-                        # yt-dlp and platform errors vary; one bad URL must not abort the fill.
-                        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                            raise
-                        mix = self.catalog.mixes.get(mix_id)
-                        label = mix.title if mix is not None else str(mix_id)
-                        self.note(
-                            f"download failed: {label}: {exc}",
-                            level=logging.WARNING,
-                        )
-                        continue
-            # Drop leftovers from prior assignments / deleted intents before
-            # rewriting intent folders.
+        # Drop leftovers from prior assignments / deleted intents before
+        # rewriting intent folders. Batch only this short tail.
+        with self._view_notice_batch():
             self._prune_unassigned_files()
             self._refresh_intent_folders()
         cached = len(self.files())
@@ -1001,19 +1064,20 @@ class DeviceAgent:
         """List own uploads for each artist URL and write catalog rows only."""
         self.note(f"add artists start · {len(urls)} URL(s)")
         added: list[Mix] = []
-        with self._view_notice_batch():
-            for url in urls:
-                self.note(f"fetch artist list start: {url}")
-                try:
-                    listing = self.source.list_uploads(url)
-                except Exception as exc:
-                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                        raise
-                    self.note(
-                        f"fetch artist list failed: {url}: {exc}",
-                        level=logging.WARNING,
-                    )
+        for url in urls:
+            self.note(f"fetch artist list start: {url}")
+            try:
+                listing = self.source.list_uploads(url)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise
+                self.note(
+                    f"fetch artist list failed: {url}: {exc}",
+                    level=logging.WARNING,
+                )
+                raise
+            # Network fetch stays outside the batch so PEERS/other SSE is not held.
+            with self._view_notice_batch():
                 artist = Artist(
                     platform=listing.platform,
                     platform_id=listing.platform_id,
@@ -1046,13 +1110,13 @@ class DeviceAgent:
                     self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
                     added.append(self.catalog.mixes[mix.id])
                     kept += 1
-                self.note(
-                    f"fetch artist list end: {listing.name} · "
-                    f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
-                )
+            self.note(
+                f"fetch artist list end: {listing.name} · "
+                f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
+            )
         self.note(f"add artists end · {len(added)} mix(es)")
-        if added:
-            self._rebuild_unfilled_sequences()
+        if added and self._rebuild_unfilled_sequences():
+            self.request_fill()
         return added
 
     def refresh_artists(
@@ -1075,19 +1139,19 @@ class DeviceAgent:
         self.note(f"refresh artists start · {len(artists)} artist(s)")
         known = self._known_platform_keys()
         added: list[Mix] = []
-        with self._view_notice_batch():
-            for artist in artists:
-                self.note(f"fetch artist list start: {artist.url}")
-                try:
-                    listing = self.source.list_uploads(artist.url)
-                except Exception as exc:
-                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                        raise
-                    self.note(
-                        f"fetch artist list failed: {artist.url}: {exc}",
-                        level=logging.WARNING,
-                    )
+        for artist in artists:
+            self.note(f"fetch artist list start: {artist.url}")
+            try:
+                listing = self.source.list_uploads(artist.url)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise
+                self.note(
+                    f"fetch artist list failed: {artist.url}: {exc}",
+                    level=logging.WARNING,
+                )
+                raise
+            with self._view_notice_batch():
                 kept = 0
                 for upload in listing.uploads:
                     if upload.duration_seconds < min_duration_seconds:
@@ -1108,13 +1172,13 @@ class DeviceAgent:
                     known.add(key)
                     added.append(self.catalog.mixes[mix.id])
                     kept += 1
-                self.note(
-                    f"fetch artist list end: {artist.name} · "
-                    f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
-                )
+            self.note(
+                f"fetch artist list end: {artist.name} · "
+                f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
+            )
         self.note(f"refresh artists end · {len(added)} mix(es)")
-        if added:
-            self._rebuild_unfilled_sequences()
+        if added and self._rebuild_unfilled_sequences():
+            self.request_fill()
         return added
 
     def _known_platform_keys(self) -> set[tuple[Platform, str]]:
@@ -1326,10 +1390,16 @@ class DeviceAgent:
         agent = getter(locator)
         return agent if isinstance(agent, DeviceAgent) else None
 
-    def ingest_events(self, events: list[Event]) -> None:
+    def ingest_events(self, events: list[Event], *, rebuild: bool = True) -> None:
+        mixes_before = len(self.catalog.mixes)
         with self._ingest_notice_pass():
             for event in events:
                 self._ingest(event)
+        if not rebuild:
+            return
+        mixes_added = len(self.catalog.mixes) > mixes_before
+        if self._rebuild_unfilled_sequences(include_underfilled=mixes_added):
+            self.request_fill()
 
     def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
         if mix_id not in self.catalog.mixes:
@@ -1490,6 +1560,7 @@ class DeviceAgent:
         if intent is None:
             raise KeyError(f"unknown intent {intent_id}")
         updates: dict[str, Any] = {}
+        cleared_device_ids: list[UUID] | None = None
         if name is not None:
             updates["name"] = name
         if tags is not None:
@@ -1500,10 +1571,14 @@ class DeviceAgent:
             hours = _device_hours_from_spec(device_hours)
             self._require_known_devices([dh.device_id for dh in hours])
             updates["device_hours"] = hours
+            kept = {dh.device_id for dh in hours}
+            cleared = [dh.device_id for dh in intent.device_hours if dh.device_id not in kept]
+            if cleared:
+                cleared_device_ids = cleared
         if not updates:
             return intent
         updated = intent.model_copy(update=updates)
-        self._upsert_intent_and_rebuild(updated)
+        self._upsert_intent_and_rebuild(updated, cleared_device_ids=cleared_device_ids)
         return self.catalog.intents[intent_id]
 
     def refresh_intent_sequence(self, intent_id: UUID) -> Intent:
@@ -1532,7 +1607,7 @@ class DeviceAgent:
                 dh for dh in intent.device_hours if dh.device_id not in expired_set
             ]
             updated = intent.model_copy(update={"device_hours": remaining})
-            self._upsert_intent_and_rebuild(updated)
+            self._upsert_intent_and_rebuild(updated, cleared_device_ids=expired_ids)
             for device_id in expired_ids:
                 applied.append((intent.id, device_id))
         if applied:
@@ -1604,12 +1679,14 @@ class DeviceAgent:
         return self.catalog.mixes[mix.id]
 
     def export_events(self) -> list[Event]:
-        return self._log.all()
+        with self._event_lock:
+            return list(self._log.all())
 
     def sync(self, *, fill: bool = True) -> None:
         self.commit_pending_rejects()
         self.apply_expired_hours()
         self.note("sync start")
+        mixes_before = len(self.catalog.mixes)
         with self._ingest_notice_pass():
             for agent in list(self._reachable):
                 if not self._trusts_public_key(agent.public_key_pem):
@@ -1636,18 +1713,24 @@ class DeviceAgent:
                     continue
                 label = peer.name
                 before = len(self._seen_event_ids)
-                self.ingest_events(self._http_fetch_events(url))
+                # rebuild=False: sync finishes one rebuild/fill pass after all peers.
+                self.ingest_events(self._http_fetch_events(url), rebuild=False)
                 ingested = len(self._seen_event_ids) - before
                 self.note(f"sync peer {label} ({url}): {ingested} new event(s)")
         # Peer may have applied our expiry; drop exclusive locals after ingest.
         self.apply_expired_hours()
         self._prune_unassigned_files()
+        # Mixes / merged Explore hours from peers need local sequence+assignment refresh.
+        mixes_added = len(self.catalog.mixes) > mixes_before
+        rebuilt = self._rebuild_unfilled_sequences(include_underfilled=mixes_added)
         if fill:
             self.note("sync catalog end · filling caches")
             # Unmetered standing fill after catalog catches up with peers.
             self.fill_caches()
         else:
             self.note("sync catalog end")
+            if rebuilt:
+                self.request_fill()
 
     def _ensure_local_file(
         self,
@@ -1662,6 +1745,17 @@ class DeviceAgent:
         if mix is None:
             return
         label = mix.title
+        # Drop work from a pre-refresh assignment; Cache UI already shows the new list.
+        if not self._assignment_includes(self, intent_id, mix_id):
+            self.note(f"fill skip unassigned: {label}")
+            return
+
+        def _store_if_still_assigned(payload: bytes) -> bool:
+            if not self._assignment_includes(self, intent_id, mix_id):
+                self.note(f"fill discard unassigned: {label}")
+                return False
+            self._store_local_file(mix_id, payload)
+            return True
 
         # Prefer a copy from any reachable peer that already has the bytes.
         # Peer / USB copies ignore the metered cap.
@@ -1671,8 +1765,15 @@ class DeviceAgent:
             peer_bytes = peer.file_bytes(mix_id)
             if peer_bytes is not None:
                 self.note(f"copy from peer {peer.name}: {label}")
-                self._with_download(mix_id, lambda: self._store_local_file(mix_id, peer_bytes))
-                self.note(f"cached: {label}")
+                kept = False
+
+                def _copy() -> None:
+                    nonlocal kept
+                    kept = _store_if_still_assigned(peer_bytes)
+
+                self._with_download(mix_id, _copy)
+                if kept:
+                    self.note(f"cached: {label}")
                 return
 
         preferred = self._preferred_origin_agent(intent_id, mix_id)
@@ -1680,14 +1781,17 @@ class DeviceAgent:
             if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
                 return
             self.note(f"download from origin: {label}")
-            self._with_download(
-                mix_id,
-                lambda: self._store_local_file(
-                    mix_id,
-                    self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress),
-                ),
-            )
-            self.note(f"cached: {label}")
+            kept = False
+
+            def _fetch_preferred() -> None:
+                nonlocal kept
+                kept = _store_if_still_assigned(
+                    self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress)
+                )
+
+            self._with_download(mix_id, _fetch_preferred)
+            if kept:
+                self.note(f"cached: {label}")
             return
         if preferred is not None:
             # Preferred peer is reachable but does not have the file yet — wait.
@@ -1696,14 +1800,17 @@ class DeviceAgent:
         if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
             return
         self.note(f"download from origin: {label}")
-        self._with_download(
-            mix_id,
-            lambda: self._store_local_file(
-                mix_id,
-                self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress),
-            ),
-        )
-        self.note(f"cached: {label}")
+        kept = False
+
+        def _fetch_fallback() -> None:
+            nonlocal kept
+            kept = _store_if_still_assigned(
+                self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress)
+            )
+
+        self._with_download(mix_id, _fetch_fallback)
+        if kept:
+            self.note(f"cached: {label}")
 
     def _on_download_progress(self, downloaded: int, total: int | None) -> None:
         with self._download_lock:
@@ -2066,7 +2173,11 @@ class DeviceAgent:
         """Pull on this device and nudge trusted reachable peers to pull too.
 
         Each side's ``sync`` still runs the key-proof meet gate before ingest.
+        Nested under ``_defer_auto_sync``, only the outermost exit schedules once.
         """
+        if self._auto_sync_defer_depth > 0:
+            self._auto_sync_deferred = True
+            return
         self.request_sync()
         for peer in list(self._reachable):
             if not self._trusts_public_key(peer.public_key_pem):
@@ -2141,17 +2252,31 @@ class DeviceAgent:
                 continue
             self._commit_foreign_event(event, author.public_key_pem)
 
-    def _upsert_intent_and_rebuild(self, intent: Intent) -> None:
-        with self._view_notice_batch():
-            self._append_and_apply(EventType.INTENT_UPSERTED, _intent_payload(intent))
-            self._rebuild_sequence_for_intent(intent)
-            self._prune_unassigned_files()
+    def _upsert_intent_and_rebuild(
+        self,
+        intent: Intent,
+        *,
+        cleared_device_ids: list[UUID] | None = None,
+    ) -> None:
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._event_lock:
+                    self._append_and_apply(
+                        EventType.INTENT_UPSERTED,
+                        _intent_payload(intent, cleared_device_ids=cleared_device_ids),
+                    )
+                    # Catalog may have merged peer device_hours; rebuild from that.
+                    merged = self.catalog.intents[intent.id]
+                    self._rebuild_sequence_for_intent(merged)
+                    self._prune_unassigned_files()
 
     def _rebuild_all_sequences(self) -> None:
-        with self._view_notice_batch():
-            for intent in self.intents():
-                self._rebuild_sequence_for_intent(intent)
-            self._prune_unassigned_files()
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._event_lock:
+                    for intent in self.intents():
+                        self._rebuild_sequence_for_intent(intent)
+                    self._prune_unassigned_files()
 
     def _sequence_duration_seconds(self, intent: Intent) -> int:
         """Cumulative duration of the current Sequence for ``intent`` (0 if none)."""
@@ -2165,20 +2290,76 @@ class DeviceAgent:
                 total += mix.duration_seconds
         return total
 
-    def _rebuild_unfilled_sequences(self) -> None:
-        """Rebuild intents whose Sequence is still under max device budget."""
-        with self._view_notice_batch():
-            rebuilt = False
-            for intent in self.intents():
-                budget = intent.max_budget_seconds
-                if budget <= 0:
-                    continue
-                if self._sequence_duration_seconds(intent) >= budget:
-                    continue
-                self._rebuild_sequence_for_intent(intent)
-                rebuilt = True
-            if rebuilt:
-                self._prune_unassigned_files()
+    def _intent_needs_sequence_rebuild(
+        self, intent: Intent, *, include_underfilled: bool
+    ) -> bool:
+        """True when a device_hours row lacks a usable assignment, or under budget.
+
+        Explore seed writes ``ASSIGNMENT_SET`` with ``mix_ids=[]``. After pair, a
+        peer's filled Sequence may win LWW while that empty assignment remains —
+        treat empty ``mix_ids`` as needing rebuild when the Sequence has entries.
+
+        Under-budget rebuilds only run when a fresh ``build_sequence`` would change
+        the mix id list (new eligible Catalog mixes). Otherwise an empty/short
+        Sequence with no further eligible mixes would rebuild on every sync.
+        """
+        if intent.max_budget_seconds <= 0:
+            return False
+        sequence = self.sequence(intent.id)
+        sequence_has_entries = sequence is not None and bool(sequence.entries)
+        for device_hours in intent.device_hours:
+            assignment = self.assignment(intent.id, device_hours.device_id)
+            if assignment is None:
+                return True
+            if sequence_has_entries and not assignment.mix_ids:
+                return True
+        if not include_underfilled:
+            return False
+        if self._sequence_duration_seconds(intent) >= intent.max_budget_seconds:
+            return False
+        current_ids = [entry.mix_id for entry in sequence.entries] if sequence else []
+        rebuilt_ids = [
+            entry.mix_id
+            for entry in build_sequence(intent, self.catalog.mixes_list()).entries
+        ]
+        return rebuilt_ids != current_ids
+
+    def _rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool:
+        """Rebuild intents missing a device assignment and/or still under budget.
+
+        ``include_underfilled`` should be True after local mix adds/refreshes (and
+        after peer ingest that added mixes). On a routine sync with no new mixes,
+        only missing assignments are rebuilt — otherwise an under-budget Explore
+        with too few Catalog mixes would rebuild forever.
+
+        Skip the view-notice batch when nothing needs rebuild so a concurrent
+        auto-sync cannot nest an empty batch under a local write and delay its
+        flush (notices would stay pending until sync ended).
+        """
+        to_rebuild = [
+            intent
+            for intent in self.intents()
+            if self._intent_needs_sequence_rebuild(
+                intent, include_underfilled=include_underfilled
+            )
+        ]
+        if not to_rebuild:
+            return False
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._event_lock:
+                    rebuilt = False
+                    for intent in to_rebuild:
+                        # Re-check under the lock; a peer may have filled gaps.
+                        if not self._intent_needs_sequence_rebuild(
+                            intent, include_underfilled=include_underfilled
+                        ):
+                            continue
+                        self._rebuild_sequence_for_intent(intent)
+                        rebuilt = True
+                    if rebuilt:
+                        self._prune_unassigned_files()
+                    return rebuilt
 
     def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
         active_devices = {dh.device_id for dh in intent.device_hours}
@@ -2386,10 +2567,47 @@ class DeviceAgent:
             return
         if event.type is EventType.INTENT_UPSERTED:
             intent_id = UUID(payload["id"])
-            if not self._merge_beats(("intent", str(intent_id)), event):
-                return
-            self.catalog.upsert_intent(_intent_from_payload(payload))
-            self._flush_pending_intent_projection(intent_id)
+            meta_wins = self._merge_beats(("intent", str(intent_id)), event)
+            existing = self.catalog.intents.get(intent_id)
+            hours_map: dict[UUID, DeviceHours] = {
+                dh.device_id: dh for dh in (existing.device_hours if existing else [])
+            }
+            hours_changed = False
+            for raw in payload.get("device_hours") or []:
+                device_id = UUID(raw["device_id"])
+                if not self._merge_beats(
+                    ("intent_hours", str(intent_id), str(device_id)), event
+                ):
+                    continue
+                hours_map[device_id] = DeviceHours(
+                    device_id=device_id,
+                    budget_seconds=int(raw["budget_seconds"]),
+                    expires_at=(
+                        datetime.fromisoformat(raw["expires_at"])
+                        if raw.get("expires_at")
+                        else None
+                    ),
+                )
+                hours_changed = True
+            for raw_cleared in payload.get("cleared_device_ids") or []:
+                device_id = UUID(raw_cleared)
+                if not self._merge_beats(
+                    ("intent_hours", str(intent_id), str(device_id)), event
+                ):
+                    continue
+                if hours_map.pop(device_id, None) is not None:
+                    hours_changed = True
+            merged_hours = list(hours_map.values())
+            if meta_wins:
+                intent = _intent_from_payload(payload).model_copy(
+                    update={"device_hours": merged_hours}
+                )
+                self.catalog.upsert_intent(intent)
+                self._flush_pending_intent_projection(intent_id)
+            elif existing is not None and hours_changed:
+                self.catalog.upsert_intent(
+                    existing.model_copy(update={"device_hours": merged_hours})
+                )
             return
         if event.type is EventType.INTENT_DELETED:
             intent_id = UUID(payload["id"])
@@ -2570,8 +2788,12 @@ def _mix_added_payload(mix: Mix) -> dict[str, Any]:
     return payload
 
 
-def _intent_payload(intent: Intent) -> dict[str, Any]:
-    return {
+def _intent_payload(
+    intent: Intent,
+    *,
+    cleared_device_ids: list[UUID] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "id": str(intent.id),
         "name": intent.name,
         "tags": list(intent.tags),
@@ -2593,6 +2815,9 @@ def _intent_payload(intent: Intent) -> dict[str, Any]:
         ],
         "seed": intent.seed,
     }
+    if cleared_device_ids:
+        payload["cleared_device_ids"] = [str(device_id) for device_id in cleared_device_ids]
+    return payload
 
 
 def _bucket_from_payload(raw: str) -> StarBucket:

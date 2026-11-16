@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tunebag.agent import EXPLORE_INTENT_ID, EXPLORE_SEED, DeviceAgent
+from tunebag.agent import (
+    EXPLORE_DEFAULT_BUDGET_SECONDS,
+    EXPLORE_INTENT_ID,
+    EXPLORE_SEED,
+    DeviceAgent,
+)
 from tunebag.domain import Platform
 from tunebag.source import ArtistListing, FakeSource, Upload
 
@@ -40,7 +45,12 @@ def test_first_boot_seeds_explore_intent(tmp_path: Path) -> None:
     assert explore.distribution.two == 0.1
     assert explore.distribution.one == 0.1
     assert explore.distribution.unrated == 0.5
-    assert explore.device_hours == []
+    assert len(explore.device_hours) == 1
+    assert explore.device_hours[0].device_id == first.device_id
+    assert explore.device_hours[0].budget_seconds == EXPLORE_DEFAULT_BUDGET_SECONDS
+    asg = first.assignment(EXPLORE_INTENT_ID, first.device_id)
+    assert asg is not None
+    assert asg.budget_seconds == EXPLORE_DEFAULT_BUDGET_SECONDS
 
     first.delete_intent(EXPLORE_INTENT_ID)
     assert first.intents() == []
@@ -71,6 +81,46 @@ def test_paired_devices_share_one_explore_intent(tmp_path: Path) -> None:
     assert phone.intents()[0].id == EXPLORE_INTENT_ID
     assert laptop.intents()[0].seed == EXPLORE_SEED
     assert phone.intents()[0].seed == EXPLORE_SEED
+    # Device hours merge per device_id so both Explore seeds keep their 8h rows.
+    laptop_hours = {
+        dh.device_id: dh.budget_seconds for dh in laptop.intents()[0].device_hours
+    }
+    phone_hours = {
+        dh.device_id: dh.budget_seconds for dh in phone.intents()[0].device_hours
+    }
+    assert laptop_hours == phone_hours
+    assert laptop_hours == {
+        laptop.device_id: EXPLORE_DEFAULT_BUDGET_SECONDS,
+        phone.device_id: EXPLORE_DEFAULT_BUDGET_SECONDS,
+    }
+
+
+def test_update_intent_cleared_device_hours_survive_sync(tmp_path: Path) -> None:
+    """Explicit hour clears must not be undone by an older peer Explore/intent upsert."""
+    laptop = DeviceAgent("laptop", data_dir=tmp_path / "laptop")
+    phone = DeviceAgent("phone", data_dir=tmp_path / "phone")
+    assert laptop.seed_default_intents_if_empty() is True
+    assert phone.seed_default_intents_if_empty() is True
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+    laptop.sync()
+    phone.sync()
+
+    by_device = {dh.device_id for dh in laptop.intents()[0].device_hours}
+    assert by_device == {laptop.device_id, phone.device_id}
+
+    # Drop phone from Explore on laptop; peer must keep the clear after sync.
+    laptop.update_intent(
+        EXPLORE_INTENT_ID,
+        device_hours=[(laptop.device_id, EXPLORE_DEFAULT_BUDGET_SECONDS)],
+    )
+    laptop.sync()
+    phone.sync()
+
+    for agent in (laptop, phone):
+        hours = agent.intents()[0].device_hours
+        assert {dh.device_id for dh in hours} == {laptop.device_id}
+        assert hours[0].budget_seconds == EXPLORE_DEFAULT_BUDGET_SECONDS
 
 
 def _source_with_artist() -> FakeSource:

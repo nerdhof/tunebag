@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from tunebag.agent import DeviceAgent
+from tunebag.agent import EXPLORE_INTENT_ID, DeviceAgent
 from tunebag.domain import Platform, Stars
 from tunebag.source import ArtistListing, FakeSource, Upload
 
@@ -228,8 +228,9 @@ def test_delete_unknown_artist_raises() -> None:
         laptop.delete_artist(uuid4())
 
 
-def test_add_artists_rebuilds_unfilled_sequence_without_audio() -> None:
+def test_add_artists_rebuilds_unfilled_sequence_and_fills_cache() -> None:
     source = _source_with_two_artists()
+    source.bytes_by_url["https://soundcloud.com/dj-alpha/long"] = b"audio:alpha-long"
     laptop = DeviceAgent("laptop", source=source)
     intent = laptop.create_intent(
         "Explore",
@@ -240,6 +241,7 @@ def test_add_artists_rebuilds_unfilled_sequence_without_audio() -> None:
     assert laptop.sequence(intent.id).entries == []
 
     laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    laptop.wait_for_fill(timeout=5.0)
 
     mix = laptop.mixes()[0]
     entries = laptop.sequence(intent.id).entries
@@ -247,8 +249,8 @@ def test_add_artists_rebuilds_unfilled_sequence_without_audio() -> None:
     assignment = laptop.assignment(intent.id, laptop.device_id)
     assert assignment is not None
     assert assignment.mix_ids == [mix.id]
-    assert laptop.files() == []
-    assert source.fetch_calls == []
+    assert {m.id for m in laptop.files()} == {mix.id}
+    assert mix.url in source.fetch_calls
 
 
 def test_add_artists_leaves_filled_sequence_alone() -> None:
@@ -307,3 +309,96 @@ def test_add_artists_leaves_filled_sequence_alone() -> None:
     assert {m.title for m in laptop.mixes()} == {"Alpha Hour", "Gamma Hour"}
     assert laptop.files() == []
     assert source.fetch_calls == []
+
+
+def test_paired_new_device_rebuilds_explore_and_fills_cache_from_peer_artists(
+    tmp_path: Path,
+) -> None:
+    """Artists from an existing peer must refresh unfilled intents + cache on the new device."""
+    source = _source_with_two_artists()
+    source.bytes_by_url["https://soundcloud.com/dj-alpha/long"] = b"audio:alpha-long"
+    laptop = DeviceAgent("laptop", priority=1, source=source, data_dir=tmp_path / "laptop")
+    assert laptop.seed_default_intents_if_empty() is True
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    laptop.wait_for_fill(timeout=5.0)
+    mix = laptop.mixes()[0]
+    assert {m.id for m in laptop.files()} == {mix.id}
+
+    phone = DeviceAgent("phone", priority=10, source=FakeSource(), data_dir=tmp_path / "phone")
+    assert phone.seed_default_intents_if_empty() is True
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+    phone.sync()
+    phone.wait_for_fill(timeout=5.0)
+
+    assert {m.title for m in phone.mixes()} == {"Alpha Long Set"}
+    assignment = phone.assignment(EXPLORE_INTENT_ID, phone.device_id)
+    assert assignment is not None
+    assert mix.id in assignment.mix_ids
+    assert {m.id for m in phone.files()} == {mix.id}
+
+
+def test_paired_phone_keeps_empty_seed_assignment_until_rebuild_when_sequence_already_filled(
+    tmp_path: Path,
+) -> None:
+    """Explore seed writes assignment mix_ids=[] ; a later filled peer sequence must rebuild it.
+
+    If the laptop's filled SEQUENCE wins LWW over the phone's empty seed sequence,
+    under-budget rebuild alone is a no-op (same mix ids). The phone's empty
+    assignment must still be treated as needing rebuild so cache can fill.
+    """
+    from datetime import datetime, timedelta
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self._now = datetime(2024, 6, 1, 12, 0, 0)
+
+        def __call__(self) -> datetime:
+            return self._now
+
+        def advance(self, seconds: float) -> None:
+            self._now += timedelta(seconds=seconds)
+
+    source = _source_with_two_artists()
+    source.bytes_by_url["https://soundcloud.com/dj-alpha/long"] = b"audio:alpha-long"
+    clock = FakeClock()
+
+    phone = DeviceAgent(
+        "phone",
+        priority=10,
+        source=FakeSource(),
+        data_dir=tmp_path / "phone",
+        clock=clock,
+    )
+    assert phone.seed_default_intents_if_empty() is True
+    phone_asg = phone.assignment(EXPLORE_INTENT_ID, phone.device_id)
+    assert phone_asg is not None
+    assert phone_asg.mix_ids == []
+
+    clock.advance(60)
+    laptop = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=source,
+        data_dir=tmp_path / "laptop",
+        clock=clock,
+    )
+    assert laptop.seed_default_intents_if_empty() is True
+    clock.advance(60)
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    laptop.wait_for_fill(timeout=5.0)
+    mix = laptop.mixes()[0]
+    # Laptop sequence/assignment author times are after phone's empty seed.
+    assert laptop.sequence(EXPLORE_INTENT_ID).entries
+
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+    phone.sync()
+    phone.wait_for_fill(timeout=5.0)
+
+    assert phone.sequence(EXPLORE_INTENT_ID) is not None
+    assert len(phone.sequence(EXPLORE_INTENT_ID).entries) >= 1
+    assignment = phone.assignment(EXPLORE_INTENT_ID, phone.device_id)
+    assert assignment is not None
+    assert mix.id in assignment.mix_ids
+    assert {m.id for m in phone.files()} == {mix.id}

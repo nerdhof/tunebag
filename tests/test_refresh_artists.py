@@ -354,8 +354,10 @@ def test_refresh_unknown_artist_raises() -> None:
         laptop.refresh_artists([uuid4()])
 
 
-def test_refresh_artists_rebuilds_unfilled_sequence_without_audio() -> None:
+def test_refresh_artists_rebuilds_unfilled_sequence_and_fills_cache() -> None:
     source = _source_with_two_artists()
+    source.bytes_by_url["https://soundcloud.com/dj-alpha/long"] = b"audio:alpha-long"
+    source.bytes_by_url["https://soundcloud.com/dj-alpha/new"] = b"audio:alpha-new"
     laptop = DeviceAgent("laptop", source=source)
     intent = laptop.create_intent(
         "Explore",
@@ -364,8 +366,10 @@ def test_refresh_artists_rebuilds_unfilled_sequence_without_audio() -> None:
         device_hours=[(laptop.device_id, 8 * 3600)],
     )
     laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    laptop.wait_for_fill(timeout=5.0)
     first = laptop.mixes()[0]
     assert [e.mix_id for e in laptop.sequence(intent.id).entries] == [first.id]
+    assert {m.id for m in laptop.files()} == {first.id}
 
     source.add_listing(
         "https://soundcloud.com/dj-alpha",
@@ -385,11 +389,12 @@ def test_refresh_artists_rebuilds_unfilled_sequence_without_audio() -> None:
         ),
     )
     laptop.refresh_artists()
+    laptop.wait_for_fill(timeout=5.0)
 
     titles = {laptop.catalog.mixes[e.mix_id].title for e in laptop.sequence(intent.id).entries}
     assert titles == {"Alpha Long Set", "Alpha New Set"}
     assignment = laptop.assignment(intent.id, laptop.device_id)
     assert assignment is not None
     assert set(assignment.mix_ids) == {m.id for m in laptop.mixes()}
-    assert laptop.files() == []
-    assert source.fetch_calls == []
+    assert {m.id for m in laptop.files()} == {m.id for m in laptop.mixes()}
+    assert "https://soundcloud.com/dj-alpha/new" in source.fetch_calls

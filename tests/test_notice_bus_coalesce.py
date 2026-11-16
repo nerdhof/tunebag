@@ -242,3 +242,92 @@ def test_two_subscribers_observe_same_coalesced_notices(tmp_path: Path) -> None:
     ]
     unsub_a()
     unsub_b()
+
+
+def test_pair_during_fill_delivers_peers_notice_before_fill_ends(tmp_path: Path) -> None:
+    """Long fill must not hold the view-notice batch across downloads.
+
+    Otherwise PEERS SSE is delayed until fill ends, and Assign hours still
+    thinks only the local device is known.
+    """
+    import threading
+
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    peers_seen = threading.Event()
+    seen_sections: list[UIViewSection] = []
+
+    class SlowSource(FakeSource):
+        def fetch_bytes(
+            self,
+            source_url: str,
+            *,
+            on_progress: object | None = None,
+        ) -> bytes:
+            fetch_started.set()
+            assert release_fetch.wait(timeout=5.0), "fill was not released"
+            return super().fetch_bytes(source_url, on_progress=on_progress)  # type: ignore[arg-type]
+
+    source = SlowSource()
+    laptop = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=source,
+        data_dir=tmp_path / "laptop",
+        player=NullPlayer(),
+    )
+    tablet = DeviceAgent(
+        "tablet",
+        priority=20,
+        data_dir=tmp_path / "tablet",
+        player=NullPlayer(),
+    )
+    url = "https://example.com/slow"
+    source.bytes_by_url[url] = b"audio-slow"
+    mix = laptop.add_mix(
+        title="Slow Set",
+        url=url,
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="slow",
+        artist_name="DJ Slow",
+    )
+    laptop.rate_mix(mix.id, Stars.FIVE)
+    laptop.create_intent(
+        "Deep",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.drain_view_notices()
+
+    def on_notice(notice: UIViewNotice) -> None:
+        seen_sections.append(notice.section)
+        if notice.section is UIViewSection.PEERS:
+            peers_seen.set()
+
+    unsubscribe = laptop.subscribe_view_notices(on_notice)
+    fill_error: list[BaseException] = []
+
+    def run_fill() -> None:
+        try:
+            laptop.fill_caches()
+        except BaseException as exc:  # noqa: BLE001
+            fill_error.append(exc)
+
+    filler = threading.Thread(target=run_fill, daemon=True)
+    filler.start()
+    assert fetch_started.wait(timeout=2.0), "fill never started downloading"
+
+    # Pair while fill is mid-download (batch would still be open under the bug).
+    laptop.pair(tablet.pairing_payload())
+
+    assert peers_seen.wait(timeout=1.0), (
+        f"PEERS notice blocked until fill ends; saw {seen_sections!r}"
+    )
+    assert filler.is_alive(), "fill finished before PEERS notice — test did not overlap"
+
+    release_fetch.set()
+    filler.join(timeout=5.0)
+    unsubscribe()
+    assert not fill_error, fill_error[0]
+    assert UIViewSection.PEERS in seen_sections
