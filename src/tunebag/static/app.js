@@ -635,43 +635,90 @@ async function refreshPairingSession() {
   }
 }
 
+function fillPairCandidateSelect(candidates, previousValue) {
+  const select = document.getElementById("pair-candidate");
+  if (!select) return;
+  const previous = previousValue != null ? previousValue : select.value;
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = candidates.length
+    ? "Select discovered peer…"
+    : "No peers discovered";
+  select.appendChild(placeholder);
+  for (const candidate of candidates) {
+    const opt = document.createElement("option");
+    opt.value = candidate.locator || "";
+    const mark = candidate.pairing ? " · pairing open" : "";
+    opt.textContent = `${candidate.name} (${candidate.fingerprint || candidate.short_code || "?"})${mark}`;
+    select.appendChild(opt);
+  }
+  if (previous) {
+    select.value = previous;
+  }
+}
+
+function applyPeersPayload(data) {
+  peersCache = data.peers || [];
+  const list = document.getElementById("peer-list");
+  if (list) {
+    list.innerHTML = "";
+    if (!peersCache.length) {
+      const li = document.createElement("li");
+      li.textContent = "No peers yet";
+      li.className = "muted";
+      list.appendChild(li);
+    } else {
+      for (const peer of peersCache) {
+        const li = document.createElement("li");
+        const fp = peer.fingerprint ? ` · ${peer.fingerprint}` : "";
+        li.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
+        list.appendChild(li);
+      }
+    }
+  }
+  fillPairCandidateSelect(data.candidates || []);
+}
+
 async function refreshPeers() {
   const res = await fetch("/api/peers");
   const data = await res.json();
-  peersCache = data.peers || [];
-  const list = document.getElementById("peer-list");
-  list.innerHTML = "";
-  if (!peersCache.length) {
-    const li = document.createElement("li");
-    li.textContent = "No peers yet";
-    li.className = "muted";
-    list.appendChild(li);
-  } else {
-    for (const peer of peersCache) {
-      const li = document.createElement("li");
-      const fp = peer.fingerprint ? ` · ${peer.fingerprint}` : "";
-      li.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
-      list.appendChild(li);
-    }
-  }
+  applyPeersPayload(data);
+}
+
+let pairCandidateRefreshing = false;
+
+function showPairCandidateRefreshing() {
   const select = document.getElementById("pair-candidate");
-  if (select) {
-    const previous = select.value;
-    select.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select discovered peer…";
-    select.appendChild(placeholder);
-    for (const candidate of data.candidates || []) {
-      const opt = document.createElement("option");
-      opt.value = candidate.locator || "";
-      const mark = candidate.pairing ? " · pairing open" : "";
-      opt.textContent = `${candidate.name} (${candidate.fingerprint || candidate.short_code || "?"})${mark}`;
-      select.appendChild(opt);
+  if (!select) return;
+  select.dataset.preserveValue = select.value || "";
+  select.innerHTML = "";
+  const opt = document.createElement("option");
+  opt.value = "";
+  opt.textContent = "Refreshing…";
+  select.appendChild(opt);
+  select.value = "";
+}
+
+async function refreshPairCandidatesFromDiscovery() {
+  if (pairCandidateRefreshing) return;
+  pairCandidateRefreshing = true;
+  showPairCandidateRefreshing();
+  try {
+    const res = await fetch("/api/discovery/refresh", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      fillPairCandidateSelect([], "");
+      return;
     }
-    if (previous) {
-      select.value = previous;
-    }
+    const previous = document.getElementById("pair-candidate")?.dataset.preserveValue || "";
+    applyPeersPayload(data);
+    fillPairCandidateSelect(data.candidates || [], previous);
+  } catch (err) {
+    console.error(err);
+    fillPairCandidateSelect([], "");
+  } finally {
+    pairCandidateRefreshing = false;
   }
 }
 
@@ -2290,9 +2337,17 @@ async function startPairSession() {
   status.textContent = "Starting pairing session…";
   try {
     const res = await fetch("/api/pair/session/start", { method: "POST" });
-    const data = await res.json();
+    let data = null;
+    try {
+      data = await res.json();
+    } catch (parseErr) {
+      status.textContent = `Could not start pairing (HTTP ${res.status})`;
+      console.error(parseErr);
+      return;
+    }
     if (!res.ok) {
-      status.textContent = data.detail || "Could not start pairing";
+      const detail = typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`;
+      status.textContent = detail || "Could not start pairing";
       return;
     }
     status.textContent = "Share the PIN (or QR) with the other device";
@@ -2392,6 +2447,12 @@ document.getElementById("pair-candidate").addEventListener("change", (event) => 
   if (value) {
     document.getElementById("peer-url").value = value;
   }
+});
+document.getElementById("pair-candidate").addEventListener("mousedown", () => {
+  void refreshPairCandidatesFromDiscovery();
+});
+document.getElementById("pair-candidate").addEventListener("focus", () => {
+  void refreshPairCandidatesFromDiscovery();
 });
 
 document.getElementById("pair-form").addEventListener("submit", async (event) => {

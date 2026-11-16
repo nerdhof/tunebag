@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass, field
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
+from tunebag.discovery import LanAdvertisement
 from tunebag.pairing import (
     PIN_MAX_ATTEMPTS,
     fingerprint_from_key,
@@ -16,6 +18,71 @@ from tunebag.pairing import (
     sas_for_session,
 )
 from tunebag.web import create_app
+
+
+@dataclass
+class _RaiseOnReadvertise:
+    """Simulates mDNS NonUniqueNameException when pairing flips the ad."""
+
+    calls: int = 0
+    ads: list[LanAdvertisement] = field(default_factory=list)
+
+    def advertise(self, advertisement: LanAdvertisement) -> None:
+        self.calls += 1
+        self.ads.append(advertisement)
+        if self.calls > 1:
+            raise RuntimeError("NonUniqueNameException")
+
+    def withdraw(self) -> None:
+        return None
+
+    def browse(self) -> list[LanAdvertisement]:
+        return []
+
+
+def test_discovery_refresh_endpoint_forces_browse_and_returns_candidates() -> None:
+    from tunebag.discovery import FakeLanDiscovery
+
+    discovery = FakeLanDiscovery()
+    host = DeviceAgent(
+        "host",
+        base_url="http://127.0.0.1:8787",
+        discovery=discovery,
+    )
+    guest = DeviceAgent(
+        "guest",
+        base_url="http://127.0.0.1:8788",
+        discovery=discovery,
+    )
+    discovery.publish(guest, locator=guest.base_url)
+    before = discovery.browse_calls
+    client = TestClient(create_app(host))
+    response = client.post("/api/discovery/refresh")
+    assert response.status_code == 200
+    assert discovery.browse_calls > before
+    payload = response.json()
+    assert "candidates" in payload
+    assert "peers" in payload
+    assert any(c.get("name") == "guest" for c in payload["candidates"])
+
+
+def test_start_pairing_survives_discovery_readvertise_failure() -> None:
+    """Show PIN must work even if mDNS rejects a second register (live bug)."""
+    discovery = _RaiseOnReadvertise()
+    host = DeviceAgent(
+        "host",
+        base_url="http://127.0.0.1:8787",
+        discovery=discovery,
+    )
+    assert discovery.calls >= 1
+    status = host.start_pairing_session()
+    assert status["active"] is True
+    assert status["pin"]
+    assert status["state"] == "waiting"
+    client = TestClient(create_app(host))
+    response = client.post("/api/pair/session/start")
+    assert response.status_code == 200
+    assert response.json()["pin"]
 
 
 def test_fingerprint_uses_raw_key_not_pem_prefix() -> None:

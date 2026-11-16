@@ -225,8 +225,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         img.save(buf, format="PNG")
         return Response(buf.getvalue(), media_type="image/png")
 
-    @app.get("/api/peers")
-    def peers() -> dict:
+    def _peers_payload() -> dict:
         return {
             "peers": [
                 {
@@ -242,6 +241,16 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             ],
             "candidates": agent.pair_candidates(),
         }
+
+    @app.get("/api/peers")
+    def peers() -> dict:
+        return _peers_payload()
+
+    @app.post("/api/discovery/refresh")
+    def discovery_refresh() -> dict:
+        """Force a LAN browse; returns the same payload as GET /api/peers."""
+        agent.refresh_discovery()
+        return _peers_payload()
 
     @app.get("/api/events")
     def events() -> dict:

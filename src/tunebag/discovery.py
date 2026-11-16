@@ -149,6 +149,19 @@ class MdnsLanDiscovery:
             properties=props,
             server=f"{safe}.local.",
         )
+        # Re-advertise (e.g. pairing flag flip) must replace, not double-register.
+        if self._info is not None:
+            try:
+                self._zc.update_service(info)
+                self._info = info
+                return
+            except Exception:
+                logger.debug("mDNS update_service failed; re-registering", exc_info=True)
+                try:
+                    self._zc.unregister_service(self._info)
+                except Exception:
+                    logger.debug("mDNS unregister before re-advertise failed", exc_info=True)
+                self._info = None
         self._info = info
         self._zc.register_service(info)
 

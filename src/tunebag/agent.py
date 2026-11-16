@@ -1654,17 +1654,28 @@ class DeviceAgent:
     def _refresh_advertisement(self) -> None:
         if not self.base_url:
             return
-        self._discovery.advertise(
-            LanAdvertisement(
-                name=self.name,
-                fingerprint=self.fingerprint(),
-                locator=self.base_url,
-                pairing=self.pairing_session_open(),
+        try:
+            self._discovery.advertise(
+                LanAdvertisement(
+                    name=self.name,
+                    fingerprint=self.fingerprint(),
+                    locator=self.base_url,
+                    pairing=self.pairing_session_open(),
+                )
             )
-        )
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            # Pairing must not fail because LAN discovery refresh failed.
+            self.note(f"discovery advertise refresh failed: {exc}", level=logging.WARNING)
         publish = getattr(self._discovery, "publish", None)
         if callable(publish):
-            publish(self, locator=self.base_url)
+            try:
+                publish(self, locator=self.base_url)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(f"discovery publish refresh failed: {exc}", level=logging.WARNING)
 
     def remember_peer_url(self, peer_id: UUID, url: str) -> None:
         self._peer_urls[peer_id] = url
