@@ -1051,6 +1051,8 @@ class DeviceAgent:
                     f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
                 )
         self.note(f"add artists end · {len(added)} mix(es)")
+        if added:
+            self._rebuild_unfilled_sequences()
         return added
 
     def refresh_artists(
@@ -1111,6 +1113,8 @@ class DeviceAgent:
                     f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
                 )
         self.note(f"refresh artists end · {len(added)} mix(es)")
+        if added:
+            self._rebuild_unfilled_sequences()
         return added
 
     def _known_platform_keys(self) -> set[tuple[Platform, str]]:
@@ -2148,6 +2152,33 @@ class DeviceAgent:
             for intent in self.intents():
                 self._rebuild_sequence_for_intent(intent)
             self._prune_unassigned_files()
+
+    def _sequence_duration_seconds(self, intent: Intent) -> int:
+        """Cumulative duration of the current Sequence for ``intent`` (0 if none)."""
+        sequence = self.sequence(intent.id)
+        if sequence is None:
+            return 0
+        total = 0
+        for entry in sequence.entries:
+            mix = self.catalog.mixes.get(entry.mix_id)
+            if mix is not None:
+                total += mix.duration_seconds
+        return total
+
+    def _rebuild_unfilled_sequences(self) -> None:
+        """Rebuild intents whose Sequence is still under max device budget."""
+        with self._view_notice_batch():
+            rebuilt = False
+            for intent in self.intents():
+                budget = intent.max_budget_seconds
+                if budget <= 0:
+                    continue
+                if self._sequence_duration_seconds(intent) >= budget:
+                    continue
+                self._rebuild_sequence_for_intent(intent)
+                rebuilt = True
+            if rebuilt:
+                self._prune_unassigned_files()
 
     def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
         active_devices = {dh.device_id for dh in intent.device_hours}

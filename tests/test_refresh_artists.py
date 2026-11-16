@@ -352,3 +352,44 @@ def test_refresh_unknown_artist_raises() -> None:
     laptop = DeviceAgent("laptop", source=FakeSource())
     with pytest.raises(KeyError, match="unknown artist"):
         laptop.refresh_artists([uuid4()])
+
+
+def test_refresh_artists_rebuilds_unfilled_sequence_without_audio() -> None:
+    source = _source_with_two_artists()
+    laptop = DeviceAgent("laptop", source=source)
+    intent = laptop.create_intent(
+        "Explore",
+        tags=[],
+        seed=1,
+        device_hours=[(laptop.device_id, 8 * 3600)],
+    )
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    first = laptop.mixes()[0]
+    assert [e.mix_id for e in laptop.sequence(intent.id).entries] == [first.id]
+
+    source.add_listing(
+        "https://soundcloud.com/dj-alpha",
+        _alpha_listing(
+            _long(
+                Platform.SOUNDCLOUD,
+                "a1",
+                "Alpha Long Set",
+                "https://soundcloud.com/dj-alpha/long",
+            ),
+            _long(
+                Platform.SOUNDCLOUD,
+                "a2",
+                "Alpha New Set",
+                "https://soundcloud.com/dj-alpha/new",
+            ),
+        ),
+    )
+    laptop.refresh_artists()
+
+    titles = {laptop.catalog.mixes[e.mix_id].title for e in laptop.sequence(intent.id).entries}
+    assert titles == {"Alpha Long Set", "Alpha New Set"}
+    assignment = laptop.assignment(intent.id, laptop.device_id)
+    assert assignment is not None
+    assert set(assignment.mix_ids) == {m.id for m in laptop.mixes()}
+    assert laptop.files() == []
+    assert source.fetch_calls == []

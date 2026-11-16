@@ -226,3 +226,84 @@ def test_delete_unknown_artist_raises() -> None:
     laptop = DeviceAgent("laptop", source=FakeSource())
     with pytest.raises(KeyError, match="unknown artist"):
         laptop.delete_artist(uuid4())
+
+
+def test_add_artists_rebuilds_unfilled_sequence_without_audio() -> None:
+    source = _source_with_two_artists()
+    laptop = DeviceAgent("laptop", source=source)
+    intent = laptop.create_intent(
+        "Explore",
+        tags=[],
+        seed=1,
+        device_hours=[(laptop.device_id, 8 * 3600)],
+    )
+    assert laptop.sequence(intent.id).entries == []
+
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+
+    mix = laptop.mixes()[0]
+    entries = laptop.sequence(intent.id).entries
+    assert [e.mix_id for e in entries] == [mix.id]
+    assignment = laptop.assignment(intent.id, laptop.device_id)
+    assert assignment is not None
+    assert assignment.mix_ids == [mix.id]
+    assert laptop.files() == []
+    assert source.fetch_calls == []
+
+
+def test_add_artists_leaves_filled_sequence_alone() -> None:
+    source = FakeSource()
+    source.add_listing(
+        "https://soundcloud.com/dj-alpha",
+        ArtistListing(
+            platform=Platform.SOUNDCLOUD,
+            platform_id="alpha",
+            name="DJ Alpha",
+            url="https://soundcloud.com/dj-alpha",
+            uploads=[
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="a1",
+                    title="Alpha Hour",
+                    url="https://soundcloud.com/dj-alpha/hour",
+                    duration_seconds=3600,
+                ),
+            ],
+        ),
+    )
+    source.add_listing(
+        "https://soundcloud.com/dj-gamma",
+        ArtistListing(
+            platform=Platform.SOUNDCLOUD,
+            platform_id="gamma",
+            name="DJ Gamma",
+            url="https://soundcloud.com/dj-gamma",
+            uploads=[
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="g1",
+                    title="Gamma Hour",
+                    url="https://soundcloud.com/dj-gamma/hour",
+                    duration_seconds=3600,
+                ),
+            ],
+        ),
+    )
+    laptop = DeviceAgent("laptop", source=source)
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    intent = laptop.create_intent(
+        "Explore",
+        tags=[],
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    before = [e.mix_id for e in laptop.sequence(intent.id).entries]
+    assert len(before) == 1
+
+    laptop.add_artists(["https://soundcloud.com/dj-gamma"])
+
+    after = [e.mix_id for e in laptop.sequence(intent.id).entries]
+    assert after == before
+    assert {m.title for m in laptop.mixes()} == {"Alpha Hour", "Gamma Hour"}
+    assert laptop.files() == []
+    assert source.fetch_calls == []
