@@ -653,6 +653,8 @@ class DeviceAgent:
         self._playing_intent_id = intent_id
         self.set_current_mix(target)
         self._set_play_anchor(start)
+        # Last play wins: ask reachable Peers to pause so only one Device is audible.
+        self._request_peers_yield()
         return mix
 
     def stop(self) -> None:
@@ -663,6 +665,17 @@ class DeviceAgent:
         self._playing_intent_id = None
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
+
+    def yield_playback(self) -> bool:
+        """Pause if locally playing so a Peer can take over audio.
+
+        No-op when idle so idle Peers do not rewrite playheads. Returns whether
+        this Device yielded.
+        """
+        if not self.is_playing():
+            return False
+        self.pause()
+        return True
 
     def pause(self, position_seconds: float | None = None) -> None:
         """Pause local playback; keep current mix and intent for resume.
@@ -2654,6 +2667,54 @@ class DeviceAgent:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             self.note(f"auto-sync nudge failed ({peer_url}): {exc}", level=logging.WARNING)
+
+    def _request_peers_yield(self) -> None:
+        """Best-effort: ask reachable trusted Peers to pause local playback.
+
+        Playing stays local (not Event log). Unreachable Peers are left alone.
+        Failures never fail local play.
+        """
+        for peer in list(self._reachable):
+            if not self._trusts_public_key(peer.public_key_pem):
+                continue
+            if not self._ensure_agent_proved(peer):
+                continue
+            try:
+                if peer.yield_playback():
+                    self.note(f"peer {peer.name} yielded playback")
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(
+                    f"peer yield failed for {peer.name}: {exc}",
+                    level=logging.WARNING,
+                )
+        trusted_ids = {p.id for p in self.peers()}
+        for peer_id, url in list(self._peer_urls.items()):
+            if peer_id not in trusted_ids:
+                continue
+            if str(url).startswith("inproc://"):
+                continue
+            peer = self.catalog.devices.get(peer_id)
+            label = peer.name if peer is not None else str(peer_id)
+            self._http_request_yield(url, label=label)
+
+    def _http_request_yield(self, peer_url: str, *, label: str) -> None:
+        """Best-effort: POST /api/player/yield on an HTTP Peer Locator."""
+        try:
+            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+                response = client.post(f"{peer_url.rstrip('/')}/api/player/yield")
+                response.raise_for_status()
+                yielded = bool(response.json().get("yielded"))
+            if yielded:
+                self.note(f"peer {label} yielded playback")
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(
+                f"peer yield failed ({peer_url}): {exc}",
+                level=logging.WARNING,
+            )
 
     def _ingest(self, event: Event) -> None:
         with self._event_lock:

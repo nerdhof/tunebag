@@ -11,6 +11,7 @@ import pytest
 
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, Stars
+from tunebag.events import EventType
 from tunebag.player import NullPlayer
 from tunebag.source import FakeSource
 
@@ -478,6 +479,78 @@ def test_latest_playhead_wins_across_devices(tmp_path: Path) -> None:
 
     assert laptop.playhead(mix_id).position_seconds == 500
     assert phone.playhead(mix_id).position_seconds == 500
+
+
+def test_play_on_peer_yields_reachable_device(tmp_path: Path) -> None:
+    laptop, phone, source = _pair(tmp_path, player=_RecordingPlayer())
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Shared",
+        duration_seconds=3600,
+        platform_id="shared",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[
+            (laptop.device_id, 3600),
+            (phone.device_id, 3600),
+        ],
+    )
+    laptop.fill_caches()
+    phone.sync()
+    laptop.play(intent.id, mix_id)
+    laptop.report_playhead(120)
+    assert laptop.is_playing() is True
+
+    phone.play(intent.id, mix_id)
+
+    assert phone.is_playing() is True
+    assert laptop.is_playing() is False
+    head = laptop.playhead(mix_id)
+    assert head is not None
+    assert head.position_seconds == pytest.approx(120, abs=0.05)
+
+
+def test_play_does_not_yield_disconnected_peer(tmp_path: Path) -> None:
+    laptop, phone, source = _pair(tmp_path)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Shared",
+        duration_seconds=3600,
+        platform_id="shared",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[
+            (laptop.device_id, 3600),
+            (phone.device_id, 3600),
+        ],
+    )
+    laptop.fill_caches()
+    phone.sync()
+    laptop.play(intent.id, mix_id)
+    assert laptop.is_playing() is True
+
+    laptop.disconnect(phone)
+    phone.play(intent.id, mix_id)
+
+    assert phone.is_playing() is True
+    assert laptop.is_playing() is True
+
+
+def test_yield_playback_idle_is_noop(tmp_path: Path) -> None:
+    laptop, _phone, _source = _pair(tmp_path)
+    before = [e for e in laptop.export_events() if e.type == EventType.PLAYHEAD]
+    assert laptop.is_playing() is False
+    assert laptop.yield_playback() is False
+    after = [e for e in laptop.export_events() if e.type == EventType.PLAYHEAD]
+    assert after == before
 
 
 def test_playback_position_advances_with_clock(tmp_path: Path) -> None:

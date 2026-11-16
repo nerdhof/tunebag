@@ -647,6 +647,16 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         agent.stop()
         return {"ok": True, "playing": agent.is_playing()}
 
+    @app.post("/api/player/yield")
+    def player_yield() -> dict:
+        """Peer takeover: pause only if this Device is currently playing."""
+        yielded = agent.yield_playback()
+        return {
+            "ok": True,
+            "yielded": yielded,
+            "playing": agent.is_playing(),
+        }
+
     @app.post("/api/player/pause")
     def player_pause(body: PauseBody = PauseBody()) -> dict:
         try:
