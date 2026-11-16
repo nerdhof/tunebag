@@ -4,9 +4,22 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tunebag</title>
-    <link rel="stylesheet" href="/static/app.css?v=34" />
+    <link rel="stylesheet" href="/static/app.css?v=45" />
   </head>
   <body>
+    <nav class="section-nav" aria-label="Jump to section">
+      <div class="section-nav-inner">
+        <a href="#player" title="Player"><span class="nav-symbol" aria-hidden="true">▶</span><span class="nav-label">player</span></a>
+        <a href="#intents" title="Intents"><span class="nav-symbol" aria-hidden="true">⬡</span><span class="nav-label">intents</span></a>
+        <a href="#play-history" title="Play history"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">history</span></a>
+        <a href="#catalog" title="Catalog"><span class="nav-symbol" aria-hidden="true">▤</span><span class="nav-label">catalog</span></a>
+        <a href="#cache" title="Cache"><span class="nav-symbol" aria-hidden="true">⬇</span><span class="nav-label">cache</span></a>
+        <a href="#activity" title="Activity"><span class="nav-symbol" aria-hidden="true">!</span><span class="nav-label">activity</span></a>
+        <a href="#peers" title="Peers"><span class="nav-symbol" aria-hidden="true">⇄</span><span class="nav-label">peers</span></a>
+        <a href="#pairing" title="Pair"><span class="nav-symbol" aria-hidden="true">⧉</span><span class="nav-label">pair</span></a>
+        <a href="/about" title="About concepts"><span class="nav-symbol" aria-hidden="true">?</span><span class="nav-label">about</span></a>
+      </div>
+    </nav>
     <main>
       <h1>Tunebag</h1>
       <p class="lede">
@@ -19,7 +32,7 @@
       </section>
       <section id="player">
         <h2 class="section-heading">
-          Player
+          <span class="section-symbol" aria-hidden="true">▶</span> Player
           <span class="section-info">
             <button
               type="button"
@@ -107,28 +120,9 @@
           <ul id="later-list"></ul>
         </div>
       </section>
-      <section id="activity">
-        <h2 class="section-heading">
-          Activity
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Activity"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Live progress from artist listing, sync, and downloads.
-            </span>
-          </span>
-        </h2>
-        <ul id="activity-list" aria-live="polite"></ul>
-      </section>
       <section id="intents">
         <h2 class="section-heading">
-          Intents
+          <span class="section-symbol" aria-hidden="true">⬡</span> Intents
           <span class="section-info">
             <button
               type="button"
@@ -139,8 +133,8 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              A plan is a tag filter and rating distribution. Assign hours (and optional expiry) per device after
-              creating; both share one seeded sequence, and the smaller budget is the opening stretch.
+              An intent is a shared plan: tag filter + rating distribution. Assign hours (and optional expiry) per
+              device after creating; both share one seeded sequence, and the smaller budget is the opening stretch.
             </span>
           </span>
         </h2>
@@ -202,7 +196,7 @@
       </section>
       <section id="play-history">
         <h2 class="section-heading">
-          Play history
+          <span class="section-symbol" aria-hidden="true">◷</span> Play history
           <span class="section-info">
             <button
               type="button"
@@ -244,7 +238,7 @@
       </section>
       <section id="catalog">
         <h2 class="section-heading">
-          Catalog
+          <span class="section-symbol" aria-hidden="true">▤</span> Catalog
           <span class="section-info">
             <button
               type="button"
@@ -315,7 +309,7 @@
       </section>
       <section id="cache">
         <h2 class="section-heading">
-          Cache
+          <span class="section-symbol" aria-hidden="true">⬇</span> Cache
           <span class="section-info">
             <button
               type="button"
@@ -359,9 +353,28 @@
           </table>
         </div>
       </section>
+      <section id="activity">
+        <h2 class="section-heading">
+          <span class="section-symbol" aria-hidden="true">!</span> Activity
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Activity"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Live progress from artist listing, sync, and downloads.
+            </span>
+          </span>
+        </h2>
+        <ul id="activity-list" aria-live="polite"></ul>
+      </section>
       <section id="peers">
         <h2 class="section-heading">
-          Peers
+          <span class="section-symbol" aria-hidden="true">⇄</span> Peers
           <span class="section-info">
             <button
               type="button"
@@ -382,7 +395,7 @@
       </section>
       <section id="pairing">
         <h2 class="section-heading">
-          Pair
+          <span class="section-symbol" aria-hidden="true">⧉</span> Pair
           <span class="section-info">
             <button
               type="button"
@@ -404,6 +417,19 @@
           <summary>QR payload</summary>
           <pre id="pairing-payload"></pre>
         </details>
+        <div class="form-row">
+          <button type="button" id="pair-scan-btn" aria-label="Scan QR" data-tip="Scan QR">
+            Scan QR
+          </button>
+        </div>
+        <div id="pair-scan" class="pair-scan" hidden>
+          <video id="pair-scan-video" playsinline muted></video>
+          <div class="form-row">
+            <button type="button" id="pair-scan-stop" aria-label="Stop scan" data-tip="Stop scan">
+              Stop
+            </button>
+          </div>
+        </div>
         <form id="pair-form">
           <div class="form-row">
             <label class="inline-field grow">
@@ -442,6 +468,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=32"></script>
+    <script src="/static/app.js?v=35"></script>
   </body>
 </html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tunebag — Concepts</title>
+    <link rel="stylesheet" href="/static/app.css?v=45" />
+  </head>
+  <body class="about-page">
+    <nav class="section-nav" aria-label="About navigation">
+      <div class="section-nav-inner">
+        <a href="/" title="Tunebag companion"
+          ><span class="nav-symbol" aria-hidden="true">◀</span
+          ><span class="nav-label">companion</span></a
+        >
+        <a href="/#player" title="Player"
+          ><span class="nav-symbol" aria-hidden="true">▶</span
+          ><span class="nav-label">player</span></a
+        >
+        <a href="/#intents" title="Intents"
+          ><span class="nav-symbol" aria-hidden="true">⬡</span
+          ><span class="nav-label">intents</span></a
+        >
+        <a href="/#catalog" title="Catalog"
+          ><span class="nav-symbol" aria-hidden="true">▤</span
+          ><span class="nav-label">catalog</span></a
+        >
+        <a href="/#peers" title="Peers"
+          ><span class="nav-symbol" aria-hidden="true">⇄</span
+          ><span class="nav-label">peers</span></a
+        >
+        <a href="/about" title="Concepts" aria-current="page"
+          ><span class="nav-symbol" aria-hidden="true">?</span
+          ><span class="nav-label">about</span></a
+        >
+      </div>
+    </nav>
+    <main class="about-main">
+      <h1>Tunebag</h1>
+      <p class="lede">
+        Music packed for every device. Every paired Device keeps the full Catalog; each Device only
+        holds the audio its hours require.
+      </p>
+      <section id="concepts" class="about-concepts">
+        <h2>Concepts</h2>
+        <p class="about-intro">
+          The graph below is a top-down map of the core entities and how they interact. Click a node
+          to jump to its short write-up.
+        </p>
+        <div
+          id="concept-graph"
+          class="concept-graph"
+          role="img"
+          aria-label="Concept relationship graph, arranged top to bottom"
+        ></div>
+        <div id="concept-articles" class="concept-articles"></div>
+      </section>
+    </main>
+    <script src="/static/about.js?v=13"></script>
+  </body>
+</html>

@@ -144,6 +144,13 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.get("/about")
+    def about() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "about.html",
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/api/health")
     def health() -> dict:
         return {
