@@ -99,6 +99,7 @@ def test_unpair_drops_buffered_events_for_peer(tmp_path: Path) -> None:
         source=src,
         data_dir=tmp_path / "phone",
     )
+    laptop.connect(phone)
     mix = _add_mix(phone, src, title="Buffered then unpaired", platform_id="buf-1")
     laptop.ingest_events(phone.export_events())
     assert mix.id not in {m.id for m in laptop.mixes()}

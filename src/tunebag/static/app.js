@@ -28,6 +28,7 @@ const BTN = {
   refresh: "↻",
   fill: "⬇",
   delete: "⌫",
+  confirmDelete: "💥",
   reject: "✕",
   unreject: "↺",
   add: "✚",
@@ -46,7 +47,7 @@ function setSymbolButton(btn, symbol, label) {
   btn.dataset.tip = label;
 }
 
-/** First click arms (“really delete?”); second click runs onConfirm. */
+/** First click arms (💥); second click runs onConfirm. */
 function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
   setSymbolButton(btn, BTN.delete, label);
   let armed = false;
@@ -67,9 +68,7 @@ function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
     if (!armed) {
       armed = true;
       btn.classList.add("confirm-pending");
-      btn.textContent = "really delete?";
-      btn.setAttribute("aria-label", "really delete?");
-      btn.dataset.tip = "really delete?";
+      setSymbolButton(btn, BTN.confirmDelete, "really delete?");
       if (actionTipActive === btn) showActionTip(btn);
       resetTimer = setTimeout(reset, 4000);
       return;
@@ -161,6 +160,27 @@ function initActionTips() {
     },
     true,
   );
+}
+
+function fitSectionNav() {
+  const nav = document.querySelector(".section-nav");
+  const inner = nav?.querySelector(".section-nav-inner");
+  if (!nav || !inner) return;
+  nav.classList.remove("compact");
+  if (inner.scrollWidth > inner.clientWidth + 1) {
+    nav.classList.add("compact");
+  }
+}
+
+function initSectionNav() {
+  const nav = document.querySelector(".section-nav");
+  if (!nav) return;
+  fitSectionNav();
+  window.addEventListener("resize", fitSectionNav);
+  if (typeof ResizeObserver === "function") {
+    const observer = new ResizeObserver(() => fitSectionNav());
+    observer.observe(nav);
+  }
 }
 
 function initSectionInfo() {
@@ -530,13 +550,89 @@ async function refreshHealth() {
   }
 }
 
+let pairPollTimer = null;
+
+function stopPairPoll() {
+  if (pairPollTimer != null) {
+    clearInterval(pairPollTimer);
+    pairPollTimer = null;
+  }
+}
+
+function startPairPoll() {
+  stopPairPoll();
+  pairPollTimer = setInterval(() => {
+    void refreshPairingSession();
+  }, 1000);
+}
+
+function renderPairSession(session) {
+  const hostPanel = document.getElementById("pair-host-panel");
+  const confirmPanel = document.getElementById("pair-confirm-panel");
+  const cancelBtn = document.getElementById("pair-cancel-btn");
+  const qr = document.getElementById("qr");
+  const pinEl = document.getElementById("pair-pin");
+  const payloadEl = document.getElementById("pairing-payload");
+  if (!session || !session.active) {
+    hostPanel.hidden = true;
+    confirmPanel.hidden = true;
+    cancelBtn.hidden = true;
+    qr.hidden = true;
+    stopPairPoll();
+    return;
+  }
+  cancelBtn.hidden = false;
+  if (session.role === "host" && session.state === "waiting") {
+    hostPanel.hidden = false;
+    confirmPanel.hidden = true;
+    if (session.pin) {
+      pinEl.textContent = session.pin;
+    }
+    if (session.offer) {
+      payloadEl.textContent = JSON.stringify(session.offer, null, 2);
+      qr.hidden = false;
+      qr.src = `/api/pairing/qr.png?t=${Date.now()}`;
+    }
+  } else if (session.state === "pending_confirm") {
+    hostPanel.hidden = session.role !== "host";
+    confirmPanel.hidden = false;
+    document.getElementById("pair-peer-name").textContent = session.peer_name || "peer";
+    document.getElementById("pair-sas").textContent = session.sas || "…";
+    if (session.role === "host" && session.pin) {
+      pinEl.textContent = session.pin;
+    }
+  } else if (session.state === "complete") {
+    confirmPanel.hidden = true;
+    hostPanel.hidden = true;
+    cancelBtn.hidden = true;
+    stopPairPoll();
+  }
+}
+
 async function refreshPairing() {
   const res = await fetch("/api/pairing");
   const payload = await res.json();
-  document.getElementById("short-code").textContent = payload.short_code;
-  document.getElementById("pairing-payload").textContent = JSON.stringify(payload, null, 2);
-  const qr = document.getElementById("qr");
-  qr.src = `/api/pairing/qr.png?t=${Date.now()}`;
+  const fp = payload.fingerprint || payload.short_code || "…";
+  document.getElementById("device-fingerprint").textContent = fp;
+  await refreshPairingSession();
+}
+
+async function refreshPairingSession() {
+  const res = await fetch("/api/pair/session?include_pin=true");
+  const session = await res.json();
+  renderPairSession(session);
+  if (session.active && session.state === "pending_confirm") {
+    // Guest may finish after host confirms.
+    const refresh = await fetch("/api/pair/session/refresh", { method: "POST" });
+    const data = await refresh.json();
+    if (data.complete && data.peer) {
+      document.getElementById("pair-status").textContent = `Paired with ${data.peer.name}`;
+      renderPairSession(data.session || { active: false });
+      await refreshPeers();
+      await refreshIntents({ force: true });
+      stopPairPoll();
+    }
+  }
 }
 
 async function refreshPeers() {
@@ -553,8 +649,28 @@ async function refreshPeers() {
   } else {
     for (const peer of peersCache) {
       const li = document.createElement("li");
-      li.textContent = `${peer.name} (priority ${peer.priority})`;
+      const fp = peer.fingerprint ? ` · ${peer.fingerprint}` : "";
+      li.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
       list.appendChild(li);
+    }
+  }
+  const select = document.getElementById("pair-candidate");
+  if (select) {
+    const previous = select.value;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select discovered peer…";
+    select.appendChild(placeholder);
+    for (const candidate of data.candidates || []) {
+      const opt = document.createElement("option");
+      opt.value = candidate.locator || "";
+      const mark = candidate.pairing ? " · pairing open" : "";
+      opt.textContent = `${candidate.name} (${candidate.fingerprint || candidate.short_code || "?"})${mark}`;
+      select.appendChild(opt);
+    }
+    if (previous) {
+      select.value = previous;
     }
   }
 }
@@ -2153,7 +2269,11 @@ async function refreshIntents({ force = false } = {}) {
       setSymbolButton(assignBtn, BTN.add, "Assign hours");
       assignBtn.addEventListener("click", () => {
         hoursEditorState.set(intent.id, { mode: "add" });
-        void refreshIntents();
+        // Peers may have landed while a long fill held SSE; refresh before render.
+        void (async () => {
+          await refreshPeers();
+          await refreshIntents({ force: true });
+        })();
       });
       footer.appendChild(assignBtn);
     }
@@ -2165,40 +2285,259 @@ async function refreshIntents({ force = false } = {}) {
   await refreshPlayerIntents();
 }
 
-document.getElementById("pair-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
+async function startPairSession() {
   const status = document.getElementById("pair-status");
-  status.textContent = "Pairing…";
-  const payloadText = document.getElementById("pair-payload").value.trim();
-  const body = {};
-  if (payloadText) {
-    try {
-      body.payload = JSON.parse(payloadText);
-    } catch (err) {
-      status.textContent = "Payload is not valid JSON";
+  status.textContent = "Starting pairing session…";
+  try {
+    const res = await fetch("/api/pair/session/start", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.detail || "Could not start pairing";
       return;
     }
-  } else {
-    body.peer_url = document.getElementById("peer-url").value.trim();
-    body.short_code = document.getElementById("pair-code").value.trim();
+    status.textContent = "Share the PIN (or QR) with the other device";
+    renderPairSession(data);
+    startPairPoll();
+  } catch (err) {
+    status.textContent = "Could not start pairing";
+    console.error(err);
   }
+}
+
+async function cancelPairSession() {
+  const status = document.getElementById("pair-status");
   try {
-    const res = await fetch("/api/pair", {
+    await fetch("/api/pair/session/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: "{}",
+    });
+    status.textContent = "Pairing cancelled";
+    renderPairSession({ active: false });
+  } catch (err) {
+    status.textContent = "Cancel failed";
+    console.error(err);
+  }
+}
+
+async function confirmPairSession() {
+  const status = document.getElementById("pair-status");
+  status.textContent = "Confirming…";
+  try {
+    const res = await fetch("/api/pair/session/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     });
     const data = await res.json();
     if (!res.ok) {
-      status.textContent = data.detail || "Pair failed";
+      status.textContent = data.detail || "Confirm failed";
       return;
     }
-    status.textContent = `Paired with ${data.peer.name}`;
-    await refreshPeers();
+    if (data.complete && data.peer) {
+      status.textContent = `Paired with ${data.peer.name}`;
+      renderPairSession(data.session || { active: false });
+      await refreshPeers();
+      await refreshIntents({ force: true });
+      stopPairPoll();
+      return;
+    }
+    status.textContent = "Waiting for the other device to Confirm…";
+    if (data.session) {
+      renderPairSession(data.session);
+    }
+    startPairPoll();
   } catch (err) {
-    status.textContent = "Pair request failed";
+    status.textContent = "Confirm failed";
     console.error(err);
   }
+}
+
+async function joinPairSession({ peer_url, pin, session_id }) {
+  const status = document.getElementById("pair-status");
+  status.textContent = "Joining…";
+  try {
+    const res = await fetch("/api/pair/session/join-remote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ peer_url, pin, session_id: session_id || null }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.detail || "Join failed";
+      return false;
+    }
+    status.textContent = "Compare the confirm code, then Confirm on both devices";
+    renderPairSession(data);
+    startPairPoll();
+    return true;
+  } catch (err) {
+    status.textContent = "Join failed";
+    console.error(err);
+    return false;
+  }
+}
+
+document.getElementById("pair-start-btn").addEventListener("click", () => {
+  void startPairSession();
+});
+document.getElementById("pair-cancel-btn").addEventListener("click", () => {
+  void cancelPairSession();
+});
+document.getElementById("pair-confirm-btn").addEventListener("click", () => {
+  void confirmPairSession();
+});
+document.getElementById("pair-candidate").addEventListener("change", (event) => {
+  const value = event.target.value;
+  if (value) {
+    document.getElementById("peer-url").value = value;
+  }
+});
+
+document.getElementById("pair-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("pair-status");
+  const peerUrl = document.getElementById("peer-url").value.trim();
+  const pin = document.getElementById("pair-code").value.trim();
+  if (!peerUrl || !pin) {
+    status.textContent = "Peer URL and PIN are required";
+    return;
+  }
+  await joinPairSession({ peer_url: peerUrl, pin });
+});
+
+let pairScanStream = null;
+let pairScanTimer = null;
+let pairScanBusy = false;
+
+function setPairScanUi(active) {
+  document.getElementById("pair-scan").hidden = !active;
+  document.getElementById("pair-scan-btn").disabled = active;
+}
+
+function stopPairScan() {
+  if (pairScanTimer != null) {
+    clearTimeout(pairScanTimer);
+    pairScanTimer = null;
+  }
+  pairScanBusy = false;
+  const video = document.getElementById("pair-scan-video");
+  video.pause();
+  video.srcObject = null;
+  if (pairScanStream) {
+    for (const track of pairScanStream.getTracks()) {
+      track.stop();
+    }
+    pairScanStream = null;
+  }
+  setPairScanUi(false);
+}
+
+async function handleScannedPairPayload(rawText) {
+  const status = document.getElementById("pair-status");
+  let payload;
+  try {
+    payload = JSON.parse(rawText);
+  } catch (err) {
+    status.textContent = "Scanned QR is not a pairing offer";
+    return;
+  }
+  if (!payload || typeof payload !== "object" || payload.v !== 2 || !payload.pin || !payload.url) {
+    status.textContent = "Scanned QR is not an ephemeral pairing offer";
+    return;
+  }
+  document.getElementById("peer-url").value = payload.url;
+  document.getElementById("pair-code").value = payload.pin;
+  stopPairScan();
+  await joinPairSession({
+    peer_url: payload.url,
+    pin: payload.pin,
+    session_id: payload.session_id || null,
+  });
+}
+
+async function tickPairScan(detector) {
+  if (!pairScanStream || pairScanBusy) {
+    return;
+  }
+  const video = document.getElementById("pair-scan-video");
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    pairScanTimer = setTimeout(() => tickPairScan(detector), 250);
+    return;
+  }
+  pairScanBusy = true;
+  try {
+    const codes = await detector.detect(video);
+    const raw = codes.find((code) => code.rawValue)?.rawValue;
+    if (raw) {
+      await handleScannedPairPayload(raw);
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    pairScanBusy = false;
+  }
+  if (pairScanStream) {
+    pairScanTimer = setTimeout(() => tickPairScan(detector), 250);
+  }
+}
+
+async function startPairScan() {
+  const status = document.getElementById("pair-status");
+  if (!window.isSecureContext) {
+    status.textContent = "Camera scan needs HTTPS or localhost; use short code instead";
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    status.textContent = "Camera not available; use short code instead";
+    return;
+  }
+  if (typeof BarcodeDetector === "undefined") {
+    status.textContent = "QR scan not supported in this browser; use short code instead";
+    return;
+  }
+  let detector;
+  try {
+    detector = new BarcodeDetector({ formats: ["qr_code"] });
+  } catch (err) {
+    status.textContent = "QR scan not supported in this browser; use short code instead";
+    console.error(err);
+    return;
+  }
+  stopPairScan();
+  status.textContent = "Starting camera…";
+  try {
+    pairScanStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" } },
+    });
+  } catch (err) {
+    status.textContent = "Camera permission denied; use short code instead";
+    console.error(err);
+    return;
+  }
+  const video = document.getElementById("pair-scan-video");
+  video.srcObject = pairScanStream;
+  setPairScanUi(true);
+  try {
+    await video.play();
+  } catch (err) {
+    stopPairScan();
+    status.textContent = "Could not start camera preview";
+    console.error(err);
+    return;
+  }
+  status.textContent = "Point at the other device's QR…";
+  tickPairScan(detector);
+}
+
+document.getElementById("pair-scan-btn").addEventListener("click", () => {
+  startPairScan();
+});
+document.getElementById("pair-scan-stop").addEventListener("click", () => {
+  stopPairScan();
+  document.getElementById("pair-status").textContent = "Scan stopped";
 });
 
 function minDurationSecondsFromForm() {
@@ -2748,6 +3087,10 @@ async function refreshViewSections(sections) {
   }
   if (wanted.has("peers")) {
     await refreshPeers();
+    // Device picker for Assign hours is derived from peersCache.
+    if (hoursEditorState.size) {
+      await refreshIntents({ force: true });
+    }
   }
   if (wanted.has("cache")) {
     await refreshFiles({ force: true });
@@ -2776,6 +3119,7 @@ function connectViewNotices() {
 
 (async () => {
   initSectionInfo();
+  initSectionNav();
   initActionTips();
   initChanceSelects();
   const rejectedFilter = document.getElementById("catalog-show-rejected");

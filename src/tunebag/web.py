@@ -21,21 +21,40 @@ from pydantic import BaseModel, Field
 from tunebag import __version__
 from tunebag.agent import DeviceAgent, DeviceHoursSpec
 from tunebag.domain import StarDistribution, Stars
-from tunebag.pairing import payload_to_qr_text
+from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 from tunebag.ui_notices import UIViewNotice
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-class PairBody(BaseModel):
-    payload: dict[str, Any] | None = None
-    short_code: str | None = None
-    peer_url: str | None = None
+class PairJoinBody(BaseModel):
+    """Host-facing join from a guest (PIN + signed transcript)."""
 
-
-class AcceptPairBody(BaseModel):
+    session_id: str
+    pin: str
+    nonce: str
+    signature: str
     payload: dict[str, Any]
+
+
+class PairJoinRemoteBody(BaseModel):
+    """Local UI: join another device's open pairing session."""
+
+    peer_url: str
+    pin: str
+    session_id: str | None = None
+
+
+class PairConfirmBody(BaseModel):
+    """Local Confirm (empty) or host-facing guest Confirm (session_id + signature)."""
+
+    session_id: str | None = None
+    signature: str | None = None
+
+
+class PairCancelBody(BaseModel):
+    session_id: str | None = None
 
 
 class ProveBody(BaseModel):
@@ -188,11 +207,20 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
     @app.get("/api/pairing")
     def pairing() -> dict:
+        """Public identity for discovery (not sufficient to establish trust)."""
         return agent.pairing_payload()
 
     @app.get("/api/pairing/qr.png")
     def pairing_qr() -> Response:
-        img = qrcode.make(payload_to_qr_text(agent.pairing_payload()))
+        """QR of the ephemeral pair offer; requires an open host session."""
+        status = agent.pairing_session_status(include_pin=True)
+        offer = status.get("offer")
+        if not isinstance(offer, dict):
+            raise HTTPException(
+                status_code=404,
+                detail="start a pairing session before showing QR",
+            )
+        img = qrcode.make(payload_to_qr_text(offer))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(buf.getvalue(), media_type="image/png")
@@ -206,9 +234,13 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "name": peer.name,
                     "public_key_pem": peer.public_key_pem,
                     "priority": peer.priority,
+                    "fingerprint": fingerprint_from_key(peer.public_key_pem)
+                    if peer.public_key_pem
+                    else None,
                 }
                 for peer in agent.peers()
-            ]
+            ],
+            "candidates": agent.pair_candidates(),
         }
 
     @app.get("/api/events")
@@ -245,30 +277,102 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             unsubscribe()
 
     @app.post("/api/pair")
-    def pair(body: PairBody) -> dict:
+    def pair_removed() -> dict:
+        raise HTTPException(
+            status_code=410,
+            detail="static pair removed; use /api/pair/session/*",
+        )
+
+    @app.post("/api/pair/accept")
+    def accept_pair_removed() -> dict:
+        raise HTTPException(
+            status_code=410,
+            detail="pair accept removed; use dual-confirm pairing session",
+        )
+
+    @app.post("/api/pair/session/start")
+    def pair_session_start() -> dict:
+        return agent.start_pairing_session()
+
+    @app.get("/api/pair/session")
+    def pair_session_status(include_pin: bool = False) -> dict:
+        return agent.pairing_session_status(include_pin=include_pin)
+
+    @app.post("/api/pair/session/join")
+    def pair_session_join(body: PairJoinBody) -> dict:
+        """Host endpoint: guest joins with PIN + signature."""
         try:
-            if body.payload is not None:
-                peer = agent.pair(body.payload)
-            elif body.short_code and body.peer_url:
-                peer = agent.pair_by_short_code(body.short_code, peer_url=body.peer_url)
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="provide payload, or short_code with peer_url",
-                )
+            return agent.receive_pair_join(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/pair/session/join-remote")
+    def pair_session_join_remote(body: PairJoinRemoteBody) -> dict:
+        """Local UI: join another device's session as guest."""
+        try:
+            return agent.join_pairing_session(
+                pin=body.pin,
+                peer_url=body.peer_url,
+                session_id=body.session_id,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"peer unreachable: {exc}") from exc
-        return {"ok": True, "peer": {"id": str(peer.id), "name": peer.name}}
 
-    @app.post("/api/pair/accept")
-    def accept_pair(body: AcceptPairBody) -> dict:
+    @app.post("/api/pair/session/confirm")
+    def pair_session_confirm(body: PairConfirmBody | None = None) -> dict:
+        """Guest posts signed confirm to host, or local UI confirms this device."""
         try:
-            peer = agent.accept_pair_offer(body.payload)
+            if body is not None and body.signature and body.session_id:
+                return agent.receive_pair_confirm(
+                    {"session_id": body.session_id, "signature": body.signature}
+                )
+            peer = agent.confirm_pairing_session()
+            if peer is None:
+                peer = agent.refresh_pairing_session_trust()
+            status = agent.pairing_session_status()
+            return {
+                "ok": True,
+                "complete": status.get("state") == "complete",
+                "waiting": peer is None and status.get("state") == "pending_confirm",
+                "peer": {"id": str(peer.id), "name": peer.name} if peer else None,
+                "session": status,
+            }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"ok": True, "peer": {"id": str(peer.id), "name": peer.name}}
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"peer unreachable: {exc}") from exc
+
+    @app.post("/api/pair/session/refresh")
+    def pair_session_refresh() -> dict:
+        """Guest polls until host completes; writes local trust when done."""
+        try:
+            peer = agent.refresh_pairing_session_trust()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"peer unreachable: {exc}") from exc
+        status = agent.pairing_session_status()
+        return {
+            "ok": True,
+            "complete": status.get("state") == "complete",
+            "peer": {"id": str(peer.id), "name": peer.name} if peer else None,
+            "session": status,
+        }
+
+    @app.post("/api/pair/session/cancel")
+    def pair_session_cancel(body: PairCancelBody | None = None) -> dict:
+        try:
+            if body is not None and body.session_id:
+                session = agent.pairing_session_status()
+                if session.get("role") == "host" and session.get("session_id") == body.session_id:
+                    return agent.receive_pair_cancel(body.session_id)
+            return agent.cancel_pairing_session()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"peer unreachable: {exc}") from exc
 
     @app.post("/api/sync")
     def sync() -> dict:

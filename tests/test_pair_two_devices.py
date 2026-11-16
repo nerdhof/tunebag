@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform
-from tunebag.pairing import generate_identity
+from tunebag.pairing import fingerprint_from_key, generate_identity
 
 
-def test_pairing_payload_has_name_public_key_and_short_code_not_private_key() -> None:
+def test_pairing_payload_has_name_public_key_and_fingerprint_not_private_key() -> None:
     laptop = DeviceAgent("laptop")
 
     payload = laptop.pairing_payload()
@@ -15,11 +15,19 @@ def test_pairing_payload_has_name_public_key_and_short_code_not_private_key() ->
     assert payload["name"] == "laptop"
     assert payload["device_id"] == str(laptop.device_id)
     assert "BEGIN PUBLIC KEY" in payload["public_key_pem"]
-    assert payload["short_code"] == laptop.short_code()
+    assert payload["fingerprint"] == laptop.fingerprint()
+    assert payload["short_code"] == laptop.fingerprint()
     assert "private" not in {k.lower() for k in payload}
     assert "PRIVATE" not in payload["public_key_pem"]
     assert laptop.private_key_pem  # exists locally
     assert "PRIVATE KEY" in laptop.private_key_pem
+
+
+def test_fingerprints_differ_across_devices() -> None:
+    a = DeviceAgent("a")
+    b = DeviceAgent("b")
+    assert a.fingerprint() != b.fingerprint()
+    assert fingerprint_from_key(a.public_key_pem) == a.fingerprint()
 
 
 def test_after_pairing_each_device_shows_the_other_as_peer() -> None:
@@ -37,12 +45,12 @@ def test_after_pairing_each_device_shows_the_other_as_peer() -> None:
     assert all("PRIVATE" not in p.public_key_pem for p in laptop.peers())
 
 
-def test_short_code_pairs_when_peer_is_reachable() -> None:
+def test_pin_session_pairs_when_peer_is_reachable() -> None:
     laptop = DeviceAgent("laptop", priority=1)
     phone = DeviceAgent("phone", priority=10)
     laptop.connect(phone)
 
-    phone.pair_by_short_code(laptop.short_code())
+    phone.pair_with(laptop)
 
     assert [p.name for p in phone.peers()] == ["laptop"]
     assert [p.name for p in laptop.peers()] == ["phone"]

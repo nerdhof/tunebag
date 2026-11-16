@@ -17,11 +17,17 @@ DISCOVERY_REFRESH_SECONDS = 60.0
 
 @dataclass(frozen=True)
 class LanAdvertisement:
-    """mDNS-sized ad: name, short code, Locator — not the full public key."""
+    """mDNS-sized ad: name, fingerprint, Locator — not the full public key."""
 
     name: str
-    short_code: str
+    fingerprint: str
     locator: str
+    pairing: bool = False
+
+    @property
+    def short_code(self) -> str:
+        """Alias: fingerprint is the discovery label (not a pairing secret)."""
+        return self.fingerprint
 
 
 class LanDiscovery(Protocol):
@@ -68,10 +74,12 @@ class FakeLanDiscovery:
         """Register an in-process agent as an advertisement on this fake LAN."""
         loc = locator or agent.base_url or f"inproc://{agent.device_id}"
         payload = agent.pairing_payload()
+        pairing_open = bool(getattr(agent, "pairing_session_open", lambda: False)())
         ad = LanAdvertisement(
             name=agent.name,
-            short_code=agent.short_code(),
+            fingerprint=agent.fingerprint(),
             locator=loc,
+            pairing=pairing_open,
         )
         self._ads[loc] = ad
         self._pairing[loc] = lambda: {**payload, "url": loc}
@@ -125,16 +133,20 @@ class MdnsLanDiscovery:
         if not addrs:
             addrs = [socket.inet_aton("127.0.0.1")]
         safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in advertisement.name)
+        props = {
+            b"name": advertisement.name.encode("utf-8"),
+            b"fingerprint": advertisement.fingerprint.encode("utf-8"),
+            # Older browsers may still read short_code as the discovery label.
+            b"short_code": advertisement.fingerprint.encode("utf-8"),
+            b"locator": advertisement.locator.encode("utf-8"),
+            b"pairing": b"1" if advertisement.pairing else b"0",
+        }
         info = ServiceInfo(
             SERVICE_TYPE,
             f"{safe}.{SERVICE_TYPE}",
             addresses=addrs,
             port=port,
-            properties={
-                b"name": advertisement.name.encode("utf-8"),
-                b"short_code": advertisement.short_code.encode("utf-8"),
-                b"locator": advertisement.locator.encode("utf-8"),
-            },
+            properties=props,
             server=f"{safe}.local.",
         )
         self._info = info
@@ -179,10 +191,12 @@ class MdnsLanDiscovery:
                     and locator.rstrip("/") == discovery._local_locator
                 ):
                     return
+                fingerprint = props.get("fingerprint") or props.get("short_code") or ""
                 discovery._seen[locator] = LanAdvertisement(
                     name=props.get("name") or name.split(".")[0],
-                    short_code=props.get("short_code") or "",
+                    fingerprint=fingerprint,
                     locator=locator,
+                    pairing=props.get("pairing") == "1",
                 )
 
             def remove_service(self, zc: Any, type_: str, name: str) -> None:

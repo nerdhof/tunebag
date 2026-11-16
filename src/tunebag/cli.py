@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
         app = create_app(agent)
         print(f"tunebag agent {args.name!r} at {base_url}", flush=True)
         print(f"data_dir={data_dir}", flush=True)
-        print(f"short_code={agent.short_code()}", flush=True)
+        print(f"fingerprint={agent.fingerprint()}", flush=True)
         try:
             uvicorn.run(app, host=args.host, port=args.port)
         finally:

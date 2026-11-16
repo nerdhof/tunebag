@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tunebag</title>
-    <link rel="stylesheet" href="/static/app.css?v=45" />
+    <link rel="stylesheet" href="/static/app.css?v=47" />
   </head>
   <body>
     <nav class="section-nav" aria-label="Jump to section">
@@ -406,17 +406,39 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              Scan the QR on the other device, or enter its short code and URL when the camera is not
-              used.
+              Start a session on one device and enter its PIN on the other (or scan the ephemeral QR).
+              Both devices must Confirm the matching code before trust is written.
             </span>
           </span>
         </h2>
-        <p>Short code: <strong id="short-code">…</strong></p>
-        <img id="qr" alt="Pairing QR code" width="180" height="180" />
-        <details>
-          <summary>QR payload</summary>
-          <pre id="pairing-payload"></pre>
-        </details>
+        <p>Fingerprint: <strong id="device-fingerprint">…</strong></p>
+        <div class="form-row">
+          <button type="button" id="pair-start-btn" aria-label="Show PIN" data-tip="Show PIN">
+            Show PIN
+          </button>
+          <button type="button" id="pair-cancel-btn" aria-label="Cancel pairing" data-tip="Cancel" hidden>
+            Cancel
+          </button>
+        </div>
+        <div id="pair-host-panel" hidden>
+          <p>Pairing PIN: <strong id="pair-pin">…</strong></p>
+          <img id="qr" alt="Ephemeral pairing QR code" width="180" height="180" hidden />
+          <details>
+            <summary>Offer payload</summary>
+            <pre id="pairing-payload"></pre>
+          </details>
+        </div>
+        <div id="pair-confirm-panel" hidden>
+          <p>
+            Pair with <strong id="pair-peer-name">…</strong>?
+            Confirm code: <strong id="pair-sas">…</strong>
+          </p>
+          <div class="form-row">
+            <button type="button" id="pair-confirm-btn" aria-label="Confirm pair" data-tip="Confirm">
+              Confirm
+            </button>
+          </div>
+        </div>
         <div class="form-row">
           <button type="button" id="pair-scan-btn" aria-label="Scan QR" data-tip="Scan QR">
             Scan QR
@@ -433,6 +455,14 @@
         <form id="pair-form">
           <div class="form-row">
             <label class="inline-field grow">
+              Peer
+              <select id="pair-candidate" aria-label="Discovered peer">
+                <option value="">Select discovered peer…</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="inline-field grow">
               Peer URL
               <input
                 id="peer-url"
@@ -443,31 +473,22 @@
               />
             </label>
             <label class="inline-field">
-              Short code
+              PIN
               <input
                 id="pair-code"
-                name="short_code"
+                name="pin"
                 type="text"
-                maxlength="8"
-                placeholder="ABCDEF"
+                maxlength="10"
+                placeholder="ABCD1234"
                 autocomplete="off"
               />
             </label>
-            <button type="submit" aria-label="Pair" data-tip="Pair">Pair</button>
+            <button type="submit" aria-label="Join" data-tip="Join">Join</button>
           </div>
-          <label>
-            Or paste full payload
-            <textarea
-              id="pair-payload"
-              rows="3"
-              placeholder='{"v":1,"name":"…"}'
-              title="Paste the full pairing QR payload JSON"
-            ></textarea>
-          </label>
         </form>
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=35"></script>
+    <script src="/static/app.js?v=36"></script>
   </body>
 </html>

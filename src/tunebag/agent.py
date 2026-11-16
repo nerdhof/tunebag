@@ -1185,19 +1185,31 @@ class DeviceAgent:
         return {(m.platform, m.platform_id) for m in self.catalog.mixes.values()}
 
     def pair(self, payload: dict[str, Any]) -> Device:
-        peer = self._trust_payload(payload)
-        for agent in self._reachable:
-            if agent.public_key_pem == payload["public_key_pem"]:
-                agent.accept_pair_offer(self.pairing_payload())
-                return peer
-        if url := payload.get("url"):
-            peer_agent = self._discovery_agent_at(url)
-            if peer_agent is not None and peer_agent is not self:
-                peer_agent.accept_pair_offer(self.pairing_payload())
-                self.connect(peer_agent)
-                return peer
-            if not str(url).startswith("inproc://"):
-                self._http_offer_pair(url)
+        """In-process helper for tests.
+
+        When the peer agent is reachable, runs a full dual-confirmed session.
+        Otherwise applies local trust only (HTTP no longer exposes this path).
+        """
+        peer_agent = self._find_agent_for_payload(payload)
+        if peer_agent is not None:
+            return self.pair_with(peer_agent)
+        return self._trust_payload(payload)
+
+    def pair_with(self, host: DeviceAgent) -> Device:
+        """Guest completes mutual pairing with an in-process host (both auto-confirm)."""
+        if host is self:
+            raise ValueError("cannot pair with self")
+        host.start_pairing_session()
+        status = host.pairing_session_status(include_pin=True)
+        pin = status["pin"]
+        assert isinstance(pin, str)
+        self.join_pairing_session(pin=pin, host_agent=host)
+        host.confirm_pairing_session()  # host first; may still wait for guest
+        peer = self.confirm_pairing_session()
+        if peer is None:
+            peer = self.refresh_pairing_session_trust()
+        if peer is None:
+            raise ValueError("pairing did not complete")
         return peer
 
     def unpair(self, device_id: UUID) -> None:
@@ -1206,22 +1218,453 @@ class DeviceAgent:
             raise ValueError("cannot unpair this Device")
         self._append_and_apply(EventType.DEVICE_UNPAIRED, {"id": str(device_id)})
 
-    def pair_by_short_code(self, code: str, *, peer_url: str | None = None) -> Device:
-        needle = code.strip().upper()
-        if peer_url:
-            payload = self._http_fetch_pairing(peer_url)
-            if payload.get("short_code", "").upper() != needle:
-                raise ValueError("short code does not match peer")
-            payload["url"] = payload.get("url") or peer_url.rstrip("/")
-            return self.pair(payload)
-        for agent in self._reachable:
-            if agent.short_code() == needle:
-                return self.pair(agent.pairing_payload())
-        raise ValueError(f"no reachable peer with short code {needle}")
+    def start_pairing_session(self) -> dict[str, Any]:
+        """Host: open an ephemeral pairing session and show its PIN locally."""
+        now = time.monotonic()
+        session_id = secrets.token_urlsafe(16)
+        pin = generate_pairing_pin()
+        self._pairing_session = {
+            "role": "host",
+            "session_id": session_id,
+            "pin": pin,
+            "expires_at": now + PIN_TTL_SECONDS,
+            "state": "waiting",
+            "attempts": 0,
+            "host_confirmed": False,
+            "guest_confirmed": False,
+            "guest_payload": None,
+            "guest_nonce": None,
+            "sas": None,
+            "peer_name": None,
+            "peer_url": None,
+        }
+        self._refresh_advertisement()
+        return self.pairing_session_status(include_pin=True)
 
-    def accept_pair_offer(self, payload: dict[str, Any]) -> Device:
-        """Remote peer completed pairing and is offering their identity."""
-        return self._trust_payload(payload)
+    def pairing_session_status(self, *, include_pin: bool = False) -> dict[str, Any]:
+        """Current pairing session view (PIN only when include_pin for local host UI)."""
+        session = self._pairing_session
+        if session is None:
+            return {"active": False}
+        if self._pairing_session_expired(session) and session["state"] not in {
+            "complete",
+            "cancelled",
+        }:
+            session["state"] = "cancelled"
+        out: dict[str, Any] = {
+            "active": session["state"] not in {"complete", "cancelled"},
+            "role": session["role"],
+            "session_id": session["session_id"],
+            "state": session["state"],
+            "expires_at_monotonic": session["expires_at"],
+            "host_confirmed": session["host_confirmed"],
+            "guest_confirmed": session["guest_confirmed"],
+            "sas": session.get("sas"),
+            "peer_name": session.get("peer_name"),
+            "peer_device_id": (session.get("guest_payload") or {}).get("device_id")
+            if session["role"] == "host"
+            else session.get("host_device_id"),
+        }
+        if include_pin and session["role"] == "host" and session["state"] in {
+            "waiting",
+            "pending_confirm",
+        }:
+            out["pin"] = session["pin"]
+            if self.base_url:
+                out["offer"] = ephemeral_pair_offer(
+                    url=self.base_url,
+                    session_id=session["session_id"],
+                    pin=session["pin"],
+                )
+        return out
+
+    def cancel_pairing_session(self) -> dict[str, Any]:
+        session = self._pairing_session
+        if session is None:
+            return {"active": False, "state": "cancelled"}
+        if session["role"] == "guest" and session.get("host_url"):
+            try:
+                self._http_pair_cancel(session["host_url"], session["session_id"])
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(f"pair cancel notify failed: {exc}", level=logging.WARNING)
+        elif session["role"] == "host":
+            pass
+        session["state"] = "cancelled"
+        self._refresh_advertisement()
+        return self.pairing_session_status()
+
+    def receive_pair_cancel(self, session_id: str) -> dict[str, Any]:
+        """Host: guest cancelled; burn the session."""
+        session = self._require_host_session(session_id)
+        session["state"] = "cancelled"
+        self._refresh_advertisement()
+        return self.pairing_session_status()
+
+    def join_pairing_session(
+        self,
+        *,
+        pin: str,
+        host_agent: DeviceAgent | None = None,
+        peer_url: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Guest: join a host pairing session with the one-time PIN."""
+        pin_norm = normalize_pin(pin)
+        if not pin_norm:
+            raise ValueError("pin required")
+        if host_agent is not None:
+            host_session = host_agent._pairing_session
+            if host_session is None:
+                raise ValueError("host has no active pairing session")
+            sid = session_id or host_session["session_id"]
+            host_payload = host_agent.pairing_payload()
+            guest_nonce = secrets.token_urlsafe(16)
+            transcript = join_transcript(
+                session_id=sid,
+                pin=pin_norm,
+                host_public_key_pem=host_payload["public_key_pem"],
+                guest_public_key_pem=self.public_key_pem,
+                guest_nonce=guest_nonce,
+            )
+            signature = base64.b64encode(self._private_key.sign(transcript)).decode(
+                "ascii"
+            )
+            result = host_agent.receive_pair_join(
+                {
+                    "session_id": sid,
+                    "pin": pin_norm,
+                    "nonce": guest_nonce,
+                    "signature": signature,
+                    "payload": self.pairing_payload(),
+                }
+            )
+            self._pairing_session = {
+                "role": "guest",
+                "session_id": sid,
+                "pin": pin_norm,
+                "expires_at": host_session["expires_at"],
+                "state": "pending_confirm",
+                "attempts": 0,
+                "host_confirmed": False,
+                "guest_confirmed": False,
+                "sas": result["sas"],
+                "peer_name": host_payload["name"],
+                "host_payload": host_payload,
+                "host_device_id": host_payload["device_id"],
+                "host_agent": host_agent,
+                "host_url": None,
+                "guest_nonce": guest_nonce,
+            }
+            if host_agent not in self._reachable:
+                self.connect(host_agent)
+            return self.pairing_session_status()
+
+        if not peer_url:
+            raise ValueError("peer_url or host_agent required")
+        host_payload = self._http_fetch_pairing(peer_url)
+        # Discover session_id from status if not in offer.
+        if session_id is None:
+            remote_status = self._http_pair_status(peer_url)
+            session_id = remote_status.get("session_id")
+            if not session_id:
+                raise ValueError("host has no active pairing session")
+        guest_nonce = secrets.token_urlsafe(16)
+        transcript = join_transcript(
+            session_id=session_id,
+            pin=pin_norm,
+            host_public_key_pem=host_payload["public_key_pem"],
+            guest_public_key_pem=self.public_key_pem,
+            guest_nonce=guest_nonce,
+        )
+        signature = base64.b64encode(self._private_key.sign(transcript)).decode("ascii")
+        result = self._http_pair_join(
+            peer_url,
+            {
+                "session_id": session_id,
+                "pin": pin_norm,
+                "nonce": guest_nonce,
+                "signature": signature,
+                "payload": self.pairing_payload(),
+            },
+        )
+        self._pairing_session = {
+            "role": "guest",
+            "session_id": session_id,
+            "pin": pin_norm,
+            "expires_at": time.monotonic() + PIN_TTL_SECONDS,
+            "state": "pending_confirm",
+            "attempts": 0,
+            "host_confirmed": False,
+            "guest_confirmed": False,
+            "sas": result["sas"],
+            "peer_name": host_payload.get("name"),
+            "host_payload": {**host_payload, "url": peer_url.rstrip("/")},
+            "host_device_id": host_payload.get("device_id"),
+            "host_agent": None,
+            "host_url": peer_url.rstrip("/"),
+            "guest_nonce": guest_nonce,
+        }
+        return self.pairing_session_status()
+
+    def receive_pair_join(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Host: validate PIN + guest signature and move to pending_confirm."""
+        session = self._require_host_session(body.get("session_id"))
+        if session["state"] != "waiting":
+            raise ValueError("pairing session is not accepting joins")
+        if self._pairing_session_expired(session):
+            session["state"] = "cancelled"
+            self._refresh_advertisement()
+            raise ValueError("pairing session expired")
+        pin = body.get("pin") or ""
+        if not pins_equal(pin, session["pin"]):
+            session["attempts"] = int(session["attempts"]) + 1
+            if session["attempts"] >= PIN_MAX_ATTEMPTS:
+                session["state"] = "cancelled"
+                self._refresh_advertisement()
+                raise ValueError("too many PIN attempts")
+            raise ValueError("invalid PIN")
+        guest_payload = body.get("payload")
+        if not isinstance(guest_payload, dict):
+            raise ValueError("join missing guest payload")
+        nonce = body.get("nonce")
+        signature = body.get("signature")
+        if not isinstance(nonce, str) or not isinstance(signature, str):
+            raise ValueError("join missing nonce or signature")
+        transcript = join_transcript(
+            session_id=session["session_id"],
+            pin=session["pin"],
+            host_public_key_pem=self.public_key_pem,
+            guest_public_key_pem=guest_payload["public_key_pem"],
+            guest_nonce=nonce,
+        )
+        try:
+            _load_public_key(guest_payload["public_key_pem"]).verify(
+                base64.b64decode(signature),
+                transcript,
+            )
+        except (InvalidSignature, ValueError, TypeError) as exc:
+            session["attempts"] = int(session["attempts"]) + 1
+            if session["attempts"] >= PIN_MAX_ATTEMPTS:
+                session["state"] = "cancelled"
+                self._refresh_advertisement()
+            raise ValueError("invalid join signature") from exc
+        sas = sas_for_session(
+            session_id=session["session_id"],
+            host_public_key_pem=self.public_key_pem,
+            guest_public_key_pem=guest_payload["public_key_pem"],
+        )
+        session["guest_payload"] = guest_payload
+        session["guest_nonce"] = nonce
+        session["peer_name"] = guest_payload.get("name")
+        session["sas"] = sas
+        session["state"] = "pending_confirm"
+        self._refresh_advertisement()
+        return {"ok": True, "sas": sas, "peer_name": self.name}
+
+    def confirm_pairing_session(self) -> Device | None:
+        """Confirm the pending pairing session (host or guest).
+
+        Returns the trusted Peer when both sides have confirmed; otherwise None
+        while waiting for the other device.
+        """
+        session = self._pairing_session
+        if session is None:
+            raise ValueError("no active pairing session")
+        if self._pairing_session_expired(session) and session["state"] != "complete":
+            session["state"] = "cancelled"
+            raise ValueError("pairing session expired")
+        if session["state"] == "complete":
+            return self.refresh_pairing_session_trust()
+        if session["state"] != "pending_confirm":
+            raise ValueError("pairing session is not ready to confirm")
+        if session["role"] == "host":
+            return self._confirm_as_host()
+        return self._confirm_as_guest()
+
+    def refresh_pairing_session_trust(self) -> Device | None:
+        """Guest: if the host session completed, write local DEVICE_PAIRED."""
+        session = self._pairing_session
+        if session is None:
+            return None
+        if session["state"] == "complete" and session["role"] == "guest":
+            host_payload = session.get("host_payload")
+            if isinstance(host_payload, dict):
+                return self._trust_payload(host_payload)
+            return None
+        if session["role"] != "guest" or session["state"] != "pending_confirm":
+            return None
+        host_agent = session.get("host_agent")
+        if isinstance(host_agent, DeviceAgent):
+            remote = host_agent._pairing_session
+            if remote and remote.get("state") == "complete":
+                session["state"] = "complete"
+                session["host_confirmed"] = True
+                session["guest_confirmed"] = True
+                host_payload = session.get("host_payload")
+                assert isinstance(host_payload, dict)
+                return self._trust_payload(host_payload)
+            return None
+        host_url = session.get("host_url")
+        if not isinstance(host_url, str):
+            return None
+        remote = self._http_pair_status(host_url)
+        if remote.get("state") != "complete":
+            return None
+        session["state"] = "complete"
+        session["host_confirmed"] = True
+        session["guest_confirmed"] = True
+        host_payload = session.get("host_payload")
+        assert isinstance(host_payload, dict)
+        return self._trust_payload(host_payload)
+
+    def receive_pair_confirm(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Host: guest Confirm with signature over the confirm transcript."""
+        session = self._require_host_session(body.get("session_id"))
+        if session["state"] not in {"pending_confirm", "complete"}:
+            raise ValueError("pairing session is not pending confirm")
+        guest_payload = session.get("guest_payload")
+        if not isinstance(guest_payload, dict):
+            raise ValueError("no guest bound to session")
+        signature = body.get("signature")
+        if not isinstance(signature, str):
+            raise ValueError("confirm missing signature")
+        transcript = confirm_transcript(
+            session_id=session["session_id"],
+            host_public_key_pem=self.public_key_pem,
+            guest_public_key_pem=guest_payload["public_key_pem"],
+            role="guest",
+        )
+        try:
+            _load_public_key(guest_payload["public_key_pem"]).verify(
+                base64.b64decode(signature),
+                transcript,
+            )
+        except (InvalidSignature, ValueError, TypeError) as exc:
+            raise ValueError("invalid confirm signature") from exc
+        session["guest_confirmed"] = True
+        peer: Device | None = None
+        if session["host_confirmed"]:
+            peer = self._finalize_host_pairing()
+        return {
+            "ok": True,
+            "complete": session["state"] == "complete",
+            "host_payload": self.pairing_payload() if session["state"] == "complete" else None,
+            "peer": {"id": str(peer.id), "name": peer.name} if peer else None,
+        }
+
+    def _confirm_as_host(self) -> Device | None:
+        session = self._pairing_session
+        assert session is not None and session["role"] == "host"
+        guest_payload = session.get("guest_payload")
+        if not isinstance(guest_payload, dict):
+            raise ValueError("no guest bound to session")
+        session["host_confirmed"] = True
+        if not session["guest_confirmed"]:
+            return None
+        return self._finalize_host_pairing()
+
+    def _confirm_as_guest(self) -> Device | None:
+        session = self._pairing_session
+        assert session is not None and session["role"] == "guest"
+        host_payload = session.get("host_payload")
+        if not isinstance(host_payload, dict):
+            raise ValueError("missing host payload")
+        transcript = confirm_transcript(
+            session_id=session["session_id"],
+            host_public_key_pem=host_payload["public_key_pem"],
+            guest_public_key_pem=self.public_key_pem,
+            role="guest",
+        )
+        signature = base64.b64encode(self._private_key.sign(transcript)).decode("ascii")
+        host_agent = session.get("host_agent")
+        if isinstance(host_agent, DeviceAgent):
+            result = host_agent.receive_pair_confirm(
+                {"session_id": session["session_id"], "signature": signature}
+            )
+            session["guest_confirmed"] = True
+            if not result.get("complete"):
+                return None
+            session["host_confirmed"] = True
+            session["state"] = "complete"
+            return self._trust_payload(host_payload)
+        host_url = session.get("host_url")
+        if not isinstance(host_url, str):
+            raise ValueError("missing host url")
+        result = self._http_pair_confirm(
+            host_url,
+            {"session_id": session["session_id"], "signature": signature},
+        )
+        session["guest_confirmed"] = True
+        if not result.get("complete"):
+            return None
+        remote_host = result.get("host_payload") or host_payload
+        if isinstance(remote_host, dict) and "url" not in remote_host:
+            remote_host = {**remote_host, "url": host_url}
+        peer = self._trust_payload(remote_host)
+        session["state"] = "complete"
+        session["host_confirmed"] = True
+        return peer
+
+    def _finalize_host_pairing(self) -> Device:
+        session = self._pairing_session
+        assert session is not None and session["role"] == "host"
+        guest_payload = session.get("guest_payload")
+        assert isinstance(guest_payload, dict)
+        peer = self._trust_payload(guest_payload)
+        session["state"] = "complete"
+        self._refresh_advertisement()
+        # Connect in-process guest if present on discovery.
+        if url := guest_payload.get("url"):
+            peer_agent = self._discovery_agent_at(str(url))
+            if peer_agent is not None and peer_agent is not self:
+                self.connect(peer_agent)
+        return peer
+
+    def _require_host_session(self, session_id: Any) -> dict[str, Any]:
+        session = self._pairing_session
+        if session is None or session.get("role") != "host":
+            raise ValueError("no host pairing session")
+        if not isinstance(session_id, str) or session_id != session["session_id"]:
+            raise ValueError("session_id mismatch")
+        if session["state"] in {"cancelled"}:
+            raise ValueError("pairing session cancelled")
+        if self._pairing_session_expired(session) and session["state"] != "complete":
+            session["state"] = "cancelled"
+            raise ValueError("pairing session expired")
+        return session
+
+    def _pairing_session_expired(self, session: dict[str, Any]) -> bool:
+        return time.monotonic() > float(session["expires_at"])
+
+    def _find_agent_for_payload(self, payload: dict[str, Any]) -> DeviceAgent | None:
+        pem = payload.get("public_key_pem")
+        if not isinstance(pem, str):
+            return None
+        for agent in self._reachable:
+            if agent.public_key_pem == pem:
+                return agent
+        if url := payload.get("url"):
+            agent = self._discovery_agent_at(str(url))
+            if agent is not None and agent is not self:
+                return agent
+        return None
+
+    def _refresh_advertisement(self) -> None:
+        if not self.base_url:
+            return
+        self._discovery.advertise(
+            LanAdvertisement(
+                name=self.name,
+                fingerprint=self.fingerprint(),
+                locator=self.base_url,
+                pairing=self.pairing_session_open(),
+            )
+        )
+        publish = getattr(self._discovery, "publish", None)
+        if callable(publish):
+            publish(self, locator=self.base_url)
 
     def remember_peer_url(self, peer_id: UUID, url: str) -> None:
         self._peer_urls[peer_id] = url
@@ -1270,18 +1713,7 @@ class DeviceAgent:
         self.refresh_discovery()
 
     def _start_discovery(self) -> None:
-        if self.base_url:
-            self._discovery.advertise(
-                LanAdvertisement(
-                    name=self.name,
-                    short_code=self.short_code(),
-                    locator=self.base_url,
-                )
-            )
-            # FakeLanDiscovery.publish registers pairing + in-process handle.
-            publish = getattr(self._discovery, "publish", None)
-            if callable(publish):
-                publish(self, locator=self.base_url)
+        self._refresh_advertisement()
         self.refresh_discovery()
 
     def _has_live_trusted_session(self) -> bool:
@@ -1330,10 +1762,17 @@ class DeviceAgent:
                     continue
                 self._pair_candidates.pop(ad.locator, None)
                 continue
+            fingerprint = (
+                payload.get("fingerprint")
+                or payload.get("short_code")
+                or ad.fingerprint
+            )
             self._pair_candidates[ad.locator] = {
                 "name": payload.get("name") or ad.name,
-                "short_code": payload.get("short_code") or ad.short_code,
+                "fingerprint": fingerprint,
+                "short_code": fingerprint,
                 "locator": ad.locator,
+                "pairing": ad.pairing,
                 "public_key_pem": public_key_pem,
                 "device_id": payload.get("device_id"),
                 "priority": payload.get("priority"),
@@ -1995,9 +2434,10 @@ class DeviceAgent:
             raise ValueError("pairing payload missing device_id")
         peer_id = UUID(payload["device_id"])
         priority = int(payload.get("priority", 100))
-        expected = short_code_from_key(public_key_pem)
-        if payload.get("short_code") and payload["short_code"].upper() != expected:
-            raise ValueError("short code does not match public key")
+        expected = fingerprint_from_key(public_key_pem)
+        claimed = payload.get("fingerprint") or payload.get("short_code")
+        if claimed and str(claimed).upper() != expected:
+            raise ValueError("fingerprint does not match public key")
         existing = self.catalog.devices.get(peer_id)
         if existing is None:
             existing = next(
@@ -2716,19 +3156,47 @@ class DeviceAgent:
             return False
         return True
 
-    def _http_offer_pair(self, peer_url: str) -> None:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.post(
-                f"{peer_url.rstrip('/')}/api/pair/accept",
-                json={"payload": self.pairing_payload()},
-            )
-            response.raise_for_status()
-
     def _http_fetch_pairing(self, peer_url: str) -> dict[str, Any]:
         with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
             response = client.get(f"{peer_url.rstrip('/')}/api/pairing")
             response.raise_for_status()
             return response.json()
+
+    def _http_pair_status(self, peer_url: str) -> dict[str, Any]:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.get(f"{peer_url.rstrip('/')}/api/pair/session")
+            response.raise_for_status()
+            return response.json()
+
+    def _http_pair_join(self, peer_url: str, body: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.post(
+                f"{peer_url.rstrip('/')}/api/pair/session/join",
+                json=body,
+            )
+            if response.status_code >= 400:
+                detail = _http_error_detail(response)
+                raise ValueError(detail)
+            return response.json()
+
+    def _http_pair_confirm(self, peer_url: str, body: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.post(
+                f"{peer_url.rstrip('/')}/api/pair/session/confirm",
+                json=body,
+            )
+            if response.status_code >= 400:
+                detail = _http_error_detail(response)
+                raise ValueError(detail)
+            return response.json()
+
+    def _http_pair_cancel(self, peer_url: str, session_id: str) -> None:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            response = client.post(
+                f"{peer_url.rstrip('/')}/api/pair/session/cancel",
+                json={"session_id": session_id},
+            )
+            response.raise_for_status()
 
     def _http_prove(self, peer_url: str, nonce: str) -> str:
         with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
@@ -2880,6 +3348,17 @@ def _event_bytes(event: Event) -> bytes:
         "payload": event.payload,
     }
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _http_error_detail(response: httpx.Response) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return response.text or f"HTTP {response.status_code}"
+    detail = data.get("detail") if isinstance(data, dict) else None
+    if isinstance(detail, str):
+        return detail
+    return response.text or f"HTTP {response.status_code}"
 
 
 def _load_private_key(pem: str) -> Ed25519PrivateKey:
