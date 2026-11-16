@@ -116,6 +116,55 @@ def test_peer_rate_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
     assert _sections(phone) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
 
 
+def test_peer_last_heard_ingest_emits_mixes_and_play_history(
+    tmp_path: Path,
+) -> None:
+    """Peer Last heard sync updates catalog and notifies mixes + play_history."""
+    laptop, phone, source, clock = _pair(tmp_path)
+    url = "https://example.com/heard-mix"
+    source.bytes_by_url[url] = b"audio:heard-mix"
+    mix = laptop.add_mix(
+        title="Heard set",
+        url=url,
+        duration_seconds=1000,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="heard-mix-1",
+        artist_name="DJ Peer",
+    )
+    laptop.rate_mix(mix.id, Stars.FIVE)
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[
+            (laptop.device_id, 1000),
+            (phone.device_id, 1000),
+        ],
+    )
+    laptop.fill_caches()
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
+    phone.fill_caches()
+    assert mix.id in {m.id for m in phone.mixes()}
+
+    laptop.disconnect(phone)
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
+    laptop.drain_view_notices()
+    phone.drain_view_notices()
+
+    laptop.play(intent.id, mix.id)
+    clock.advance(1)
+    heard_at = clock()
+    laptop.report_playhead(10)
+
+    laptop.connect(phone)
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
+
+    assert next(m for m in phone.mixes() if m.id == mix.id).last_heard_at == heard_at
+    assert _sections(phone) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+
+
 def test_peer_tag_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
     laptop, phone, source, _clock = _pair(tmp_path)
     url = "https://example.com/tag-mix"

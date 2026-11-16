@@ -86,9 +86,9 @@ from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 _HTTP_TIMEOUT = 5.0
 PLAYED_THRESHOLD = 0.75
 PLAYHEAD_NEAR_SECONDS = 120.0
-# Meaningful listen: position reaches max(120s, 5% of duration); rising edge only.
-LAST_HEARD_FLOOR_SECONDS = 120.0
-LAST_HEARD_DURATION_FRACTION = 0.05
+# Meaningful listen: position reaches min(10s, 2% of duration); rising edge only.
+LAST_HEARD_CAP_SECONDS = 10.0
+LAST_HEARD_DURATION_FRACTION = 0.02
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
@@ -720,7 +720,7 @@ class DeviceAgent:
         """Update the playhead for the current mix; mark played at or past 75%.
 
         Emits Last heard on the rising edge when position crosses
-        max(120s, 5% of duration) from below.
+        min(10s, 2% of duration) from below.
         """
         mix_id = self._current_mix_id
         if mix_id is None:
@@ -3405,9 +3405,9 @@ def _load_later_features() -> list[str]:
 
 
 def _last_heard_threshold(duration_seconds: int) -> float:
-    """Meaningful-listen threshold: max(120s, 5% of duration)."""
-    return max(
-        LAST_HEARD_FLOOR_SECONDS,
+    """Meaningful-listen threshold: min(10s, 2% of duration)."""
+    return min(
+        LAST_HEARD_CAP_SECONDS,
         LAST_HEARD_DURATION_FRACTION * float(duration_seconds),
     )
 

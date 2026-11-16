@@ -136,7 +136,7 @@ def test_playhead_burst_coalesces_mixes_and_play_history(tmp_path: Path) -> None
     agent.play(intent.id, mix.id)
     agent.drain_view_notices()
 
-    agent.report_playhead(120)
+    agent.report_playhead(10)
 
     assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
 

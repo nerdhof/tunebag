@@ -104,9 +104,9 @@ def _play_ready(
 def test_crossing_meaningful_listen_threshold_records_last_heard(
     tmp_path: Path,
 ) -> None:
-    """Position reaching max(120s, 5% duration) emits Last heard on rising edge only."""
+    """Position reaching min(10s, 2% duration) emits Last heard on rising edge only."""
     laptop, _phone, source, clock = _pair(tmp_path)
-    # duration 1000 → 5% = 50 → threshold = max(120, 50) = 120
+    # duration 1000 → 2% = 20 → threshold = min(10, 20) = 10
     mix_id = _play_ready(
         laptop,
         source,
@@ -115,12 +115,12 @@ def test_crossing_meaningful_listen_threshold_records_last_heard(
         platform_id="a",
     )
 
-    laptop.report_playhead(119)
+    laptop.report_playhead(9)
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.last_heard_at is None
 
     clock.advance(1)
-    laptop.report_playhead(120)
+    laptop.report_playhead(10)
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.last_heard_at == clock()
 
@@ -131,25 +131,25 @@ def test_crossing_meaningful_listen_threshold_records_last_heard(
     assert mix.last_heard_at == first_heard
 
 
-def test_last_heard_threshold_uses_five_percent_when_higher(
+def test_last_heard_threshold_uses_two_percent_when_lower(
     tmp_path: Path,
 ) -> None:
-    """On a long Mix, threshold is 5% of duration (not the 120s floor)."""
+    """On a short Mix, threshold is 2% of duration (not the 10s cap)."""
     laptop, _phone, source, clock = _pair(tmp_path)
-    # duration 3600 → 5% = 180 → threshold = max(120, 180) = 180
+    # duration 200 → 2% = 4 → threshold = min(10, 4) = 4
     mix_id = _play_ready(
         laptop,
         source,
-        title="Long Set",
-        duration_seconds=3600,
-        platform_id="long",
+        title="Short Set",
+        duration_seconds=200,
+        platform_id="short",
     )
 
-    laptop.report_playhead(179)
+    laptop.report_playhead(3)
     assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
 
     clock.advance(1)
-    laptop.report_playhead(180)
+    laptop.report_playhead(4)
     assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at == clock()
 
 
@@ -165,7 +165,7 @@ def test_last_heard_independent_of_played(tmp_path: Path) -> None:
     )
 
     clock.advance(1)
-    laptop.report_playhead(120)
+    laptop.report_playhead(10)
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.last_heard_at == clock()
     assert mix.played is False
@@ -211,7 +211,7 @@ def test_last_heard_survives_peer_sync_and_event_log_rebuild(
 
     laptop.play(intent.id, mix_id)
     clock.advance(5)
-    laptop.report_playhead(120)
+    laptop.report_playhead(10)
     heard = clock()
     laptop.sync()
     phone.sync()
@@ -223,10 +223,10 @@ def test_last_heard_survives_peer_sync_and_event_log_rebuild(
     phone.disconnect(laptop)
     clock.advance(121)
     phone.play(intent.id, mix_id)
-    phone.report_playhead(50)
+    phone.report_playhead(5)
     clock.advance(1)
     later = clock()
-    phone.report_playhead(120)
+    phone.report_playhead(10)
     assert next(m for m in phone.mixes() if m.id == mix_id).last_heard_at == later
 
     laptop.connect(phone)
@@ -278,7 +278,7 @@ def test_mixes_api_exposes_last_heard_without_backfill(tmp_path: Path) -> None:
     agent.play(intent.id, heard_id)
     clock.advance(1)
     heard_at = clock()
-    agent.report_playhead(120)
+    agent.report_playhead(10)
 
     agent.play(intent.id, played_only)
     agent.mark_played(played_only)
