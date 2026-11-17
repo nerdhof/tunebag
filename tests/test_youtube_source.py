@@ -255,3 +255,73 @@ def test_youtube_fetch_bytes_uses_injected_fetcher() -> None:
 
     assert source.fetch_bytes(url) == b"yt-audio"
     assert calls == [url]
+
+
+def test_youtube_listing_enables_ejs_without_cookies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict] = []
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            captured.append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, *, download: bool = True) -> dict:
+            del download
+            return {
+                "id": CHANNEL_ID,
+                "channel_id": CHANNEL_ID,
+                "channel": "TOOL",
+                "title": "TOOL - Releases",
+                "entries": [],
+                "webpage_url": url,
+            }
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    listing = YouTubeSource().list_uploads("https://www.youtube.com/@TOOLmusic")
+
+    assert listing.platform_id == CHANNEL_ID
+    assert len(captured) == 1
+    opts = captured[0]
+    assert opts.get("remote_components") == ["ejs:github"]
+    assert opts.get("skip_download") is True
+    assert "cookiefile" not in opts
+    assert "cookiesfrombrowser" not in opts
+
+
+def test_youtube_listing_auth_challenge_surfaces_actionable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AuthFailYDL:
+        def __init__(self, opts: dict) -> None:
+            del opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, *, download: bool = True) -> dict:
+            del url, download
+            from yt_dlp.utils import DownloadError
+
+            raise DownloadError(
+                "ERROR: [youtube] Sign in to confirm you’re not a bot"
+            )
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _AuthFailYDL)
+
+    with pytest.raises(ValueError) as excinfo:
+        YouTubeSource().list_uploads("https://www.youtube.com/@TOOLmusic")
+
+    message = str(excinfo.value).lower()
+    assert "anonymous" in message or "cookie" in message
+    assert "youtube" in message

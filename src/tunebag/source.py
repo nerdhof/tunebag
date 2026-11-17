@@ -19,7 +19,13 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import httpx
 
 from tunebag.domain import Platform
-from tunebag.ytdlp_fetch import AudioFetcher, ProgressCallback, fetch_audio_bytes
+from tunebag.ytdlp_fetch import (
+    AudioFetcher,
+    ProgressCallback,
+    fetch_audio_bytes,
+    youtube_anonymous_blocked_error,
+    youtube_auth_challenge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -868,6 +874,7 @@ def _youtube_track_from_entry(item: dict[str, Any]) -> Track | None:
 
 def _youtube_extract_info(url: str) -> dict[str, Any]:
     from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
 
     opts: dict[str, Any] = {
         "quiet": True,
@@ -876,8 +883,13 @@ def _youtube_extract_info(url: str) -> dict[str, Any]:
         "extract_flat": "in_playlist",
         "remote_components": ["ejs:github"],
     }
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except DownloadError as exc:
+        if youtube_auth_challenge(exc):
+            raise youtube_anonymous_blocked_error(url, exc) from exc
+        raise
     if not isinstance(info, dict):
         raise TypeError(f"yt-dlp returned no info for {url}")
     return info

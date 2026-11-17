@@ -81,3 +81,73 @@ def test_hearthis_403_retries_with_download_format(monkeypatch: pytest.MonkeyPat
     assert _FakeYDL.instances[0].opts["format"] == "bestaudio[url*=listen]/bestaudio/best"
     assert _FakeYDL.instances[1].opts["format"] == "bestaudio/best"
     assert _FakeYDL.instances[1].opts["http_headers"]["Referer"] == "https://hearthis.at/"
+
+
+def test_youtube_fetch_uses_progressive_bestaudio_ejs_noplaylist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    data = fetch_audio_bytes("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert data == b"fake-audio"
+    assert len(_FakeYDL.instances) == 1
+    opts = _FakeYDL.instances[0].opts
+    assert opts["format"] == "bestaudio/best"
+    assert opts["noplaylist"] is True
+    assert opts["prefer_free_formats"] is True
+    assert opts.get("remote_components") == ["ejs:github"]
+    assert "cookiefile" not in opts
+    assert "cookiesfrombrowser" not in opts
+    assert "postprocessors" not in opts
+
+
+def test_music_youtube_fetch_also_enables_ejs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    data = fetch_audio_bytes("https://music.youtube.com/watch?v=abcdefghijk")
+
+    assert data == b"fake-audio"
+    assert _FakeYDL.instances[0].opts.get("remote_components") == ["ejs:github"]
+    assert _FakeYDL.instances[0].opts["noplaylist"] is True
+
+
+def test_non_youtube_fetch_does_not_enable_ejs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    for url in (
+        "https://soundcloud.com/dj-x/track",
+        "https://hearthis.at/tasmo/echochamber280/",
+        "https://artist.bandcamp.com/track/song",
+    ):
+        _FakeYDL.instances = []
+        _FakeYDL.download_calls = 0
+        data = fetch_audio_bytes(url)
+        assert data == b"fake-audio"
+        for instance in _FakeYDL.instances:
+            assert "remote_components" not in instance.opts
+            assert "cookiefile" not in instance.opts
+            assert "cookiesfrombrowser" not in instance.opts
+
+
+def test_youtube_auth_challenge_surfaces_actionable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AuthFailYDL(_FakeYDL):
+        def download(self, urls: list[str]) -> None:
+            del urls
+            from yt_dlp.utils import DownloadError
+
+            raise DownloadError(
+                "ERROR: [youtube] abcdefghijk: Sign in to confirm you’re not a bot"
+            )
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _AuthFailYDL)
+
+    with pytest.raises(ValueError) as excinfo:
+        fetch_audio_bytes("https://www.youtube.com/watch?v=abcdefghijk")
+
+    message = str(excinfo.value).lower()
+    assert "anonymous" in message
+    assert "cookie" in message
+    assert "youtube" in message

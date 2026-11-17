@@ -18,7 +18,7 @@ def fetch_audio_bytes(
     fetcher: AudioFetcher | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> bytes:
-    """Return audio bytes for a SoundCloud or hearthis permalink."""
+    """Return audio bytes for a track permalink (SoundCloud, hearthis, Bandcamp, YouTube)."""
     if fetcher is not None:
         return fetcher(source_url)
     return _ytdlp_fetch(source_url, on_progress=on_progress)
@@ -39,6 +39,35 @@ def _is_forbidden(exc: BaseException) -> bool:
 def _is_hearthis(source_url: str) -> bool:
     host = (urlparse(source_url).hostname or "").lower()
     return host == "hearthis.at" or host.endswith(".hearthis.at")
+
+
+def _is_youtube(source_url: str) -> bool:
+    host = (urlparse(source_url).hostname or "").lower()
+    return "youtube.com" in host or host == "youtu.be"
+
+
+def youtube_auth_challenge(exc: BaseException) -> bool:
+    """True when yt-dlp failed due to login / bot / cookie gates."""
+    text = str(exc).lower()
+    markers = (
+        "sign in",
+        "login required",
+        "confirm you're not a bot",
+        "confirm you’re not a bot",
+        "cookies are needed",
+        "use --cookies",
+        "cookie file",
+    )
+    return any(marker in text for marker in markers)
+
+
+def youtube_anonymous_blocked_error(source_url: str, exc: BaseException) -> ValueError:
+    """Actionable error when anonymous YouTube access is blocked."""
+    return ValueError(
+        f"YouTube blocked anonymous access for {source_url}; "
+        "Tunebag does not use browser cookies in this pass. "
+        f"Original error: {exc}"
+    )
 
 
 def _ytdlp_fetch(
@@ -88,6 +117,9 @@ def _ytdlp_fetch(
                 "prefer_free_formats": True,
                 "http_headers": {"Referer": _permalink_referer(source_url)},
             }
+            if _is_youtube(source_url):
+                # Anonymous YouTube: always enable remote JS; never attach cookies.
+                opts["remote_components"] = ["ejs:github"]
             if on_progress is not None:
                 opts["progress_hooks"] = [_hook]
             try:
@@ -97,6 +129,8 @@ def _ytdlp_fetch(
                 last_error = exc
                 if index + 1 < len(formats) and _is_forbidden(exc):
                     continue
+                if _is_youtube(source_url) and youtube_auth_challenge(exc):
+                    raise youtube_anonymous_blocked_error(source_url, exc) from exc
                 raise
             files = [p for p in Path(tmp).iterdir() if p.is_file()]
             if files:
