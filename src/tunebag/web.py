@@ -176,7 +176,10 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
     @app.get("/favicon.ico")
     def favicon() -> FileResponse:
-        return FileResponse(STATIC_DIR / "favicon.ico")
+        return FileResponse(
+            STATIC_DIR / "favicon.ico",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/health")
     def health() -> dict:
