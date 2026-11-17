@@ -518,11 +518,12 @@ class DeviceAgent:
     def cache_groups(self) -> list[dict[str, Any]]:
         """Assignments for this device, grouped for the Cache UI.
 
-        Each group has mixes in assignment order with status cached / loading /
-        pending, plus overview count, duration, and on-disk size totals. Intent
-        groups are ordered by soonest listen need (min mix urgency). Local
-        files with no remaining assignment appear under a synthetic Other group
-        last.
+        Each group has mixes in that intent's sequence listening order (assigned
+        ids only; falls back to assignment order if the sequence is missing)
+        with status cached / loading / pending, plus overview count, duration,
+        and on-disk size totals. Intent groups are ordered by soonest listen
+        need (min mix urgency). Local files with no remaining assignment appear
+        under a synthetic Other group last.
         """
         local_ids = self._local_file_ids()
         progress = self.download_progress
@@ -534,13 +535,28 @@ class DeviceAgent:
             assignment = self.assignment(intent.id)
             if assignment is None:
                 continue
+            assignment_set = set(assignment.mix_ids)
+            sequence = self.sequence(intent.id)
+            if sequence is not None:
+                ordered_ids = [
+                    entry.mix_id
+                    for entry in sequence.entries
+                    if entry.mix_id in assignment_set
+                ]
+                # Assigned ids missing from the sequence stay in assignment order.
+                seen = set(ordered_ids)
+                ordered_ids.extend(
+                    mid for mid in assignment.mix_ids if mid not in seen
+                )
+            else:
+                ordered_ids = list(assignment.mix_ids)
             mixes: list[dict[str, Any]] = []
             overview = {
                 "cached": {"count": 0, "duration_seconds": 0, "size_bytes": 0},
                 "loading": {"count": 0, "duration_seconds": 0, "size_bytes": 0},
                 "pending": {"count": 0, "duration_seconds": 0, "size_bytes": 0},
             }
-            for mix_id in assignment.mix_ids:
+            for mix_id in ordered_ids:
                 assigned_ids.add(mix_id)
                 mix = self.catalog.mixes.get(mix_id)
                 if mix is None:

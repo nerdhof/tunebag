@@ -61,9 +61,17 @@ def test_cache_groups_partial_fill_cached_vs_pending(tmp_path: Path) -> None:
     assert assignment is not None
     assert set(assignment.mix_ids) == set(durations)
     assert len(assignment.mix_ids) == 3
+    sequence = agent.sequence(intent.id)
+    assert sequence is not None
+    listening_order = [
+        entry.mix_id
+        for entry in sequence.entries
+        if entry.mix_id in set(assignment.mix_ids)
+    ]
+    assert listening_order == list(assignment.mix_ids)
 
-    cached_ids = assignment.mix_ids[:2]
-    pending_id = assignment.mix_ids[2]
+    cached_ids = listening_order[:2]
+    pending_id = listening_order[2]
     for mix_id in cached_ids:
         agent._store_local_file(mix_id, f"audio:{mix_id}".encode())
 
@@ -72,7 +80,7 @@ def test_cache_groups_partial_fill_cached_vs_pending(tmp_path: Path) -> None:
     group = groups[0]
     assert group["name"] == "Night"
     assert group["id"] == intent.id
-    assert [m["id"] for m in group["mixes"]] == list(assignment.mix_ids)
+    assert [m["id"] for m in group["mixes"]] == listening_order
     assert [m["status"] for m in group["mixes"]] == ["cached", "cached", "pending"]
     by_id = {m["id"]: m for m in group["mixes"]}
     for mix_id in cached_ids:
@@ -285,7 +293,7 @@ def test_refresh_intent_folders_removes_orphan_dirs(tmp_path: Path) -> None:
 
 
 def test_cache_groups_order_intents_by_sequence_urgency(tmp_path: Path) -> None:
-    """Intent groups sort by soonest listen need; mixes stay assignment order."""
+    """Intent groups sort by soonest listen need; mixes follow sequence order."""
     agent, source = _agent(tmp_path)
     a0 = _add_mix(agent, source, title="A0", duration_seconds=3600, platform_id="a0")
     a1 = _add_mix(agent, source, title="A1", duration_seconds=1800, platform_id="a1")
@@ -312,6 +320,13 @@ def test_cache_groups_order_intents_by_sequence_urgency(tmp_path: Path) -> None:
     assert assignment_a is not None and assignment_b is not None
     assert set(assignment_a.mix_ids) == {a0, a1}
     assert list(assignment_b.mix_ids) == [b0]
+    sequence_a = agent.sequence(intent_a.id)
+    assert sequence_a is not None
+    alpha_listening = [
+        entry.mix_id
+        for entry in sequence_a.entries
+        if entry.mix_id in set(assignment_a.mix_ids)
+    ]
 
     # Catalog order is Alpha then Bravo; progress on Bravo makes it sooner.
     agent.set_current_mix(b0)
@@ -321,5 +336,5 @@ def test_cache_groups_order_intents_by_sequence_urgency(tmp_path: Path) -> None:
     groups = agent.cache_groups()
     assert [g["name"] for g in groups] == ["Bravo", "Alpha", "Other"]
     assert [m["id"] for m in groups[0]["mixes"]] == [b0]
-    assert [m["id"] for m in groups[1]["mixes"]] == list(assignment_a.mix_ids)
+    assert [m["id"] for m in groups[1]["mixes"]] == alpha_listening
     assert [m["id"] for m in groups[2]["mixes"]] == [orphan]
