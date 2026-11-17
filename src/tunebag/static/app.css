@@ -621,8 +621,60 @@ button:disabled {
 
 #intent-list .intent-meta-tags,
 #intent-list .intent-meta-artists,
+#intent-list .intent-meta-platforms,
 #intent-list .intent-meta-chances {
   min-width: 0;
+}
+
+#intent-list .intent-meta-platforms {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+#intent-list .intent-meta-platforms .source-toggle {
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0.2rem;
+  pointer-events: none;
+}
+
+.source-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: var(--control-height);
+}
+
+.source-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  margin: 0;
+  padding: 0.4rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.source-toggle[aria-pressed="true"] {
+  opacity: 1;
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.source-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  display: block;
 }
 
 .has-tip[data-tip] {

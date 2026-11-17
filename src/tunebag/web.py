@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from tunebag import __version__
 from tunebag.agent import DeviceAgent, DeviceHoursSpec
-from tunebag.domain import StarDistribution, Stars
+from tunebag.domain import Platform, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 from tunebag.ui_notices import UIViewNotice
@@ -81,6 +81,7 @@ class CreateIntentBody(BaseModel):
     name: str
     tags: list[str] = Field(default_factory=list)
     artist_ids: list[UUID] = Field(default_factory=list)
+    platforms: list[Platform] | None = None
     distribution: StarDistribution | None = None
     seed: int | None = None
     device_hours: list[DeviceHoursBody] = Field(default_factory=list)
@@ -90,6 +91,7 @@ class UpdateIntentBody(BaseModel):
     name: str | None = None
     tags: list[str] | None = None
     artist_ids: list[UUID] | None = None
+    platforms: list[Platform] | None = None
     distribution: StarDistribution | None = None
     device_hours: list[DeviceHoursBody] | None = None
 
@@ -838,6 +840,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "name": intent.name,
                     "tags": intent.tags,
                     "artist_ids": [str(artist_id) for artist_id in intent.artist_ids],
+                    "platforms": [platform.value for platform in intent.platforms],
                     "distribution": intent.distribution.model_dump(),
                     "seed": intent.seed,
                     "device_hours": [_hours_json(dh) for dh in intent.device_hours],
@@ -856,6 +859,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 name,
                 tags=body.tags,
                 artist_ids=body.artist_ids,
+                platforms=body.platforms,
                 distribution=body.distribution,
                 seed=body.seed,
                 device_hours=[_hours_spec(dh) for dh in body.device_hours],
@@ -876,6 +880,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             body.name is None
             and body.tags is None
             and body.artist_ids is None
+            and body.platforms is None
             and body.distribution is None
             and body.device_hours is None
         ):
@@ -889,6 +894,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 name=name,
                 tags=body.tags,
                 artist_ids=body.artist_ids,
+                platforms=body.platforms,
                 distribution=body.distribution,
                 device_hours=(
                     [_hours_spec(dh) for dh in body.device_hours]

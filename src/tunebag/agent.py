@@ -55,6 +55,7 @@ from tunebag.domain import (
     StarBucket,
     StarDistribution,
     Stars,
+    default_intent_platforms,
     new_id,
 )
 from tunebag.events import Event, EventLog, EventType
@@ -2137,6 +2138,7 @@ class DeviceAgent:
         *,
         tags: list[str] | None = None,
         artist_ids: list[UUID] | None = None,
+        platforms: list[Platform] | None = None,
         distribution: StarDistribution | None = None,
         seed: int | None = None,
         device_hours: list[DeviceHoursSpec] | None = None,
@@ -2149,6 +2151,9 @@ class DeviceAgent:
             name=name,
             tags=list(tags or []),
             artist_ids=list(artist_ids or []),
+            platforms=(
+                list(platforms) if platforms is not None else default_intent_platforms()
+            ),
             distribution=distribution or StarDistribution(),
             device_hours=hours,
             seed=seed if seed is not None else random.randrange(1 << 31),
@@ -2214,6 +2219,7 @@ class DeviceAgent:
         name: str | None = None,
         tags: list[str] | None = None,
         artist_ids: list[UUID] | None = None,
+        platforms: list[Platform] | None = None,
         distribution: StarDistribution | None = None,
         device_hours: list[DeviceHoursSpec] | None = None,
     ) -> Intent:
@@ -2228,6 +2234,8 @@ class DeviceAgent:
             updates["tags"] = list(tags)
         if artist_ids is not None:
             updates["artist_ids"] = list(artist_ids)
+        if platforms is not None:
+            updates["platforms"] = list(platforms)
         if distribution is not None:
             updates["distribution"] = distribution
         if device_hours is not None:
@@ -3854,6 +3862,7 @@ def _intent_payload(
         "name": intent.name,
         "tags": list(intent.tags),
         "artist_ids": [str(artist_id) for artist_id in intent.artist_ids],
+        "platforms": [platform.value for platform in intent.platforms],
         "distribution": {
             "five": intent.distribution.five,
             "four": intent.distribution.four,
@@ -3904,6 +3913,13 @@ def _distribution_from_payload(dist: dict[str, Any]) -> StarDistribution:
     )
 
 
+def _platforms_from_payload(payload: dict[str, Any]) -> list[Platform]:
+    raw = payload.get("platforms")
+    if raw is None:
+        return default_intent_platforms()
+    return [Platform(value) for value in raw]
+
+
 def _intent_from_payload(payload: dict[str, Any]) -> Intent:
     dist = payload.get("distribution") or {}
     return Intent(
@@ -3911,6 +3927,7 @@ def _intent_from_payload(payload: dict[str, Any]) -> Intent:
         name=payload["name"],
         tags=list(payload.get("tags") or []),
         artist_ids=[UUID(artist_id) for artist_id in payload.get("artist_ids") or []],
+        platforms=_platforms_from_payload(payload),
         distribution=_distribution_from_payload(dist),
         device_hours=[
             DeviceHours(

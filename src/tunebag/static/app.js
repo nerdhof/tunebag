@@ -541,6 +541,14 @@ function setChancesFromDist(dist) {
   writeChances(chances);
 }
 
+const DEFAULT_INTENT_PLATFORMS = ["soundcloud", "hearthisat", "bandcamp", "youtube"];
+const PLATFORM_LABELS = {
+  soundcloud: "SoundCloud",
+  hearthisat: "hearthis.at",
+  bandcamp: "Bandcamp",
+  youtube: "YouTube",
+};
+
 function clearIntentArtistSelection() {
   const select = document.getElementById("intent-artists");
   if (!select) return;
@@ -562,6 +570,49 @@ function setIntentArtistSelection(artistIds) {
   for (const option of select.options) {
     option.selected = wanted.has(option.value);
   }
+}
+
+function intentPlatformButtons() {
+  return Array.from(document.querySelectorAll("#intent-platforms .source-toggle"));
+}
+
+function selectedIntentPlatforms() {
+  return intentPlatformButtons()
+    .filter((btn) => btn.getAttribute("aria-pressed") === "true")
+    .map((btn) => btn.dataset.platform)
+    .filter(Boolean);
+}
+
+function setIntentPlatformSelection(platforms) {
+  const wanted = new Set(
+    platforms && platforms.length ? platforms : DEFAULT_INTENT_PLATFORMS,
+  );
+  for (const btn of intentPlatformButtons()) {
+    const on = wanted.has(btn.dataset.platform);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function resetIntentPlatformSelection() {
+  setIntentPlatformSelection(DEFAULT_INTENT_PLATFORMS);
+}
+
+function bindIntentPlatformToggles() {
+  const root = document.getElementById("intent-platforms");
+  if (!root || root.dataset.bound === "1") return;
+  root.dataset.bound = "1";
+  root.addEventListener("click", (event) => {
+    const btn = event.target.closest(".source-toggle");
+    if (!btn || !root.contains(btn)) return;
+    const pressed = btn.getAttribute("aria-pressed") === "true";
+    if (pressed) {
+      const activeCount = selectedIntentPlatforms().length;
+      if (activeCount <= 1) return;
+      btn.setAttribute("aria-pressed", "false");
+      return;
+    }
+    btn.setAttribute("aria-pressed", "true");
+  });
 }
 
 async function refreshIntentArtistOptions() {
@@ -591,6 +642,7 @@ function clearIntentFormFields() {
   document.getElementById("intent-name").value = "";
   document.getElementById("intent-tags").value = "";
   clearIntentArtistSelection();
+  resetIntentPlatformSelection();
   writeChances({ ...CHANCE_DEFAULTS });
   document.getElementById("intent-chances").open = false;
 }
@@ -613,6 +665,7 @@ function beginEditIntent(intent) {
   document.getElementById("intent-name").value = intent.name;
   document.getElementById("intent-tags").value = intent.tags.join(", ");
   setIntentArtistSelection(intent.artist_ids || []);
+  setIntentPlatformSelection(intent.platforms || DEFAULT_INTENT_PLATFORMS);
   setChancesFromDist(intent.distribution);
   document.getElementById("intent-chances").open = true;
   intentCollapsible?.expand({ submitLabel: "Save changes" });
@@ -2493,12 +2546,35 @@ async function refreshIntents({ force = false } = {}) {
     const artistIds = intent.artist_ids || [];
     const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
     artistsEl.textContent = `Artists: ${artistNames.length ? artistNames.join(", ") : "-"}`;
+    const platformsEl = document.createElement("span");
+    platformsEl.className = "intent-meta-platforms";
+    const platformsLabel = document.createElement("span");
+    platformsLabel.textContent = "Sources:";
+    platformsEl.appendChild(platformsLabel);
+    const platforms = intent.platforms || DEFAULT_INTENT_PLATFORMS;
+    const templateRoot = document.getElementById("intent-platforms");
+    for (const platform of platforms) {
+      const template = templateRoot?.querySelector(
+        `.source-toggle[data-platform="${CSS.escape(platform)}"]`,
+      );
+      const icon = document.createElement("span");
+      icon.className = "source-toggle";
+      icon.setAttribute("aria-pressed", "true");
+      icon.title = PLATFORM_LABELS[platform] || platform;
+      if (template) {
+        icon.innerHTML = template.innerHTML;
+      } else {
+        icon.textContent = PLATFORM_LABELS[platform] || platform;
+      }
+      platformsEl.appendChild(icon);
+    }
     const chancesEl = document.createElement("span");
     chancesEl.className = "intent-meta-chances has-tip";
     chancesEl.textContent = `Rating chances: ${formatChanceBlocks(intent.distribution)}`;
     chancesEl.dataset.tip = formatChancePercents(intent.distribution);
     meta.appendChild(tagsEl);
     meta.appendChild(artistsEl);
+    meta.appendChild(platformsEl);
     meta.appendChild(chancesEl);
     li.appendChild(meta);
 
@@ -3024,6 +3100,8 @@ document.getElementById("refresh-all-artists").addEventListener("click", async (
   }
 });
 
+bindIntentPlatformToggles();
+
 intentCollapsible = bindCollapsibleAdd(document.getElementById("intent-form"), {
   button: "#intent-submit",
   expandLabel: "Create intent",
@@ -3053,10 +3131,17 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
     return;
   }
 
+  const platforms = selectedIntentPlatforms();
+  if (!platforms.length) {
+    status.textContent = "Keep at least one source active";
+    return;
+  }
+
   const body = {
     name,
     tags,
     artist_ids: selectedIntentArtistIds(),
+    platforms,
     distribution: {
       five: chances["chance-five"] / 100,
       four: chances["chance-four"] / 100,

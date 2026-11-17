@@ -143,13 +143,26 @@ class DeviceHours(BaseModel):
     expires_at: datetime | None = None
 
 
+DEFAULT_INTENT_PLATFORMS: tuple[Platform, ...] = (
+    Platform.SOUNDCLOUD,
+    Platform.HEARTHIS,
+    Platform.BANDCAMP,
+    Platform.YOUTUBE,
+)
+
+
+def default_intent_platforms() -> list[Platform]:
+    return list(DEFAULT_INTENT_PLATFORMS)
+
+
 class Intent(BaseModel):
-    """Shared plan: tag + artist filter + star distribution. Devices attach hours/expiry."""
+    """Shared plan: tag + artist + platform filter + star distribution. Devices attach hours/expiry."""
 
     id: UUID = Field(default_factory=new_id)
     name: str
     tags: list[str] = Field(default_factory=list)  # AND; empty+no artists = untagged only
     artist_ids: list[UUID] = Field(default_factory=list)  # OR; empty = no artist filter
+    platforms: list[Platform] = Field(default_factory=default_intent_platforms)
     distribution: StarDistribution = Field(default_factory=StarDistribution)
     device_hours: list[DeviceHours] = Field(default_factory=list)
     seed: int
@@ -159,6 +172,20 @@ class Intent(BaseModel):
     @classmethod
     def normalize_tags(cls, tags: list[str]) -> list[str]:
         return Mix.normalize_tags(tags)
+
+    @field_validator("platforms")
+    @classmethod
+    def require_platforms(cls, platforms: list[Platform]) -> list[Platform]:
+        if not platforms:
+            raise ValueError("platforms must include at least one source")
+        # Preserve order, drop duplicates.
+        seen: set[Platform] = set()
+        out: list[Platform] = []
+        for platform in platforms:
+            if platform not in seen:
+                seen.add(platform)
+                out.append(platform)
+        return out
 
     @property
     def max_budget_seconds(self) -> int:

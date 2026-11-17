@@ -250,19 +250,89 @@ def test_build_sequence_empty_tags_with_artist_fills_tagged_and_untagged() -> No
     assert ids == {mixes[0].id, mixes[1].id}
 
 
+def test_matches_filter_platforms_or_membership() -> None:
+    artist = uuid4()
+    sc = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="sc",
+        title="SC",
+        url="https://example.com/sc",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    yt = Mix(
+        artist_id=artist,
+        platform=Platform.YOUTUBE,
+        platform_id="yt",
+        title="YT",
+        url="https://example.com/yt",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    assert matches_filter(sc, ["deep"], platforms=[Platform.SOUNDCLOUD]) is True
+    assert matches_filter(yt, ["deep"], platforms=[Platform.SOUNDCLOUD]) is False
+    assert matches_filter(yt, ["deep"], platforms=[Platform.SOUNDCLOUD, Platform.YOUTUBE]) is True
+    assert matches_filter(sc, ["deep"], platforms=[]) is False
+
+
+def test_build_sequence_platforms_excludes_other_sources() -> None:
+    artist = uuid4()
+    mixes = [
+        Mix(
+            artist_id=artist,
+            platform=Platform.SOUNDCLOUD,
+            platform_id="sc",
+            title="SC",
+            url="https://example.com/sc",
+            duration_seconds=3600,
+            tags=["set"],
+            stars=Stars.FIVE,
+        ),
+        Mix(
+            artist_id=artist,
+            platform=Platform.BANDCAMP,
+            platform_id="bc",
+            title="BC",
+            url="https://example.com/bc",
+            duration_seconds=3600,
+            tags=["set"],
+            stars=Stars.FIVE,
+        ),
+    ]
+    intent = Intent(
+        name="SC only",
+        tags=["set"],
+        platforms=[Platform.SOUNDCLOUD],
+        seed=1,
+        device_hours=[DeviceHours(device_id=uuid4(), budget_seconds=7200)],
+    )
+    ids = {e.mix_id for e in build_sequence(intent, mixes).entries}
+    assert ids == {mixes[0].id}
+
+
 def test_intent_payload_roundtrip_and_missing_artist_ids_default() -> None:
     intent = Intent(
         name="With artists",
         tags=["deep"],
         artist_ids=[uuid4(), uuid4()],
+        platforms=[Platform.BANDCAMP, Platform.YOUTUBE],
         seed=7,
         device_hours=[],
     )
     restored = _intent_from_payload(_intent_payload(intent))
     assert restored.artist_ids == intent.artist_ids
     assert restored.tags == intent.tags
+    assert restored.platforms == intent.platforms
 
     legacy = _intent_payload(intent)
     del legacy["artist_ids"]
+    del legacy["platforms"]
     from_legacy = _intent_from_payload(legacy)
     assert from_legacy.artist_ids == []
+    assert from_legacy.platforms == [
+        Platform.SOUNDCLOUD,
+        Platform.HEARTHIS,
+        Platform.BANDCAMP,
+        Platform.YOUTUBE,
+    ]
