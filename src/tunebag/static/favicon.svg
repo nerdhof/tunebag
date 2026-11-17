@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Tunebag">
+  <rect width="32" height="32" rx="7" fill="#0f1115"/>
+
+  <!-- Thin note stems -->
+  <path
+    fill="#7c9cff"
+    d="M9.5 4.1h1.4v10.4H9.5Zm11.6 2.4h1.4v8h-1.4Z"
+  />
+
+  <!-- Heavy falling beam -->
+  <path fill="#7c9cff" d="m9.5 3.8 13 2.7v3.2l-13-2.7Z"/>
+
+  <!-- Tall, narrow tote with sharp shoulders -->
+  <path
+    fill="#7c9cff"
+    d="M7.5 14.2h17l2.1 11.5c.15 1.2-.8 2.3-2.05 2.3H7.45c-1.25 0-2.2-1.1-2.05-2.3l2.1-11.5Z"
+  />
+
+  <!-- Optically centered rounded play cutout -->
+  <path
+    fill="#0f1115"
+    stroke="#0f1115"
+    stroke-width="1.5"
+    stroke-linejoin="round"
+    d="m13.1 17.5 7.1 3.65-7.1 3.65Z"
+  />
+</svg>

@@ -92,3 +92,4 @@ Domain language: **Release** = **Mix** | **Album** (`CONTEXT.md`). YouTube Music
 - Canonical manual example: `https://music.youtube.com/@TOOLmusic` → normalize/list `https://www.youtube.com/@TOOLmusic/releases` (yt-dlp warns that Music is redirected to youtube.com).
 - Empirically, TOOL official album tracks often lack yt-dlp `album`/`track_number` even with cookies; playlist_title / playlist_index / entry title are the reliable metadata source.
 - Album runtime (fill, play, Playhead, intent folders) is already shipped via the Bandcamp Album work; this spec is the YouTube Source + routing + fetch-opts + docs slice.
+- Topic / Music-only channels without a `/releases` tab (auto-generated `Artist - Topic` UC channels) still normalize to `…/releases`, then list via YouTube Music InnerTube browse for first-page `OLAK…` album cards (issue 05).

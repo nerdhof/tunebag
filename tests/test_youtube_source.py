@@ -325,3 +325,168 @@ def test_youtube_listing_auth_challenge_surfaces_actionable_error(
     message = str(excinfo.value).lower()
     assert "anonymous" in message or "cookie" in message
     assert "youtube" in message
+
+
+def _music_browse_with_album(
+    *,
+    channel_id: str = CHANNEL_ID,
+    name: str = "TOOL - Topic",
+    olak_id: str = OLAK_ID,
+    album_title: str = "Fear Inoculum",
+) -> dict:
+    return {
+        "header": {
+            "musicImmersiveHeaderRenderer": {
+                "title": {"runs": [{"text": name}]},
+            }
+        },
+        "contents": {
+            "singleColumnBrowseResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {
+                                            "musicCarouselShelfRenderer": {
+                                                "header": {
+                                                    "musicCarouselShelfBasicHeaderRenderer": {
+                                                        "title": {
+                                                            "runs": [{"text": "Albums"}]
+                                                        }
+                                                    }
+                                                },
+                                                "contents": [
+                                                    {
+                                                        "musicTwoRowItemRenderer": {
+                                                            "title": {
+                                                                "runs": [
+                                                                    {"text": album_title}
+                                                                ]
+                                                            },
+                                                            "navigationEndpoint": {
+                                                                "browseEndpoint": {
+                                                                    "browseId": "MPREb_example",
+                                                                    "browseEndpointContextSupportedConfigs": {
+                                                                        "browseEndpointContextMusicConfig": {
+                                                                            "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                                                                        }
+                                                                    },
+                                                                }
+                                                            },
+                                                            "thumbnailOverlay": {
+                                                                "musicItemThumbnailOverlayRenderer": {
+                                                                    "content": {
+                                                                        "musicPlayButtonRenderer": {
+                                                                            "playNavigationEndpoint": {
+                                                                                "watchPlaylistEndpoint": {
+                                                                                    "playlistId": olak_id
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            },
+                                                        }
+                                                    }
+                                                ],
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "microformat": {"channel_id": channel_id},
+    }
+
+
+def test_youtube_topic_channel_falls_back_to_music_browse() -> None:
+    topic_id = "UCgYJA69st2KEPGUVkAXu7nA"
+    releases_url = f"https://www.youtube.com/channel/{topic_id}/releases"
+    album_url = f"https://www.youtube.com/playlist?list={OLAK_ID}"
+    browse_calls: list[str] = []
+
+    def extract_info(url: str) -> dict:
+        key = url.rstrip("/")
+        if key == releases_url:
+            raise ValueError(
+                f"ERROR: [youtube:tab] {topic_id}: This channel does not have a releases tab"
+            )
+        if key == album_url:
+            return _album_info()
+        raise ValueError(f"unexpected extract url: {url}")
+
+    def browse_music_artist(channel_id: str) -> dict:
+        browse_calls.append(channel_id)
+        return _music_browse_with_album(
+            channel_id=channel_id,
+            name="Die Tentakel von Delphi - Topic",
+        )
+
+    source = YouTubeSource(
+        extract_info=extract_info,
+        browse_music_artist=browse_music_artist,
+    )
+
+    listing = source.list_uploads(f"https://music.youtube.com/channel/{topic_id}")
+
+    assert browse_calls == [topic_id]
+    assert listing.platform == Platform.YOUTUBE
+    assert listing.platform_id == topic_id
+    assert listing.name == "Die Tentakel von Delphi"
+    assert listing.url == releases_url
+    assert [u.platform_id for u in listing.uploads] == [OLAK_ID]
+    assert listing.uploads[0].tracks[0].platform_id == VIDEO_A
+
+
+def test_youtube_releases_path_does_not_call_music_browse() -> None:
+    browse_calls: list[str] = []
+    releases_url = "https://www.youtube.com/@TOOLmusic/releases"
+    pages = {releases_url: _releases_info(entries=[])}
+
+    def extract_info(url: str) -> dict:
+        key = url.rstrip("/")
+        if key not in pages:
+            raise ValueError(f"unexpected extract url: {url}")
+        return pages[key]
+
+    source = YouTubeSource(
+        extract_info=extract_info,
+        browse_music_artist=lambda channel_id: browse_calls.append(channel_id) or {},
+    )
+
+    listing = source.list_uploads("https://www.youtube.com/@TOOLmusic")
+
+    assert listing.platform_id == CHANNEL_ID
+    assert listing.uploads == []
+    assert browse_calls == []
+
+
+def test_youtube_topic_name_strips_topic_suffix() -> None:
+    topic_id = "UCtopicchannel00000000001"
+    releases_url = f"https://www.youtube.com/channel/{topic_id}/releases"
+
+    def extract_info(url: str) -> dict:
+        if url.rstrip("/") == releases_url:
+            raise ValueError(
+                f"ERROR: [youtube:tab] {topic_id}: This channel does not have a releases tab"
+            )
+        raise ValueError(f"unexpected extract url: {url}")
+
+    source = YouTubeSource(
+        extract_info=extract_info,
+        browse_music_artist=lambda _cid: _music_browse_with_album(
+            channel_id=topic_id,
+            name="Foo - Topic",
+        ),
+    )
+
+    listing = source.list_uploads(f"https://www.youtube.com/channel/{topic_id}")
+
+    assert listing.name == "Foo"
+    assert listing.uploads == []
