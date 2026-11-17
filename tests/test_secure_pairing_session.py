@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -209,3 +210,16 @@ def test_join_requires_valid_signature() -> None:
                 "payload": guest.pairing_payload(),
             }
         )
+
+
+def test_pair_candidate_dropdown_refreshes_without_clearing_options() -> None:
+    """Opening the peer dropdown browses LAN but must not flash Refreshing…."""
+    js = (Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static" / "app.js").read_text()
+    assert "refreshPairCandidatesFromDiscovery" in js
+    assert '/api/discovery/refresh' in js
+    assert 'addEventListener("mousedown"' in js
+    assert "showPairCandidateRefreshing" not in js
+    assert 'opt.textContent = "Refreshing…"' not in js
+    # Rewrite only when the discovered set changes; keep the open list stable.
+    assert "pairCandidatesSignature" in js
+    assert "nextSig !== prevSig" in js

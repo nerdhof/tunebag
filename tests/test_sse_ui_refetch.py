@@ -102,6 +102,45 @@ def test_view_notices_ui_contract_eventsource_and_section_refetch() -> None:
     assert "refreshIntents" in js
     assert "refreshPeers" in js
     assert "refreshFiles" in js
+    # Assign hours refreshes peers before rendering the device picker.
+    assert "Assign hours" in js
+    assign_idx = js.index('setSymbolButton(assignBtn, BTN.add, "Assign hours")')
+    assign_chunk = js[assign_idx : assign_idx + 450]
+    assert "await refreshPeers()" in assign_chunk
+    assert "refreshIntents({ force: true })" in assign_chunk
     # Section keys from the notice taxonomy
     for section in ("mixes", "play_history", "intents", "peers", "cache"):
         assert f'"{section}"' in js or f"'{section}'" in js
+
+
+def _js_function_body(js: str, signature: str) -> str:
+    """Return approximate source from `signature` through the next top-level async/function."""
+    start = js.index(signature)
+    rest = js[start + len(signature) :]
+    next_fn = len(rest)
+    for marker in ("\nasync function ", "\nfunction "):
+        idx = rest.find(marker)
+        if idx != -1:
+            next_fn = min(next_fn, idx)
+    return rest[:next_fn]
+
+
+def test_sse_refetch_preserves_tag_editor_focus() -> None:
+    """SSE/live refetch must not remount tag inputs while the listener is editing.
+
+    force:true bypasses focusInside and clears in-progress catalog/history tags.
+    Play history must also skip rebuild when focus is inside its table body.
+    """
+    root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
+    js = (root / "app.js").read_text()
+
+    view_sections = _js_function_body(js, "async function refreshViewSections")
+    assert "refreshMixes({ force: true })" not in view_sections
+    assert "refreshFiles({ force: true })" not in view_sections
+
+    all_surfaces = _js_function_body(js, "async function refreshAllViewSurfaces")
+    assert "refreshMixes({ force: true })" not in all_surfaces
+    assert "refreshFiles({ force: true })" not in all_surfaces
+
+    play_history = _js_function_body(js, "async function refreshPlayHistory")
+    assert "focusInside(body)" in play_history

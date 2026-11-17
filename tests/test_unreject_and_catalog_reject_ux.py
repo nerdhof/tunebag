@@ -271,7 +271,14 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     assert "showRejectedCatalog" in js
     assert "mix-rejected" in js
     assert "/api/mixes/${mix.id}/un-reject" in js
-    assert "${rejected} rejected" in js
+    assert "artistGroupStats" in js
+    assert "artist-stat-rating" in js
+    assert "artist-stat-tagged" in js
+    assert "artist-stat-reject" in js
+    assert "artist-stat-played" in js
+    assert "#${stats.taggedPct}%" in js
+    assert "✕${stats.rejectedPct}%" in js
+    assert "▶${stats.playedPct}%" in js
 
 
 def test_unreject_api_clears_committed_reject(tmp_path: Path) -> None:

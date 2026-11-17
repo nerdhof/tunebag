@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tunebag</title>
-    <link rel="stylesheet" href="/static/app.css?v=48" />
+    <link rel="stylesheet" href="/static/app.css?v=53" />
   </head>
   <body>
     <nav class="section-nav" aria-label="Jump to section">
       <div class="section-nav-inner">
         <a href="#player" title="Player"><span class="nav-symbol" aria-hidden="true">▶</span><span class="nav-label">player</span></a>
-        <a href="#intents" title="Intents"><span class="nav-symbol" aria-hidden="true">⬡</span><span class="nav-label">intents</span></a>
         <a href="#play-history" title="Play history"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">history</span></a>
+        <a href="#intents" title="Intents"><span class="nav-symbol" aria-hidden="true">⬡</span><span class="nav-label">intents</span></a>
         <a href="#catalog" title="Catalog"><span class="nav-symbol" aria-hidden="true">▤</span><span class="nav-label">catalog</span></a>
         <a href="#cache" title="Cache"><span class="nav-symbol" aria-hidden="true">⬇</span><span class="nav-label">cache</span></a>
         <a href="#activity" title="Activity"><span class="nav-symbol" aria-hidden="true">!</span><span class="nav-label">activity</span></a>
@@ -113,10 +113,47 @@
         </div>
         <p id="player-reject-status" class="muted" hidden></p>
         <p id="player-status" class="muted" role="status"></p>
-        <div id="later-panel" hidden>
-          <h3>Planned later</h3>
-          <p class="muted">Not built in this demo. Player closed.</p>
-          <ul id="later-list"></ul>
+      </section>
+      <section id="play-history">
+        <h2 class="section-heading">
+          <span class="section-symbol" aria-hidden="true">◷</span> Play history
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Play history"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Mixes with a Last heard, newest first. Rate, tag, reject (20s undo) or Un-reject, and
+              resume at the Catalog Playhead from each row. Rejected mixes stay hidden unless the
+              Rejected filter is on (muted when shown).
+            </span>
+          </span>
+        </h2>
+        <div class="catalog-toolbar">
+          <label class="filter-chip" title="Show rejected mixes (muted)">
+            <input type="checkbox" id="play-history-show-rejected" />
+            Rejected
+          </label>
+        </div>
+        <div id="play-history-table-wrap">
+          <table id="play-history-table">
+            <thead>
+              <tr>
+                <th>Last heard</th>
+                <th>Artist</th>
+                <th>Title</th>
+                <th>Length</th>
+                <th>Rating</th>
+                <th>Tags</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="play-history-body"></tbody>
+          </table>
         </div>
       </section>
       <section id="intents">
@@ -196,48 +233,6 @@
           </div>
         </form>
         <p id="intent-status" class="muted" role="status"></p>
-      </section>
-      <section id="play-history">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">◷</span> Play history
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Play history"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Mixes with a Last heard, newest first. Rate, tag, reject (20s undo) or Un-reject, and
-              resume at the Catalog Playhead from each row. Rejected mixes stay hidden unless the
-              Rejected filter is on (muted when shown).
-            </span>
-          </span>
-        </h2>
-        <div class="catalog-toolbar">
-          <label class="filter-chip" title="Show rejected mixes (muted)">
-            <input type="checkbox" id="play-history-show-rejected" />
-            Rejected
-          </label>
-        </div>
-        <div id="play-history-table-wrap">
-          <table id="play-history-table">
-            <thead>
-              <tr>
-                <th>Last heard</th>
-                <th>Artist</th>
-                <th>Title</th>
-                <th>Length</th>
-                <th>Rating</th>
-                <th>Tags</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="play-history-body"></tbody>
-          </table>
-        </div>
       </section>
       <section id="catalog">
         <h2 class="section-heading">

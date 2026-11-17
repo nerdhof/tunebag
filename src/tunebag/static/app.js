@@ -23,6 +23,8 @@ let lastPlayheadCommitAt = 0;
 let lastKnownPositionSeconds = 0;
 let playheadCommitInFlight = false;
 const PLAYHEAD_COMMIT_MS = 10000;
+/** Mix id already announced as marked played during this play session. */
+let playheadPlayedNotifiedForMix = null;
 
 /** Compact action glyphs; always set aria-label + data-tip (hover name). */
 const BTN = {
@@ -40,6 +42,7 @@ const BTN = {
   setCurrent: "◉",
   clearCurrent: "○",
   resume: "▶",
+  copy: "⎘",
 };
 
 function setSymbolButton(btn, symbol, label) {
@@ -757,6 +760,15 @@ async function refreshPairingSession() {
   }
 }
 
+function pairCandidatesSignature(candidates) {
+  return (candidates || [])
+    .map(
+      (c) =>
+        `${c.locator || ""}|${c.name || ""}|${c.fingerprint || c.short_code || ""}|${c.pairing ? 1 : 0}`,
+    )
+    .join("\n");
+}
+
 function fillPairCandidateSelect(candidates, previousValue) {
   const select = document.getElementById("pair-candidate");
   if (!select) return;
@@ -778,6 +790,7 @@ function fillPairCandidateSelect(candidates, previousValue) {
   if (previous) {
     select.value = previous;
   }
+  select.dataset.candidatesSig = pairCandidatesSignature(candidates);
 }
 
 function applyTrustedPeersList(peers) {
@@ -796,6 +809,9 @@ function applyTrustedPeersList(peers) {
   selfStrong.textContent = `${selfName}${selfPrio}${selfFp}`;
   selfLi.appendChild(selfStrong);
   list.appendChild(selfLi);
+  if (!peersCache.length) {
+    return;
+  }
   for (const peer of peersCache) {
     const li = document.createElement("li");
     li.className = "peer-row";
@@ -852,35 +868,27 @@ async function refreshPeers() {
 
 let pairCandidateRefreshing = false;
 
-function showPairCandidateRefreshing() {
-  const select = document.getElementById("pair-candidate");
-  if (!select) return;
-  select.dataset.preserveValue = select.value || "";
-  select.innerHTML = "";
-  const opt = document.createElement("option");
-  opt.value = "";
-  opt.textContent = "Refreshing…";
-  select.appendChild(opt);
-  select.value = "";
-}
-
 async function refreshPairCandidatesFromDiscovery() {
   if (pairCandidateRefreshing) return;
   pairCandidateRefreshing = true;
-  showPairCandidateRefreshing();
+  const select = document.getElementById("pair-candidate");
+  const previous = select?.value || "";
+  // Keep current options visible while LAN browse runs; rewrite only if the set changed.
   try {
     const res = await fetch("/api/discovery/refresh", { method: "POST" });
     const data = await res.json();
     if (!res.ok) {
-      fillPairCandidateSelect([], "");
       return;
     }
-    const previous = document.getElementById("pair-candidate")?.dataset.preserveValue || "";
-    applyPeersPayload(data);
-    fillPairCandidateSelect(data.candidates || [], previous);
+    const next = data.candidates || [];
+    const nextSig = pairCandidatesSignature(next);
+    const prevSig = select?.dataset.candidatesSig || "";
+    applyTrustedPeersList(data.peers || []);
+    if (nextSig !== prevSig) {
+      fillPairCandidateSelect(next, previous);
+    }
   } catch (err) {
     console.error(err);
-    fillPairCandidateSelect([], "");
   } finally {
     pairCandidateRefreshing = false;
   }
@@ -1066,20 +1074,85 @@ function setCacheGroupExpanded(groupKey, expanded) {
   else expandedCacheIntents.delete(groupKey);
 }
 
-function artistGroupSummary(mixes) {
+function artistGroupStats(mixes) {
   let durationSeconds = 0;
   let rejected = 0;
+  let played = 0;
+  let rated = 0;
+  let tagged = 0;
+  let starsSum = 0;
   for (const mix of mixes) {
     durationSeconds += Number(mix.duration_seconds) || 0;
     if (mix.rejected) rejected += 1;
+    if (mix.played) played += 1;
+    if (Array.isArray(mix.tags) && mix.tags.length > 0) tagged += 1;
+    if (mix.stars != null) {
+      rated += 1;
+      starsSum += Number(mix.stars) || 0;
+    }
   }
   const count = mixes.length;
   if (count <= 0) {
-    return "0";
+    return {
+      count: 0,
+      durationSeconds: 0,
+      avgStars: null,
+      ratedPct: 0,
+      taggedPct: 0,
+      rejectedPct: 0,
+      playedPct: 0,
+    };
   }
-  const base = `${count}, ${formatDuration(durationSeconds)}`;
-  if (rejected <= 0) return base;
-  return `${base} · ${rejected} rejected`;
+  const pct = (n) => Math.round((100 * n) / count);
+  return {
+    count,
+    durationSeconds,
+    avgStars: rated > 0 ? starsSum / rated : null,
+    ratedPct: pct(rated),
+    taggedPct: pct(tagged),
+    rejectedPct: pct(rejected),
+    playedPct: pct(played),
+  };
+}
+
+function appendArtistFoldName(artistLabel, artistName, mixes) {
+  const stats = artistGroupStats(mixes);
+  artistLabel.appendChild(document.createTextNode(`${artistName} (`));
+  if (stats.count <= 0) {
+    artistLabel.appendChild(document.createTextNode("0)"));
+    return;
+  }
+  artistLabel.appendChild(
+    document.createTextNode(
+      `${stats.count}, ${formatDuration(stats.durationSeconds)})`,
+    ),
+  );
+}
+
+function buildArtistStatsEl(mixes) {
+  const stats = artistGroupStats(mixes);
+  if (stats.count <= 0) return null;
+  const wrap = document.createElement("span");
+  wrap.className = "artist-stats";
+  const rating = document.createElement("span");
+  rating.className = "artist-stat artist-stat-rating";
+  const avgText =
+    stats.avgStars != null ? `${stats.avgStars.toFixed(1)}★` : "★";
+  rating.textContent = `${avgText}${stats.ratedPct}%`;
+  wrap.appendChild(rating);
+  const tagged = document.createElement("span");
+  tagged.className = "artist-stat artist-stat-tagged";
+  tagged.textContent = `#${stats.taggedPct}%`;
+  wrap.appendChild(tagged);
+  const reject = document.createElement("span");
+  reject.className = "artist-stat artist-stat-reject";
+  reject.textContent = `✕${stats.rejectedPct}%`;
+  wrap.appendChild(reject);
+  const played = document.createElement("span");
+  played.className = "artist-stat artist-stat-played";
+  played.textContent = `▶${stats.playedPct}%`;
+  wrap.appendChild(played);
+  return wrap;
 }
 
 function groupMixesByArtist(mixes) {
@@ -1156,264 +1229,266 @@ function scheduleCatalogRejectRefresh(mixId, untilIso) {
 
 async function refreshMixes({ force = false } = {}) {
   const body = document.getElementById("catalog-body");
-  if (!force && focusInside(body)) return;
   const res = await fetch("/api/mixes");
   const data = await res.json();
-  body.innerHTML = "";
-  if (!data.mixes.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 5;
-    td.className = "muted";
-    td.textContent = "No mixes yet";
-    tr.appendChild(td);
-    body.appendChild(tr);
-    await refreshTagSuggestions();
-    return;
-  }
-
-  for (const group of groupMixesByArtist(data.mixes)) {
-    const visibleMixes = showRejectedCatalog
-      ? group.mixes
-      : group.mixes.filter((mix) => !mix.rejected);
-    const expanded = expandedCatalogArtists.has(group.artistId);
-    const header = document.createElement("tr");
-    header.className = "artist-row";
-    header.dataset.artistId = group.artistId;
-    header.dataset.expanded = expanded ? "true" : "false";
-    header.setAttribute("aria-expanded", expanded ? "true" : "false");
-    header.tabIndex = 0;
-    header.setAttribute("role", "button");
-
-    const artistCell = document.createElement("td");
-    artistCell.colSpan = 5;
-    const artistInner = document.createElement("div");
-    artistInner.className = "artist-row-inner";
-    const artistLabel = document.createElement("span");
-    artistLabel.className = "artist-label";
-    const toggle = document.createElement("span");
-    toggle.className = "artist-toggle";
-    toggle.setAttribute("aria-hidden", "true");
-    toggle.textContent = expanded ? "▼" : "▶";
-    artistLabel.appendChild(toggle);
-    artistLabel.appendChild(
-      document.createTextNode(
-        `${group.artistName} (${artistGroupSummary(group.mixes)})`,
-      ),
-    );
-    if (group.artistUrl) {
-      const link = document.createElement("a");
-      link.className = "artist-link";
-      link.href = group.artistUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.removeAttribute("title");
-      link.setAttribute("aria-label", "Open artist page");
-      link.dataset.tip = "Open artist page";
-      link.textContent = "↗";
-      link.addEventListener("click", (event) => {
-        event.stopPropagation();
-      });
-      artistLabel.appendChild(document.createTextNode(" "));
-      artistLabel.appendChild(link);
+  // Keep in-progress catalog tag edits; still refresh Play history below.
+  const skipCatalog = !force && focusInside(body);
+  if (!skipCatalog) {
+    body.innerHTML = "";
+    if (!data.mixes.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.className = "muted";
+      td.textContent = "No mixes yet";
+      tr.appendChild(td);
+      body.appendChild(tr);
+      await refreshTagSuggestions();
+      await refreshPlayHistory(data.mixes);
+      return;
     }
-    artistInner.appendChild(artistLabel);
-    const refreshBtn = document.createElement("button");
-    refreshBtn.type = "button";
-    refreshBtn.className = "artist-refresh";
-    setSymbolButton(refreshBtn, BTN.refresh, "Refresh artist");
-    refreshBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const status = document.getElementById("artists-status");
-      status.textContent = `Refreshing “${group.artistName}”…`;
-      try {
-        const data = await postRefreshArtists([group.artistId]);
-        if (!data.ok) {
-          status.textContent = data.detail || "Refresh artist failed";
-          return;
-        }
-        status.textContent = `Refreshed “${group.artistName}” · ${data.added} new mix(es)`;
-        await refreshMixes();
-      } catch (err) {
-        status.textContent = "Refresh artist request failed";
-        console.error(err);
+
+    for (const group of groupMixesByArtist(data.mixes)) {
+      const visibleMixes = showRejectedCatalog
+        ? group.mixes
+        : group.mixes.filter((mix) => !mix.rejected);
+      const expanded = expandedCatalogArtists.has(group.artistId);
+      const header = document.createElement("tr");
+      header.className = "artist-row";
+      header.dataset.artistId = group.artistId;
+      header.dataset.expanded = expanded ? "true" : "false";
+      header.setAttribute("aria-expanded", expanded ? "true" : "false");
+      header.tabIndex = 0;
+      header.setAttribute("role", "button");
+
+      const artistCell = document.createElement("td");
+      artistCell.colSpan = 5;
+      const artistInner = document.createElement("div");
+      artistInner.className = "artist-row-inner";
+      const artistLabel = document.createElement("span");
+      artistLabel.className = "artist-label";
+      const toggle = document.createElement("span");
+      toggle.className = "artist-toggle";
+      toggle.setAttribute("aria-hidden", "true");
+      toggle.textContent = expanded ? "▼" : "▶";
+      artistLabel.appendChild(toggle);
+      appendArtistFoldName(artistLabel, group.artistName, group.mixes);
+      if (group.artistUrl) {
+        const link = document.createElement("a");
+        link.className = "artist-link";
+        link.href = group.artistUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.removeAttribute("title");
+        link.setAttribute("aria-label", "Open artist page");
+        link.dataset.tip = "Open artist page";
+        link.textContent = "↗";
+        link.addEventListener("click", (event) => {
+          event.stopPropagation();
+        });
+        artistLabel.appendChild(document.createTextNode(" "));
+        artistLabel.appendChild(link);
       }
-    });
-    artistInner.appendChild(refreshBtn);
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "artist-delete";
-    bindConfirmDelete(deleteBtn, {
-      label: "Delete artist",
-      stopPropagation: true,
-      onConfirm: async () => {
+      artistInner.appendChild(artistLabel);
+      const statsEl = buildArtistStatsEl(group.mixes);
+      if (statsEl) artistInner.appendChild(statsEl);
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      refreshBtn.className = "artist-refresh";
+      setSymbolButton(refreshBtn, BTN.refresh, "Refresh artist");
+      refreshBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
         const status = document.getElementById("artists-status");
-        status.textContent = "Deleting…";
+        status.textContent = `Refreshing “${group.artistName}”…`;
         try {
-          const res = await fetch(`/api/artists/${group.artistId}`, {
-            method: "DELETE",
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            status.textContent = data.detail || "Delete artist failed";
+          const data = await postRefreshArtists([group.artistId]);
+          if (!data.ok) {
+            status.textContent = data.detail || "Refresh artist failed";
             return;
           }
-          expandedCatalogArtists.delete(group.artistId);
-          status.textContent = `Deleted “${group.artistName}”`;
+          status.textContent = `Refreshed “${group.artistName}” · ${data.added} new mix(es)`;
           await refreshMixes();
-          await refreshIntents();
-          await refreshFiles();
         } catch (err) {
-          status.textContent = "Delete artist request failed";
+          status.textContent = "Refresh artist request failed";
           console.error(err);
         }
-      },
-    });
-    artistInner.appendChild(deleteBtn);
-    artistCell.appendChild(artistInner);
-    header.appendChild(artistCell);
+      });
+      artistInner.appendChild(refreshBtn);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "artist-delete";
+      bindConfirmDelete(deleteBtn, {
+        label: "Delete artist",
+        stopPropagation: true,
+        onConfirm: async () => {
+          const status = document.getElementById("artists-status");
+          status.textContent = "Deleting…";
+          try {
+            const res = await fetch(`/api/artists/${group.artistId}`, {
+              method: "DELETE",
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              status.textContent = data.detail || "Delete artist failed";
+              return;
+            }
+            expandedCatalogArtists.delete(group.artistId);
+            status.textContent = `Deleted “${group.artistName}”`;
+            await refreshMixes();
+            await refreshIntents();
+            await refreshFiles();
+          } catch (err) {
+            status.textContent = "Delete artist request failed";
+            console.error(err);
+          }
+        },
+      });
+      artistInner.appendChild(deleteBtn);
+      artistCell.appendChild(artistInner);
+      header.appendChild(artistCell);
 
-    const toggleGroup = () => {
-      setArtistExpanded(
-        group.artistId,
-        header.dataset.expanded !== "true",
-      );
-    };
-    header.addEventListener("click", toggleGroup);
-    header.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        toggleGroup();
-      }
-    });
-    body.appendChild(header);
-
-    for (const mix of visibleMixes) {
-      const tr = document.createElement("tr");
-      tr.className = "mix-row";
-      if (mix.rejected) tr.classList.add("mix-rejected");
-      tr.dataset.artistId = group.artistId;
-      tr.dataset.mixId = mix.id;
-      tr.hidden = !expanded;
-
-      const blankArtist = document.createElement("td");
-      blankArtist.textContent = "";
-      tr.appendChild(blankArtist);
-
-      const title = document.createElement("td");
-      title.textContent = mix.title || "";
-      tr.appendChild(title);
-
-      const length = document.createElement("td");
-      length.textContent = formatDuration(mix.duration_seconds || 0);
-      tr.appendChild(length);
-
-      const rating = document.createElement("td");
-      rating.textContent = mix.stars != null ? `${mix.stars}★` : "—";
-      tr.appendChild(rating);
-
-      const tagsCell = document.createElement("td");
-      const tagRow = document.createElement("div");
-      tagRow.className = "tag-cell";
-      const tagInput = document.createElement("input");
-      tagInput.type = "text";
-      tagInput.setAttribute("list", "tag-suggestions");
-      tagInput.placeholder = "tags";
-      tagInput.value = (mix.tags || []).join(", ");
-      tagInput.addEventListener("click", (event) => event.stopPropagation());
-      tagRow.appendChild(tagInput);
-      const saveBtn = document.createElement("button");
-      saveBtn.type = "button";
-      setSymbolButton(saveBtn, BTN.save, "Save tags");
-      saveBtn.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        const tags = tagInput.value
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter(Boolean);
-        const saveRes = await fetch(`/api/mixes/${mix.id}/tags`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tags }),
-        });
-        if (saveRes.ok) {
-          const saved = await saveRes.json();
-          tagInput.value = (saved.mix?.tags || tags).join(", ");
-          await refreshTagSuggestions();
+      const toggleGroup = () => {
+        setArtistExpanded(
+          group.artistId,
+          header.dataset.expanded !== "true",
+        );
+      };
+      header.addEventListener("click", toggleGroup);
+      header.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleGroup();
         }
       });
-      tagRow.appendChild(saveBtn);
+      body.appendChild(header);
 
-      const rejectBtn = document.createElement("button");
-      rejectBtn.type = "button";
-      rejectBtn.className = "catalog-reject";
-      const undoBtn = document.createElement("button");
-      undoBtn.type = "button";
-      undoBtn.className = "catalog-undo-reject";
-      const unRejectBtn = document.createElement("button");
-      unRejectBtn.type = "button";
-      unRejectBtn.className = "catalog-un-reject";
-      setSymbolButton(rejectBtn, BTN.reject, "Reject mix");
-      setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
-      setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject mix");
+      for (const mix of visibleMixes) {
+        const tr = document.createElement("tr");
+        tr.className = "mix-row";
+        if (mix.rejected) tr.classList.add("mix-rejected");
+        tr.dataset.artistId = group.artistId;
+        tr.dataset.mixId = mix.id;
+        tr.hidden = !expanded;
 
-      const pendingUntil = mix.reject_pending_until;
-      if (pendingUntil) {
-        rejectBtn.hidden = true;
-        unRejectBtn.hidden = true;
-        undoBtn.hidden = false;
-        scheduleCatalogRejectRefresh(mix.id, pendingUntil);
-      } else if (mix.rejected) {
-        rejectBtn.hidden = true;
-        undoBtn.hidden = true;
-        unRejectBtn.hidden = false;
-        clearCatalogRejectTimer(mix.id);
-      } else {
-        rejectBtn.hidden = false;
-        undoBtn.hidden = true;
-        unRejectBtn.hidden = true;
-        clearCatalogRejectTimer(mix.id);
-      }
+        const blankArtist = document.createElement("td");
+        blankArtist.textContent = "";
+        tr.appendChild(blankArtist);
 
-      rejectBtn.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
-        if (res.ok) {
-          await refreshMixes({ force: true });
-          await refreshPlayer();
-        }
-      });
-      undoBtn.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        const res = await fetch(`/api/mixes/${mix.id}/undo-reject`, {
-          method: "POST",
+        const title = document.createElement("td");
+        title.textContent = mix.title || "";
+        tr.appendChild(title);
+
+        const length = document.createElement("td");
+        length.textContent = formatDuration(mix.duration_seconds || 0);
+        tr.appendChild(length);
+
+        const rating = document.createElement("td");
+        rating.textContent = mix.stars != null ? `${mix.stars}★` : "—";
+        tr.appendChild(rating);
+
+        const tagsCell = document.createElement("td");
+        const tagRow = document.createElement("div");
+        tagRow.className = "tag-cell";
+        const tagInput = document.createElement("input");
+        tagInput.type = "text";
+        tagInput.setAttribute("list", "tag-suggestions");
+        tagInput.placeholder = "tags";
+        tagInput.value = (mix.tags || []).join(", ");
+        tagInput.addEventListener("click", (event) => event.stopPropagation());
+        tagRow.appendChild(tagInput);
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        setSymbolButton(saveBtn, BTN.save, "Save tags");
+        saveBtn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const tags = tagInput.value
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean);
+          const saveRes = await fetch(`/api/mixes/${mix.id}/tags`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tags }),
+          });
+          if (saveRes.ok) {
+            const saved = await saveRes.json();
+            tagInput.value = (saved.mix?.tags || tags).join(", ");
+            await refreshTagSuggestions();
+          }
         });
-        if (res.ok) {
+        tagRow.appendChild(saveBtn);
+
+        const rejectBtn = document.createElement("button");
+        rejectBtn.type = "button";
+        rejectBtn.className = "catalog-reject";
+        const undoBtn = document.createElement("button");
+        undoBtn.type = "button";
+        undoBtn.className = "catalog-undo-reject";
+        const unRejectBtn = document.createElement("button");
+        unRejectBtn.type = "button";
+        unRejectBtn.className = "catalog-un-reject";
+        setSymbolButton(rejectBtn, BTN.reject, "Reject mix");
+        setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
+        setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject mix");
+
+        const pendingUntil = mix.reject_pending_until;
+        if (pendingUntil) {
+          rejectBtn.hidden = true;
+          unRejectBtn.hidden = true;
+          undoBtn.hidden = false;
+          scheduleCatalogRejectRefresh(mix.id, pendingUntil);
+        } else if (mix.rejected) {
+          rejectBtn.hidden = true;
+          undoBtn.hidden = true;
+          unRejectBtn.hidden = false;
           clearCatalogRejectTimer(mix.id);
-          await refreshMixes({ force: true });
-          await refreshPlayer();
+        } else {
+          rejectBtn.hidden = false;
+          undoBtn.hidden = true;
+          unRejectBtn.hidden = true;
+          clearCatalogRejectTimer(mix.id);
         }
-      });
-      unRejectBtn.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        const res = await fetch(`/api/mixes/${mix.id}/un-reject`, {
-          method: "POST",
+
+        rejectBtn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
+          if (res.ok) {
+            await refreshMixes({ force: true });
+            await refreshPlayer();
+          }
         });
-        if (res.ok) {
-          await refreshMixes({ force: true });
-          await refreshPlayer();
-          await refreshIntents();
-        }
-      });
-      tagRow.appendChild(rejectBtn);
-      tagRow.appendChild(undoBtn);
-      tagRow.appendChild(unRejectBtn);
-      tagsCell.appendChild(tagRow);
-      tr.appendChild(tagsCell);
-      body.appendChild(tr);
+        undoBtn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const res = await fetch(`/api/mixes/${mix.id}/undo-reject`, {
+            method: "POST",
+          });
+          if (res.ok) {
+            clearCatalogRejectTimer(mix.id);
+            await refreshMixes({ force: true });
+            await refreshPlayer();
+          }
+        });
+        unRejectBtn.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const res = await fetch(`/api/mixes/${mix.id}/un-reject`, {
+            method: "POST",
+          });
+          if (res.ok) {
+            await refreshMixes({ force: true });
+            await refreshPlayer();
+            await refreshIntents();
+          }
+        });
+        tagRow.appendChild(rejectBtn);
+        tagRow.appendChild(undoBtn);
+        tagRow.appendChild(unRejectBtn);
+        tagsCell.appendChild(tagRow);
+        tr.appendChild(tagsCell);
+        body.appendChild(tr);
+      }
     }
+    await refreshTagSuggestions();
   }
-  await refreshTagSuggestions();
   await refreshPlayHistory(data.mixes);
 }
 
@@ -1427,6 +1502,8 @@ function formatLastHeard(ts) {
 async function refreshPlayHistory(mixes) {
   const body = document.getElementById("play-history-body");
   if (!body) return;
+  // Tag/star editors live in this table; remounting clears focus and drafts.
+  if (focusInside(body)) return;
   let rows = mixes;
   if (!Array.isArray(rows)) {
     const res = await fetch("/api/mixes");
@@ -1629,8 +1706,8 @@ async function refreshPlayHistory(mixes) {
           return;
         }
         if (status) status.textContent = `Playing “${data.mix.title}”`;
-        document.getElementById("later-panel").hidden = true;
         lastPlayheadCommitAt = Date.now();
+        playheadPlayedNotifiedForMix = null;
         await refreshPlayer();
         await refreshFiles();
       } catch (err) {
@@ -1745,14 +1822,17 @@ async function maybeCommitPlayhead(playing) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return;
     if (data.played) {
-      const status = document.getElementById("player-status");
-      if (status) {
-        status.textContent = `Playhead ${Math.round(lastKnownPositionSeconds)}s · marked played`;
+      const mixId = data.mix_id || null;
+      if (mixId !== playheadPlayedNotifiedForMix) {
+        playheadPlayedNotifiedForMix = mixId;
+        const status = document.getElementById("player-status");
+        if (status) {
+          status.textContent = `Playhead ${Math.round(lastKnownPositionSeconds)}s · marked played`;
+        }
+        await refreshMixes();
+        await refreshFiles();
+        await refreshIntents();
       }
-      await showLaterFeatures(data.later || []);
-      await refreshMixes();
-      await refreshFiles();
-      await refreshIntents();
     }
   } catch (err) {
     console.error(err);
@@ -1781,6 +1861,7 @@ async function refreshPlayer() {
     now.textContent = "Nothing playing";
     lastKnownPositionSeconds = 0;
     lastPlayheadCommitAt = 0;
+    playheadPlayedNotifiedForMix = null;
     updateSeekBar({});
     setPlayerPolling(false);
     updateRejectControls({});
@@ -1791,8 +1872,8 @@ async function refreshPlayer() {
   if (!playerSeekDragging) {
     lastKnownPositionSeconds = pos;
   }
-  const artist = data.artist || "Unknown";
   const title = data.title || "Untitled";
+  const artist = data.artist || "Unknown";
   const label = `${artist} - ${title}`;
   now.textContent =
     data.size_bytes != null && Number(data.size_bytes) > 0
@@ -1815,39 +1896,6 @@ async function refreshPlayer() {
   } else {
     lastPlayheadCommitAt = 0;
   }
-}
-
-async function showLaterFeatures(features) {
-  const panel = document.getElementById("later-panel");
-  const list = document.getElementById("later-list");
-  if (!panel || !list) return;
-  list.innerHTML = "";
-  for (const feature of features || []) {
-    const li = document.createElement("li");
-    li.textContent = feature;
-    list.appendChild(li);
-  }
-  panel.hidden = false;
-  // Close the active player controls; the demo ends on the later list.
-  for (const id of [
-    "player-play",
-    "player-skip",
-    "player-stop",
-    "player-mark",
-    "player-seekbar",
-    "player-reject",
-    "player-undo-reject",
-    "player-tag",
-    "player-intent",
-    "player-stars",
-    "player-tags",
-  ]) {
-    const el = document.getElementById(id);
-    if (el) el.disabled = true;
-  }
-  setPlayerPolling(false);
-  const now = document.getElementById("player-now");
-  if (now) now.textContent = "Player closed";
 }
 
 async function refreshFiles({ force = false } = {}) {
@@ -2498,6 +2546,51 @@ async function refreshIntents({ force = false } = {}) {
   await refreshPlayerIntents();
 }
 
+function markPairPinCopied(copyBtn) {
+  setSymbolButton(copyBtn, BTN.copy, "Copied");
+  if (actionTipActive === copyBtn) showActionTip(copyBtn);
+  setTimeout(() => {
+    if (copyBtn.dataset.tip === "Copied") {
+      setSymbolButton(copyBtn, BTN.copy, "Copy PIN");
+      if (actionTipActive === copyBtn) showActionTip(copyBtn);
+    }
+  }, 1500);
+}
+
+async function copyPairPin() {
+  const pinEl = document.getElementById("pair-pin");
+  const copyBtn = document.getElementById("pair-pin-copy-btn");
+  const pin = (pinEl?.value || "").trim();
+  if (!pin) return;
+
+  pinEl.focus();
+  pinEl.select();
+
+  let ok = false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(pin);
+      ok = true;
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  if (!ok) {
+    try {
+      ok = document.execCommand("copy");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  if (ok) {
+    markPairPinCopied(copyBtn);
+  } else {
+    const status = document.getElementById("pair-status");
+    if (status) status.textContent = "Could not copy PIN — select and copy manually";
+  }
+}
+
 async function startPairSession() {
   const status = document.getElementById("pair-status");
   status.textContent = "Starting pairing session…";
@@ -2597,41 +2690,6 @@ async function joinPairSession({ peer_url, pin, session_id }) {
     status.textContent = "Join failed";
     console.error(err);
     return false;
-  }
-}
-
-async function copyPairPin() {
-  const pinEl = document.getElementById("pair-pin");
-  const copyBtn = document.getElementById("pair-pin-copy-btn");
-  const pin = (pinEl?.value || "").trim();
-  if (!pin) return;
-  pinEl.focus();
-  pinEl.select();
-  let ok = false;
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(pin);
-      ok = true;
-    }
-  } catch (err) {
-    console.error(err);
-  }
-  if (!ok) {
-    try {
-      ok = document.execCommand("copy");
-    } catch (err) {
-      console.error(err);
-    }
-  }
-  if (ok && copyBtn) {
-    const prev = copyBtn.dataset.tip || "Copy PIN";
-    copyBtn.dataset.tip = "Copied";
-    setTimeout(() => {
-      if (copyBtn.dataset.tip === "Copied") copyBtn.dataset.tip = prev;
-    }, 1500);
-  } else {
-    const status = document.getElementById("pair-status");
-    if (status) status.textContent = "Could not copy PIN — select and copy manually";
   }
 }
 
@@ -3082,12 +3140,14 @@ document.getElementById("player-play").addEventListener("click", async () => {
         status.textContent = data.detail || "Pause failed";
         return;
       }
-      status.textContent = "Paused";
+      status.textContent = data.played ? "Paused · marked played" : "Paused";
       lastPlayheadCommitAt = Date.now();
-      if (data.played) {
-        await showLaterFeatures(data.later || []);
-      }
       await refreshPlayer();
+      if (data.played) {
+        await refreshMixes();
+        await refreshFiles();
+        await refreshIntents();
+      }
     } catch (err) {
       status.textContent = "Pause request failed";
       console.error(err);
@@ -3112,8 +3172,8 @@ document.getElementById("player-play").addEventListener("click", async () => {
       return;
     }
     status.textContent = `Playing “${data.mix.title}”`;
-    document.getElementById("later-panel").hidden = true;
     lastPlayheadCommitAt = Date.now();
+    playheadPlayedNotifiedForMix = null;
     await refreshPlayer();
     await refreshFiles();
   } catch (err) {
@@ -3139,8 +3199,8 @@ document.getElementById("player-skip").addEventListener("click", async () => {
       return;
     }
     status.textContent = `Playing “${data.mix.title}”`;
-    document.getElementById("later-panel").hidden = true;
     lastPlayheadCommitAt = Date.now();
+    playheadPlayedNotifiedForMix = null;
     await refreshPlayer();
     await refreshFiles();
   } catch (err) {
@@ -3155,6 +3215,7 @@ document.getElementById("player-stop").addEventListener("click", async () => {
     await fetch("/api/player/stop", { method: "POST" });
     status.textContent = "Stopped (mix left in place if under 75%)";
     lastPlayheadCommitAt = 0;
+    playheadPlayedNotifiedForMix = null;
     await refreshPlayer();
   } catch (err) {
     status.textContent = "Stop request failed";
@@ -3203,8 +3264,8 @@ if (playerSeekbar) {
       status.textContent = data.played
         ? `Seeked to ${formatClock(position)} · marked played`
         : `Seeked to ${formatClock(position)}`;
-      if (data.played) {
-        await showLaterFeatures(data.later || []);
+      if (data.played && data.mix_id) {
+        playheadPlayedNotifiedForMix = data.mix_id;
       }
       await refreshPlayer();
       await refreshMixes();
@@ -3233,7 +3294,9 @@ document.getElementById("player-mark").addEventListener("click", async () => {
       return;
     }
     status.textContent = "Marked played";
-    await showLaterFeatures(data.later);
+    if (data.mix?.id) {
+      playheadPlayedNotifiedForMix = data.mix.id;
+    }
     await refreshPlayer();
     await refreshMixes();
     await refreshFiles();
@@ -3373,34 +3436,36 @@ const VIEW_NOTICE_SECTIONS = ["mixes", "play_history", "intents", "peers", "cach
 
 async function refreshAllViewSurfaces() {
   await refreshPeers();
-  await refreshMixes({ force: true });
+  // No force: respect focusInside so tag/hours editors are not remounted mid-edit.
+  await refreshMixes();
   await refreshPlayHistory();
-  await refreshIntents({ force: true });
-  await refreshFiles({ force: true });
+  await refreshIntents();
+  await refreshFiles();
 }
 
 async function refreshViewSections(sections) {
   const wanted = new Set(sections);
   // Independent branches: a burst may name both mixes and play_history.
+  // Live notices must not force-rebuild while a tag input has focus.
   if (wanted.has("mixes")) {
-    await refreshMixes({ force: true });
+    await refreshMixes();
   }
   if (wanted.has("play_history") && !wanted.has("mixes")) {
     // refreshMixes already refreshes Play history when mixes are included.
     await refreshPlayHistory();
   }
   if (wanted.has("intents")) {
-    await refreshIntents({ force: true });
+    await refreshIntents();
   }
   if (wanted.has("peers")) {
     await refreshPeers();
     // Device picker for Assign hours is derived from peersCache.
     if (hoursEditorState.size) {
-      await refreshIntents({ force: true });
+      await refreshIntents();
     }
   }
   if (wanted.has("cache")) {
-    await refreshFiles({ force: true });
+    await refreshFiles();
   }
 }
 
