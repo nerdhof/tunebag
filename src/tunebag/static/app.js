@@ -25,6 +25,9 @@ let playheadCommitInFlight = false;
 const PLAYHEAD_COMMIT_MS = 10000;
 /** Mix id already announced as marked played during this play session. */
 let playheadPlayedNotifiedForMix = null;
+/** Last player poll: used so intent-list play buttons stay in sync. */
+let lastPlayerPlaying = false;
+let lastPlayerIntentId = null;
 
 /** Compact action glyphs; always set aria-label + data-tip (hover name). */
 const BTN = {
@@ -41,6 +44,8 @@ const BTN = {
   sync: "⇄",
   setCurrent: "◉",
   clearCurrent: "○",
+  play: "▶",
+  pause: "⏸",
   resume: "▶",
   copy: "⎘",
 };
@@ -1342,7 +1347,7 @@ async function refreshMixes({ force = false } = {}) {
       const td = document.createElement("td");
       td.colSpan = 5;
       td.className = "muted";
-      td.textContent = "No mixes yet";
+      td.textContent = "No releases yet";
       tr.appendChild(td);
       body.appendChild(tr);
       await refreshTagSuggestions();
@@ -1408,7 +1413,7 @@ async function refreshMixes({ force = false } = {}) {
             status.textContent = data.detail || "Refresh artist failed";
             return;
           }
-          status.textContent = `Refreshed “${group.artistName}” · ${data.added} new mix(es)`;
+          status.textContent = `Refreshed “${group.artistName}” · ${data.added} new release(s)`;
           await refreshMixes();
         } catch (err) {
           status.textContent = "Refresh artist request failed";
@@ -1529,9 +1534,9 @@ async function refreshMixes({ force = false } = {}) {
         const unRejectBtn = document.createElement("button");
         unRejectBtn.type = "button";
         unRejectBtn.className = "catalog-un-reject";
-        setSymbolButton(rejectBtn, BTN.reject, "Reject mix");
+        setSymbolButton(rejectBtn, BTN.reject, "Reject release");
         setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
-        setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject mix");
+        setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject release");
 
         const pendingUntil = mix.reject_pending_until;
         if (pendingUntil) {
@@ -1650,7 +1655,7 @@ async function refreshPlayHistory(mixes) {
     const ratingCell = document.createElement("td");
     const starsSelect = document.createElement("select");
     starsSelect.className = "history-stars";
-    starsSelect.setAttribute("aria-label", "Rate mix");
+    starsSelect.setAttribute("aria-label", "Rate release");
     const blankOpt = document.createElement("option");
     blankOpt.value = "";
     blankOpt.textContent = "—";
@@ -1724,9 +1729,9 @@ async function refreshPlayHistory(mixes) {
     const unRejectBtn = document.createElement("button");
     unRejectBtn.type = "button";
     unRejectBtn.className = "history-un-reject";
-    setSymbolButton(rejectBtn, BTN.reject, "Reject mix");
+    setSymbolButton(rejectBtn, BTN.reject, "Reject release");
     setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
-    setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject mix");
+    setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject release");
 
     const pendingUntil = mix.reject_pending_until;
     if (pendingUntil) {
@@ -1947,11 +1952,102 @@ function updatePlayPauseButton(playing) {
   const btn = document.getElementById("player-play");
   if (!btn) return;
   const label = playing ? "Pause" : "Play";
-  btn.textContent = playing ? "⏸" : "▶";
-  btn.removeAttribute("title");
-  btn.setAttribute("aria-label", label);
-  btn.dataset.tip = label;
+  setSymbolButton(btn, playing ? BTN.pause : BTN.play, label);
   btn.dataset.playing = playing ? "true" : "false";
+}
+
+function setIntentPlayButton(btn, playingThis) {
+  const label = playingThis ? "Pause" : "Play";
+  setSymbolButton(btn, playingThis ? BTN.pause : BTN.play, label);
+  btn.dataset.playing = playingThis ? "true" : "false";
+}
+
+function syncPlayerIntentSelect(intentId) {
+  const select = document.getElementById("player-intent");
+  if (!select || !intentId) return;
+  if ([...select.options].some((o) => o.value === intentId)) {
+    select.value = intentId;
+  }
+}
+
+function updateIntentPlayButtons(playing, intentId) {
+  lastPlayerPlaying = Boolean(playing);
+  lastPlayerIntentId = intentId || null;
+  if (lastPlayerIntentId) {
+    syncPlayerIntentSelect(lastPlayerIntentId);
+  }
+  for (const btn of document.querySelectorAll("#intent-list .intent-play")) {
+    const playingThis =
+      lastPlayerPlaying &&
+      lastPlayerIntentId != null &&
+      btn.dataset.intentId === lastPlayerIntentId;
+    setIntentPlayButton(btn, playingThis);
+  }
+}
+
+function isIntentCurrentlyPlaying(intentId) {
+  return (
+    lastPlayerPlaying &&
+    lastPlayerIntentId != null &&
+    intentId != null &&
+    intentId === lastPlayerIntentId
+  );
+}
+
+async function pausePlayback() {
+  const status = document.getElementById("player-status");
+  if (status) status.textContent = "Pausing…";
+  // Keep the player intent on whatever is actually playing so resume stays correct.
+  if (lastPlayerIntentId) {
+    syncPlayerIntentSelect(lastPlayerIntentId);
+  }
+  const res = await fetch("/api/player/pause", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      position_seconds: Math.max(0, lastKnownPositionSeconds),
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (status) status.textContent = data.detail || "Pause failed";
+    return false;
+  }
+  if (status) status.textContent = data.played ? "Paused · marked played" : "Paused";
+  lastPlayheadCommitAt = Date.now();
+  await refreshPlayer();
+  if (data.played) {
+    await refreshMixes();
+    await refreshFiles();
+    await refreshIntents();
+  }
+  return true;
+}
+
+async function playIntent(intentId) {
+  const status = document.getElementById("player-status");
+  if (!intentId) {
+    if (status) status.textContent = "Choose an intent";
+    return false;
+  }
+  syncPlayerIntentSelect(intentId);
+  if (status) status.textContent = "Starting playback…";
+  const res = await fetch("/api/player/play", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intent_id: intentId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (status) status.textContent = data.detail || "Play failed";
+    return false;
+  }
+  if (status) status.textContent = `Playing “${data.mix.title}”`;
+  lastPlayheadCommitAt = Date.now();
+  playheadPlayedNotifiedForMix = null;
+  await refreshPlayer();
+  await refreshFiles();
+  return true;
 }
 
 async function refreshPlayer() {
@@ -1968,6 +2064,7 @@ async function refreshPlayer() {
     setPlayerPolling(false);
     updateRejectControls({});
     updatePlayPauseButton(false);
+    updateIntentPlayButtons(false, null);
     return;
   }
   const pos = Math.round(data.position_seconds || 0);
@@ -1993,6 +2090,7 @@ async function refreshPlayer() {
   setPlayerPolling(Boolean(data.playing));
   updateRejectControls(data);
   updatePlayPauseButton(Boolean(data.playing));
+  updateIntentPlayButtons(Boolean(data.playing), data.intent_id);
   if (data.playing) {
     await maybeCommitPlayhead(true);
   } else {
@@ -2125,16 +2223,16 @@ async function refreshFiles({ force = false } = {}) {
             });
             const bodyJson = await res.json().catch(() => ({}));
             if (!res.ok) {
-              status.textContent = bodyJson.detail || "Could not set current mix";
+              status.textContent = bodyJson.detail || "Could not set current release";
               return;
             }
             currentMixId = bodyJson.current_mix_id || null;
             status.textContent = currentMixId
-              ? `Current mix set · metered cap uses this + one ahead`
-              : "Current mix cleared · metered cap uses assignment head";
+              ? `Current release set · metered cap uses this + one ahead`
+              : "Current release cleared · metered cap uses assignment head";
             await refreshFiles();
           } catch (err) {
-            status.textContent = "Current mix request failed";
+            status.textContent = "Current release request failed";
             console.error(err);
           }
         });
@@ -2388,7 +2486,7 @@ function renderDeviceHoursPanel(intent, assignments = []) {
             : ` · expires in ${until}h`;
       }
       const asg = assignmentByDevice.get(String(dh.device_id));
-      const mixText = asg ? ` · ${asg.mix_ids.length} mixes` : "";
+      const mixText = asg ? ` · ${asg.mix_ids.length} releases` : "";
       label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
         dh.budget_seconds,
       )}${mixText}${expiryText}`;
@@ -2453,6 +2551,38 @@ async function refreshIntents({ force = false } = {}) {
     heading.textContent = intent.name;
     heading.style.flex = "1";
     headingRow.appendChild(heading);
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "intent-play";
+    playBtn.dataset.intentId = intent.id;
+    const playingThis =
+      lastPlayerPlaying && lastPlayerIntentId != null && lastPlayerIntentId === intent.id;
+    setIntentPlayButton(playBtn, playingThis);
+    playBtn.addEventListener("click", async () => {
+      const status = document.getElementById("intent-status");
+      try {
+        // Pause only the intent that is actually playing right now.
+        if (isIntentCurrentlyPlaying(intent.id)) {
+          const ok = await pausePlayback();
+          if (status) {
+            status.textContent = ok
+              ? `Paused “${intent.name}”`
+              : document.getElementById("player-status")?.textContent || "Pause failed";
+          }
+          return;
+        }
+        const ok = await playIntent(intent.id);
+        if (status) {
+          status.textContent = ok
+            ? `Playing “${intent.name}”`
+            : document.getElementById("player-status")?.textContent || "Play failed";
+        }
+      } catch (err) {
+        if (status) status.textContent = "Play request failed";
+        console.error(err);
+      }
+    });
+    headingRow.appendChild(playBtn);
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     setSymbolButton(editBtn, BTN.edit, "Edit intent");
@@ -3071,7 +3201,7 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
       status.textContent = data.detail || "Add artists failed";
       return;
     }
-    status.textContent = `Added ${data.added} mixes · ${data.artists} artists`;
+    status.textContent = `Added ${data.added} releases · ${data.artists} artists`;
     document.getElementById("artist-urls").value = "";
     artistsCollapsible?.collapse();
     await refreshMixes();
@@ -3091,7 +3221,7 @@ document.getElementById("refresh-all-artists").addEventListener("click", async (
       status.textContent = data.detail || "Refresh artists failed";
       return;
     }
-    status.textContent = `Refreshed · ${data.added} new mix(es) · ${data.artists} artists`;
+    status.textContent = `Refreshed · ${data.added} new release(s) · ${data.artists} artists`;
     await refreshMixes();
     await refreshIntentArtistOptions();
   } catch (err) {
@@ -3192,8 +3322,8 @@ document.getElementById("sync-btn").addEventListener("click", async () => {
       return;
     }
     status.textContent = data.fill_in_progress
-      ? `Synced · ${data.peers} peers · ${data.mixes} mixes · filling caches…`
-      : `Synced · ${data.peers} peers · ${data.mixes} mixes · ${data.files} cached`;
+      ? `Synced · ${data.peers} peers · ${data.mixes} releases · filling caches…`
+      : `Synced · ${data.peers} peers · ${data.mixes} releases · ${data.files} cached`;
     await refreshPeers();
     await refreshMixes();
     await refreshIntents();
@@ -3269,59 +3399,15 @@ document.getElementById("player-tags").addEventListener("input", async (event) =
 document.getElementById("player-play").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   const btn = document.getElementById("player-play");
-  if (btn.dataset.playing === "true") {
-    status.textContent = "Pausing…";
-    try {
-      const res = await fetch("/api/player/pause", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          position_seconds: Math.max(0, lastKnownPositionSeconds),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        status.textContent = data.detail || "Pause failed";
-        return;
-      }
-      status.textContent = data.played ? "Paused · marked played" : "Paused";
-      lastPlayheadCommitAt = Date.now();
-      await refreshPlayer();
-      if (data.played) {
-        await refreshMixes();
-        await refreshFiles();
-        await refreshIntents();
-      }
-    } catch (err) {
-      status.textContent = "Pause request failed";
-      console.error(err);
-    }
-    return;
-  }
-  const intentId = document.getElementById("player-intent").value;
-  if (!intentId) {
-    status.textContent = "Choose an intent";
-    return;
-  }
-  status.textContent = "Starting playback…";
   try {
-    const res = await fetch("/api/player/play", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ intent_id: intentId }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      status.textContent = data.detail || "Play failed";
+    if (btn.dataset.playing === "true" || lastPlayerPlaying) {
+      // Pause whatever intent is actually playing, independent of the dropdown.
+      await pausePlayback();
       return;
     }
-    status.textContent = `Playing “${data.mix.title}”`;
-    lastPlayheadCommitAt = Date.now();
-    playheadPlayedNotifiedForMix = null;
-    await refreshPlayer();
-    await refreshFiles();
+    await playIntent(document.getElementById("player-intent").value);
   } catch (err) {
-    status.textContent = "Play request failed";
+    if (status) status.textContent = "Play request failed";
     console.error(err);
   }
 });
@@ -3357,7 +3443,7 @@ document.getElementById("player-stop").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   try {
     await fetch("/api/player/stop", { method: "POST" });
-    status.textContent = "Stopped (mix left in place if under 75%)";
+    status.textContent = "Stopped (release left in place if under 75%)";
     lastPlayheadCommitAt = 0;
     playheadPlayedNotifiedForMix = null;
     await refreshPlayer();

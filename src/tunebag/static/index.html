@@ -15,8 +15,8 @@
         <a href="#player" title="Player"><span class="nav-symbol" aria-hidden="true">▶</span><span class="nav-label">player</span></a>
         <a href="#play-history" title="Play history"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">history</span></a>
         <a href="#intents" title="Intents"><span class="nav-symbol" aria-hidden="true">⬡</span><span class="nav-label">intents</span></a>
-        <a href="#catalog" title="Catalog"><span class="nav-symbol" aria-hidden="true">▤</span><span class="nav-label">catalog</span></a>
         <a href="#cache" title="Cache"><span class="nav-symbol" aria-hidden="true">⬇</span><span class="nav-label">cache</span></a>
+        <a href="#catalog" title="Catalog"><span class="nav-symbol" aria-hidden="true">▤</span><span class="nav-label">catalog</span></a>
         <a href="#activity" title="Activity"><span class="nav-symbol" aria-hidden="true">!</span><span class="nav-label">activity</span></a>
         <a href="#peers" title="Peers"><span class="nav-symbol" aria-hidden="true">⇄</span><span class="nav-label">peers</span></a>
         <a href="/about" title="About concepts"><span class="nav-symbol" aria-hidden="true">?</span><span class="nav-label">about</span></a>
@@ -71,16 +71,16 @@
               step="1"
               value="0"
               disabled
-              title="Seek within the current mix"
+              title="Seek within the current release"
             />
             <span id="player-time-total" class="seek-time">0:00</span>
           </div>
         </div>
         <p id="player-now" class="muted">Nothing playing</p>
         <div class="form-row player-meta" aria-label="Rate and tag">
-          <label class="inline-field" title="Rate the current mix from 1 to 5">
+          <label class="inline-field" title="Rate the current release from 1 to 5">
             Rating
-            <select id="player-stars" title="Rate the current mix from 1 to 5">
+            <select id="player-stars" title="Rate the current release from 1 to 5">
               <option value="">—</option>
               <option value="1">1</option>
               <option value="2">2</option>
@@ -89,7 +89,7 @@
               <option value="5">5</option>
             </select>
           </label>
-          <button type="button" id="player-reject" aria-label="reject track" data-tip="reject track">✕</button>
+          <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
           <button
             type="button"
             id="player-undo-reject"
@@ -99,7 +99,7 @@
           >
             ↺
           </button>
-          <label class="inline-field grow player-tags-field" title="Comma-separated tags for the current mix">
+          <label class="inline-field grow player-tags-field" title="Comma-separated tags for the current release">
             Tags
             <span class="player-tags-row">
               <input
@@ -107,7 +107,7 @@
                 type="text"
                 list="tag-suggestions"
                 placeholder="tribal, deep"
-                title="Comma-separated tags for the current mix"
+                title="Comma-separated tags for the current release"
               />
               <button type="button" id="player-tag" aria-label="Save tags" data-tip="Save tags">✓</button>
             </span>
@@ -130,14 +130,14 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              Mixes with a Last heard, newest first. Rate, tag, reject (20s undo) or Un-reject, and
-              resume at the Catalog Playhead from each row. Rejected mixes stay hidden unless the
+              Releases with a Last heard, newest first. Rate, tag, reject (20s undo) or Un-reject, and
+              resume at the Catalog Playhead from each row. Rejected releases stay hidden unless the
               Rejected filter is on (muted when shown).
             </span>
           </span>
         </h2>
         <div class="catalog-toolbar">
-          <label class="filter-chip" title="Show rejected mixes (muted)">
+          <label class="filter-chip" title="Show rejected releases (muted)">
             <input type="checkbox" id="play-history-show-rejected" />
             Rejected
           </label>
@@ -293,29 +293,29 @@
                 Rating chances: ▃▂▁▁⠀▃
               </summary>
               <div class="chance-grid">
-                <label title="Share of the sequence for 5★ mixes">
+                <label title="Share of the sequence for 5★ releases">
                   5★
-                  <select id="chance-five" title="Share of the sequence for 5★ mixes"></select>
+                  <select id="chance-five" title="Share of the sequence for 5★ releases"></select>
                 </label>
-                <label title="Share of the sequence for 4★ mixes">
+                <label title="Share of the sequence for 4★ releases">
                   4★
-                  <select id="chance-four" title="Share of the sequence for 4★ mixes"></select>
+                  <select id="chance-four" title="Share of the sequence for 4★ releases"></select>
                 </label>
-                <label title="Share of the sequence for 3★ mixes">
+                <label title="Share of the sequence for 3★ releases">
                   3★
-                  <select id="chance-three" title="Share of the sequence for 3★ mixes"></select>
+                  <select id="chance-three" title="Share of the sequence for 3★ releases"></select>
                 </label>
-                <label title="Share of the sequence for 2★ mixes">
+                <label title="Share of the sequence for 2★ releases">
                   2★
-                  <select id="chance-two" title="Share of the sequence for 2★ mixes"></select>
+                  <select id="chance-two" title="Share of the sequence for 2★ releases"></select>
                 </label>
-                <label title="Share of the sequence for 1★ mixes">
+                <label title="Share of the sequence for 1★ releases">
                   1★
-                  <select id="chance-one" title="Share of the sequence for 1★ mixes"></select>
+                  <select id="chance-one" title="Share of the sequence for 1★ releases"></select>
                 </label>
-                <label title="Share of the sequence for unrated mixes">
+                <label title="Share of the sequence for unrated releases">
                   —
-                  <select id="chance-unrated" title="Share of the sequence for unrated mixes"></select>
+                  <select id="chance-unrated" title="Share of the sequence for unrated releases"></select>
                 </label>
               </div>
             </details>
@@ -326,6 +326,52 @@
           </div>
         </form>
         <p id="intent-status" class="muted" role="status"></p>
+      </section>
+      <section id="cache">
+        <h2 class="section-heading">
+          <span class="section-symbol" aria-hidden="true">⬇</span> Cache
+          <span class="section-info">
+            <button
+              type="button"
+              class="section-info-btn"
+              aria-label="About Cache"
+              aria-expanded="false"
+            >
+              ⓘ
+            </button>
+            <span class="section-info-tip" role="tooltip">
+              Audio on this device for its assigned hours. Creating or updating an intent fills
+              automatically; use the button to retry. On a metered link, origin downloads stay at the
+              current release plus one ahead per intent; peer copies still fill.
+            </span>
+          </span>
+        </h2>
+        <div class="controls">
+          <label
+            class="metered-toggle"
+            title="Simulate a metered link: origin downloads stay at current + one ahead"
+          >
+            <input type="checkbox" id="metered-toggle" />
+            Metered link (simulated)
+          </label>
+          <button type="button" id="fill-btn" aria-label="Fill caches" data-tip="Fill caches">⬇</button>
+        </div>
+        <p id="fill-status" class="muted" role="status"></p>
+        <div id="cache-table-wrap">
+          <table id="cache-table">
+            <thead>
+              <tr>
+                <th>Intent</th>
+                <th>Title</th>
+                <th>Length</th>
+                <th>Size</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="cache-body"></tbody>
+          </table>
+        </div>
       </section>
       <section id="catalog">
         <h2 class="section-heading">
@@ -340,14 +386,14 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              Browse mixes by artist. Add SoundCloud or hearthis.at artist URLs, refresh listings, and
+              Browse releases by artist. Add SoundCloud or hearthis.at artist URLs, refresh listings, and
               edit tags inline. Reject starts a 20s undo window; Un-reject restores sequence eligibility
               without refetching audio.
             </span>
           </span>
         </h2>
         <div class="catalog-toolbar">
-          <label class="filter-chip" title="Show rejected mixes (muted)">
+          <label class="filter-chip" title="Show rejected releases (muted)">
             <input type="checkbox" id="catalog-show-rejected" />
             Rejected
           </label>
@@ -400,52 +446,6 @@
           </button>
         </form>
         <p id="artists-status" class="muted" role="status"></p>
-      </section>
-      <section id="cache">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">⬇</span> Cache
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Cache"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Audio on this device for its assigned hours. Creating or updating an intent fills
-              automatically; use the button to retry. On a metered link, origin downloads stay at the
-              current mix plus one ahead per intent; peer copies still fill.
-            </span>
-          </span>
-        </h2>
-        <div class="controls">
-          <label
-            class="metered-toggle"
-            title="Simulate a metered link: origin downloads stay at current + one ahead"
-          >
-            <input type="checkbox" id="metered-toggle" />
-            Metered link (simulated)
-          </label>
-          <button type="button" id="fill-btn" aria-label="Fill caches" data-tip="Fill caches">⬇</button>
-        </div>
-        <p id="fill-status" class="muted" role="status"></p>
-        <div id="cache-table-wrap">
-          <table id="cache-table">
-            <thead>
-              <tr>
-                <th>Intent</th>
-                <th>Title</th>
-                <th>Length</th>
-                <th>Size</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="cache-body"></tbody>
-          </table>
-        </div>
       </section>
       <section id="activity">
         <h2 class="section-heading">
@@ -587,6 +587,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=45"></script>
+    <script src="/static/app.js?v=47"></script>
   </body>
 </html>
