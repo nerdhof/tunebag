@@ -10,10 +10,11 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from html import unescape
-from typing import Protocol
-from urllib.parse import urljoin, urlparse
+from typing import Any, Protocol
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 
@@ -346,6 +347,110 @@ class BandcampSource:
         )
 
 
+YoutubeExtractor = Callable[[str], dict[str, Any]]
+
+
+class YouTubeSource:
+    """List Album Releases from a YouTube channel's releases tab (OLAK playlists)."""
+
+    def __init__(
+        self,
+        *,
+        extract_info: YoutubeExtractor | None = None,
+        audio_fetcher: AudioFetcher | None = None,
+    ) -> None:
+        self._extract_info = extract_info
+        self._audio_fetcher = audio_fetcher
+
+    def list_uploads(self, artist_url: str) -> ArtistListing:
+        releases_url = _youtube_artist_releases_url(artist_url)
+        info = self._extract(releases_url)
+        channel_id = _youtube_channel_id(info)
+        if not channel_id:
+            raise ValueError(f"YouTube releases page missing channel id: {releases_url}")
+        name = str(
+            info.get("channel")
+            or info.get("uploader")
+            or info.get("title")
+            or channel_id
+        )
+        uploads: list[Upload] = []
+        for entry in info.get("entries") or []:
+            if not isinstance(entry, dict):
+                continue
+            olak_id = _youtube_olak_id(entry)
+            if olak_id is None:
+                continue
+            album_url = f"https://www.youtube.com/playlist?list={olak_id}"
+            try:
+                upload = self._list_album(olak_id, album_url=album_url)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                logger.warning("youtube album skipped %s: %s", album_url, exc)
+                continue
+            if upload is not None:
+                uploads.append(upload)
+
+        return ArtistListing(
+            platform=Platform.YOUTUBE,
+            platform_id=channel_id,
+            name=name,
+            url=releases_url,
+            uploads=uploads,
+        )
+
+    def _list_album(self, olak_id: str, *, album_url: str) -> Upload | None:
+        info = self._extract(album_url)
+        title = str(info.get("title") or info.get("playlist_title") or "")
+        if not title:
+            return None
+        raw_entries = info.get("entries") or []
+        if not isinstance(raw_entries, list) or not raw_entries:
+            return None
+        indexed: list[tuple[int, Track]] = []
+        for position, item in enumerate(raw_entries):
+            if not isinstance(item, dict):
+                logger.warning("youtube track skipped on %s: non-dict entry", album_url)
+                continue
+            track = _youtube_track_from_entry(item)
+            if track is None:
+                logger.warning("youtube track skipped on %s: incomplete entry", album_url)
+                continue
+            order = _youtube_playlist_index(item, fallback=position)
+            indexed.append((order, track))
+        if not indexed:
+            return None
+        indexed.sort(key=lambda pair: pair[0])
+        tracks = [track for _, track in indexed]
+        return Upload(
+            platform=Platform.YOUTUBE,
+            platform_id=olak_id,
+            title=title,
+            url=album_url,
+            duration_seconds=sum(t.duration_seconds for t in tracks),
+            size_bytes=None,
+            tracks=tuple(tracks),
+        )
+
+    def fetch_bytes(
+        self,
+        source_url: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> bytes:
+        return fetch_audio_bytes(
+            source_url,
+            fetcher=self._audio_fetcher,
+            on_progress=on_progress,
+        )
+
+    def _extract(self, url: str) -> dict[str, Any]:
+        if self._extract_info is not None:
+            return self._extract_info(url)
+        return _youtube_extract_info(url)
+
+
 class CompositeSource:
     """Dispatch list_uploads / fetch_bytes by artist or media URL host."""
 
@@ -612,3 +717,162 @@ def _bandcamp_is_free_downloadable(tralbum: dict) -> bool:
         return float(price) == 0.0
     except (TypeError, ValueError):
         return False
+
+
+_YOUTUBE_HOSTS = frozenset({"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"})
+_YOUTUBE_CHANNEL_TABS = frozenset(
+    {"", "releases", "videos", "playlists", "featured", "about", "streams", "shorts"}
+)
+_OLAK_ID_RE = re.compile(r"^OLAK[0-9A-Za-z_-]+$")
+
+
+def youtube_normalize_artist_url(url: str) -> str | None:
+    """Canonical www.youtube.com …/releases URL for channel forms; else None."""
+    try:
+        return _youtube_artist_releases_url(url)
+    except ValueError:
+        return None
+
+
+def _youtube_artist_releases_url(artist_url: str) -> str:
+    """Normalize channel forms to the releases tab; reject deep links."""
+    parsed = urlparse(artist_url.strip())
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host not in _YOUTUBE_HOSTS and not host.endswith(".youtube.com"):
+        raise ValueError(f"not a YouTube URL: {artist_url}")
+
+    path = parsed.path or "/"
+    path_lower = path.lower()
+    query = parse_qs(parsed.query)
+
+    if host == "youtu.be" or path_lower.startswith("/watch"):
+        raise ValueError(
+            "YouTube watch URLs are not supported; "
+            "add the artist channel (e.g. https://www.youtube.com/@HANDLE) "
+            f"instead of {artist_url}"
+        )
+    if path_lower.startswith("/playlist") or (
+        "list" in query and not _youtube_is_channel_path(path_lower)
+    ):
+        raise ValueError(
+            "YouTube playlist URLs are not supported; "
+            "add the artist channel (e.g. https://www.youtube.com/@HANDLE) "
+            f"instead of {artist_url}"
+        )
+    if path_lower.startswith("/browse"):
+        raise ValueError(
+            "YouTube Music album/browse URLs are not supported; "
+            "add the artist channel (e.g. https://www.youtube.com/@HANDLE) "
+            f"instead of {artist_url}"
+        )
+
+    channel_path = _youtube_channel_path(path)
+    if channel_path is None:
+        raise ValueError(
+            "YouTube artist URL must be a channel "
+            "(@handle, /channel/UC…, /c/…, or /user/…); "
+            f"got {artist_url}"
+        )
+    return f"https://www.youtube.com{channel_path}/releases"
+
+
+def _youtube_is_channel_path(path_lower: str) -> bool:
+    return path_lower.startswith(("/@", "/channel/", "/c/", "/user/"))
+
+
+def _youtube_channel_path(path: str) -> str | None:
+    """Return /@handle or /channel/UC… (no tab); None if not a channel form."""
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return None
+    head = parts[0]
+    if head.startswith("@"):
+        tab = parts[1].lower() if len(parts) > 1 else ""
+        if tab not in _YOUTUBE_CHANNEL_TABS:
+            return None
+        return f"/{head}"
+    if head == "channel" and len(parts) >= 2:
+        tab = parts[2].lower() if len(parts) > 2 else ""
+        if tab not in _YOUTUBE_CHANNEL_TABS:
+            return None
+        return f"/channel/{parts[1]}"
+    if head in ("c", "user") and len(parts) >= 2:
+        tab = parts[2].lower() if len(parts) > 2 else ""
+        if tab not in _YOUTUBE_CHANNEL_TABS:
+            return None
+        return f"/{head}/{parts[1]}"
+    return None
+
+
+def _youtube_channel_id(info: dict[str, Any]) -> str | None:
+    for key in ("channel_id", "uploader_id", "id"):
+        value = info.get(key)
+        if isinstance(value, str) and value.startswith("UC"):
+            return value
+    return None
+
+
+def _youtube_olak_id(entry: dict[str, Any]) -> str | None:
+    candidates: list[str] = []
+    for key in ("id", "url", "webpage_url"):
+        value = entry.get(key)
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    for value in candidates:
+        if _OLAK_ID_RE.match(value):
+            return value
+        parsed = urlparse(value)
+        for list_id in parse_qs(parsed.query).get("list") or []:
+            if _OLAK_ID_RE.match(list_id):
+                return list_id
+    return None
+
+
+def _youtube_playlist_index(item: dict[str, Any], *, fallback: int) -> int:
+    raw = item.get("playlist_index")
+    if raw is None:
+        raw = item.get("playlist_autonumber")
+    if raw is None:
+        return fallback
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _youtube_track_from_entry(item: dict[str, Any]) -> Track | None:
+    video_id = item.get("id")
+    title = item.get("title")
+    duration = item.get("duration")
+    if not isinstance(video_id, str) or not video_id or not title:
+        return None
+    if duration is None:
+        duration_seconds = 0
+    else:
+        try:
+            duration_seconds = int(float(duration))
+        except (TypeError, ValueError):
+            return None
+    return Track(
+        platform_id=video_id,
+        title=str(title),
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        duration_seconds=duration_seconds,
+    )
+
+
+def _youtube_extract_info(url: str) -> dict[str, Any]:
+    from yt_dlp import YoutubeDL
+
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+        "remote_components": ["ejs:github"],
+    }
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if not isinstance(info, dict):
+        raise TypeError(f"yt-dlp returned no info for {url}")
+    return info
