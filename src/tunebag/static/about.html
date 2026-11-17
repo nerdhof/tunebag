@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tunebag — Concepts</title>
-    <link rel="stylesheet" href="/static/app.css?v=45" />
+    <link rel="stylesheet" href="/static/app.css?v=52" />
   </head>
   <body class="about-page">
     <nav class="section-nav" aria-label="About navigation">
@@ -41,6 +41,11 @@
         Music packed for every device. Every paired Device keeps the full Catalog; each Device only
         holds the audio its hours require.
       </p>
+      <p class="about-source">
+        <a href="https://github.com/wabu/tunebag" rel="noopener noreferrer" target="_blank"
+          >github.com/wabu/tunebag</a
+        >
+      </p>
       <section id="concepts" class="about-concepts">
         <h2>Concepts</h2>
         <p class="about-intro">
@@ -53,9 +58,17 @@
           role="img"
           aria-label="Concept relationship graph, arranged top to bottom"
         ></div>
+        <div id="concept-tip" class="concept-tip" role="tooltip" hidden></div>
         <div id="concept-articles" class="concept-articles"></div>
       </section>
+      <section id="planned" class="about-planned">
+        <h2>Planned features</h2>
+        <p class="about-intro">
+          After the hackathon demo — next steps from the locked plan. Not in this build.
+        </p>
+        <ul id="planned-features" class="planned-features"></ul>
+      </section>
     </main>
-    <script src="/static/about.js?v=13"></script>
+    <script src="/static/about.js?v=24"></script>
   </body>
 </html>

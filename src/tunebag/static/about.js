@@ -1,30 +1,35 @@
 (() => {
   "use strict";
 
-  /** @typedef {{ id: string, label: string, layer: number, col: number, summary: string, points?: string[] }} Concept */
-  /** @typedef {{ from: string, to: string, label: string, dashed?: boolean, route?: string, labelT?: number }} Edge */
+  /** @typedef {{ id: string, label: string, layer: number, col: number, tip: string, summary: string, points?: string[] }} Concept */
+  /** @typedef {{ from: string, to: string, label: string, tip: string, dashed?: boolean, route?: string, labelT?: number }} Edge */
 
   /**
-   * Layout (top → bottom only; Event log / Catalog centered; Artist–Mix cluster on the right):
-   *
-   *   Peer —— Device
-   *     \       |  \
-   *   Locator  Event log                     Artist
-   *              |                              |
-   *           Catalog ————— contains ———————— Mix
-   *              |                          /  |  \
-   *            Intent                     Tag Rating Reject
-   *              |
-   *           Sequence → Assignment → Cache → Player
-   *                                         ↑ holds (Device)
+   * Six equal columns (centers at (i+0.5)/6):
+   *   1 Peer, Locator
+   *   2 Device
+   *   3 Intent, Sequence, Assignment, Cache, Player
+   *   4 Event log, Catalog, Tag
+   *   5 Artist, Mix, Rating
+   *   6 Reject
    */
+  const COL = {
+    peer: 1 / 12,
+    device: 0.3,
+    intent: 5 / 12,
+    catalog: 7 / 12,
+    artist: 9 / 12,
+    reject: 11 / 12,
+  };
+
   /** @type {Concept[]} */
   const CONCEPTS = [
     {
       id: "peer",
       label: "Peer",
       layer: 0,
-      col: 0.08,
+      col: COL.peer,
+      tip: "A paired Device you can sync Catalog with and copy audio from.",
       summary:
         "Another Device that has paired with this one and is reachable over LAN or USB, usable as a file source.",
       points: [
@@ -36,7 +41,8 @@
       id: "device",
       label: "Device",
       layer: 0,
-      col: 0.28,
+      col: COL.device,
+      tip: "One Tunebag install with a stable Identity; authors Events and holds Cache.",
       summary:
         "A Tunebag installation with a stable Identity (device_id + keypair) that authors Event log entries.",
       points: [
@@ -49,7 +55,8 @@
       id: "locator",
       label: "Locator",
       layer: 1,
-      col: 0.08,
+      col: COL.peer,
+      tip: "Where a Device is reachable right now — not Identity, and never trust by itself.",
       summary:
         "An ephemeral reachability hint for a Device (HTTP URL, IP:port, USB path, …).",
       points: [
@@ -61,7 +68,8 @@
       id: "event-log",
       label: "Event log",
       layer: 1,
-      col: 0.48,
+      col: COL.catalog,
+      tip: "Signed append-only source of truth; Peers sync this to rebuild the same Catalog.",
       summary:
         "The source of truth for Catalog: a signed append-only stream of catalog changes, replicated between paired Peers.",
       points: [
@@ -70,31 +78,11 @@
       ],
     },
     {
-      id: "artist",
-      label: "Artist",
-      layer: 1,
-      col: 0.84,
-      summary:
-        "A source-platform creator whose own uploads are ingested into the Catalog.",
-      points: ["Own uploads become Mixes in the Catalog.", "Delete of an Artist is sticky across Devices."],
-    },
-    {
-      id: "mix",
-      label: "Mix",
-      layer: 2,
-      col: 0.84,
-      summary:
-        "One audio file treated as a single listening item (typically a DJ set). Budgets and Played use its duration.",
-      points: [
-        "May carry Tags, Rating, Reject, Played, Last heard, and Playhead.",
-        "Album-style releases are later; not in this map.",
-      ],
-    },
-    {
       id: "catalog",
       label: "Catalog",
       layer: 2,
-      col: 0.48,
+      col: COL.catalog,
+      tip: "Replicated metadata projection of the Event log on every paired Device.",
       summary:
         "The projected, fully replicated metadata on every paired Device. Derived only from the Event log.",
       points: [
@@ -103,41 +91,11 @@
       ],
     },
     {
-      id: "tag",
-      label: "Tag",
-      layer: 3,
-      col: 0.70,
-      summary: "A free-text label on a Mix. Suggestions prefer existing tags.",
-      points: ["Intent membership uses AND of required Tags.", "Unrated Mixes may still match a tagged Intent."],
-    },
-    {
-      id: "rating",
-      label: "Rating",
-      layer: 3,
-      col: 0.84,
-      summary: "Score 1–5 on a Mix (UI may show ★). Separate from Reject.",
-      points: [
-        "Rating distribution on an Intent sets draw chances including unrated.",
-        "Default distribution: 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3 (5★…1★, unrated).",
-      ],
-    },
-    {
-      id: "reject",
-      label: "Reject",
-      layer: 3,
-      col: 0.96,
-      summary:
-        "“Never assign again” until Un-reject. After a 20s local undo window, File bytes are deleted on every Device.",
-      points: [
-        "Un-reject clears Reject so the Mix may re-enter Sequences.",
-        "Un-reject does not by itself restore File bytes — Cache fill runs when assigned again.",
-      ],
-    },
-    {
       id: "intent",
       label: "Intent",
       layer: 3,
-      col: 0.48,
+      col: COL.intent,
+      tip: "Shared plan: tag filter + rating distribution; Devices attach hours (and optional expiry).",
       summary:
         "A shared plan: tag filter plus rating distribution. Devices attach hours and optional expiry.",
       points: [
@@ -147,28 +105,88 @@
       ],
     },
     {
+      id: "artist",
+      label: "Artist",
+      layer: 3,
+      col: COL.artist,
+      tip: "A source-platform creator whose uploads become Mixes in the Catalog.",
+      summary:
+        "A source-platform creator whose own uploads are ingested into the Catalog.",
+      points: ["Own uploads become Mixes in the Catalog.", "Delete of an Artist is sticky across Devices."],
+    },
+    {
       id: "sequence",
       label: "Sequence",
       layer: 4,
-      col: 0.48,
+      col: COL.intent,
+      tip: "Seeded ordered Mix list for one Intent, filled to the largest Device budget.",
       summary:
         "A seeded ordered list of Mixes for one Intent. Fills until cumulative duration meets the largest Device budget.",
       points: ["May include the Mix that crosses the budget.", "Smaller Device budgets cover the opening stretch."],
     },
     {
+      id: "mix",
+      label: "Mix",
+      layer: 4,
+      col: COL.artist,
+      tip: "One listening item (usually a DJ set); duration drives budgets and Played.",
+      summary:
+        "One audio file treated as a single listening item (typically a DJ set). Budgets and Played use its duration.",
+      points: [
+        "May carry Tags, Rating, Reject, Played, Last heard, and Playhead.",
+        "Album-style releases are later; not in this map.",
+      ],
+    },
+    {
       id: "assignment",
       label: "Assignment",
       layer: 5,
-      col: 0.48,
+      col: COL.intent,
+      tip: "Which Device hours cover which Sequence prefix — independent of on-disk audio.",
       summary:
         "Which Device hours cover which prefix of the Sequence — independent of whether audio is on disk.",
       points: ["Drives what the Cache should hold.", "Built from Device hours on the shared Sequence."],
     },
     {
+      id: "tag",
+      label: "Tag",
+      layer: 5,
+      col: COL.catalog,
+      tip: "Free-text label on a Mix; Intent membership is AND of required Tags.",
+      summary: "A free-text label on a Mix. Suggestions prefer existing tags.",
+      points: ["Intent membership uses AND of required Tags.", "Unrated Mixes may still match a tagged Intent."],
+    },
+    {
+      id: "rating",
+      label: "Rating",
+      layer: 5,
+      col: COL.artist,
+      tip: "1–5★ score on a Mix; Intents draw by rating distribution (separate from Reject).",
+      summary: "Score 1–5 on a Mix (UI may show ★). Separate from Reject.",
+      points: [
+        "Rating distribution on an Intent sets draw chances including unrated.",
+        "Default distribution: 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3 (5★…1★, unrated).",
+      ],
+    },
+    {
+      id: "reject",
+      label: "Reject",
+      layer: 5,
+      col: COL.reject,
+      tip: "Never assign again until Un-reject; after undo window, File bytes are deleted everywhere.",
+      summary:
+        "“Never assign again” until Un-reject. After a 20s local undo window, File bytes are deleted on every Device.",
+      points: [
+        "Un-reject clears Reject so the Mix may re-enter Sequences.",
+        "Un-reject does not by itself restore File bytes — Cache fill runs when assigned again.",
+      ],
+    },
+    {
       id: "cache",
       label: "Cache",
       layer: 6,
-      col: 0.48,
+      col: COL.intent,
+      tip: "Audio Files this Device holds for its Assignments (origin, Peer, or USB).",
       summary:
         "The set of Files (audio bytes) a Device currently holds for its Assignments.",
       points: [
@@ -180,7 +198,8 @@
       id: "player",
       label: "Player",
       layer: 7,
-      col: 0.48,
+      col: COL.intent,
+      tip: "Local playback of Cache; source of play, rating, reject, tag, and playhead signals.",
       summary:
         "Local playback of cached audio. In v1 it is the source of play, rating, reject, tag, and playhead signals.",
       points: [
@@ -193,28 +212,235 @@
 
   /** @type {Edge[]} */
   const EDGES = [
-    { from: "peer", to: "device", label: "paired", route: "right" },
-    { from: "device", to: "locator", label: "reachability", dashed: true, route: "down-enter-right" },
-    { from: "device", to: "event-log", label: "authors" },
-    { from: "event-log", to: "device", label: "peer sync", dashed: true, route: "up-enter-right" },
-    { from: "device", to: "cache", label: "holds", route: "down-then-across" },
-    { from: "event-log", to: "catalog", label: "projects" },
-    { from: "catalog", to: "intent", label: "contains", dashed: true },
-    { from: "catalog", to: "mix", label: "contains", dashed: true, route: "right" },
-    { from: "artist", to: "mix", label: "owns" },
-    { from: "mix", to: "tag", label: "has" },
-    { from: "mix", to: "rating", label: "has", labelT: 0.72 },
-    { from: "mix", to: "reject", label: "may" },
-    { from: "intent", to: "sequence", label: "builds" },
-    { from: "sequence", to: "assignment", label: "prefix" },
-    { from: "assignment", to: "cache", label: "needs" },
-    { from: "cache", to: "player", label: "plays" },
+    {
+      from: "peer",
+      to: "device",
+      label: "paired",
+      tip: "Trust established (QR / short code); then they can sync and share files.",
+      route: "right",
+    },
+    {
+      from: "device",
+      to: "locator",
+      label: "reachability",
+      tip: "How to find this Device on the network right now — changes; not Identity.",
+      dashed: true,
+      route: "down-enter-right",
+    },
+    {
+      from: "device",
+      to: "event-log",
+      label: "authors",
+      tip: "This Device signs and appends Catalog-changing Events.",
+    },
+    {
+      from: "event-log",
+      to: "device",
+      label: "peer sync",
+      tip: "Paired Devices exchange Events so each can rebuild the same Catalog.",
+      dashed: true,
+      route: "up-enter-right",
+    },
+    {
+      from: "device",
+      to: "cache",
+      label: "holds",
+      tip: "The Device stores the audio bytes for its Assignments.",
+      route: "down-then-across",
+    },
+    {
+      from: "event-log",
+      to: "catalog",
+      label: "projects",
+      tip: "Replay the Event log → same Catalog on every Peer.",
+    },
+    {
+      from: "catalog",
+      to: "intent",
+      label: "contains",
+      tip: "Catalog holds Intent records as projected Event-log state.",
+      dashed: true,
+    },
+    {
+      from: "catalog",
+      to: "artist",
+      label: "contains",
+      tip: "Catalog holds Artist records from Events.",
+      dashed: true,
+    },
+    {
+      from: "catalog",
+      to: "mix",
+      label: "contains",
+      tip: "Catalog holds Mix metadata (tags, rating, reject, …) from Events.",
+      dashed: true,
+      route: "down-gap-across",
+    },
+    {
+      from: "artist",
+      to: "mix",
+      label: "owns",
+      tip: "Ingesting an Artist brings their uploads in as Mixes.",
+    },
+    {
+      from: "mix",
+      to: "tag",
+      label: "has",
+      tip: "Mixes carry free-text Tags used by Intent filters.",
+    },
+    {
+      from: "mix",
+      to: "rating",
+      label: "has",
+      tip: "Optional 1–5★ score; feeds Intent draw chances.",
+      labelT: 0.72,
+    },
+    {
+      from: "mix",
+      to: "reject",
+      label: "may",
+      tip: "A Mix can be Rejected so it leaves future Assignments.",
+    },
+    {
+      from: "intent",
+      to: "sequence",
+      label: "builds",
+      tip: "One seeded Sequence is built from the Intent’s tags + rating draws.",
+    },
+    {
+      from: "sequence",
+      to: "assignment",
+      label: "prefix",
+      tip: "Each Device’s hours cover a prefix of the shared Sequence.",
+    },
+    {
+      from: "assignment",
+      to: "cache",
+      label: "needs",
+      tip: "Assigned Mixes are what the Cache should fill.",
+    },
+    {
+      from: "cache",
+      to: "player",
+      label: "plays",
+      tip: "The Player reads audio from the local Cache.",
+    },
   ];
 
   const byId = Object.fromEntries(CONCEPTS.map((c) => [c.id, c]));
 
+  /**
+   * Keep in sync with docs/LATER.md § Planned features.
+   * @typedef {{ title: string, body: string }} PlannedFeature
+   * @type {PlannedFeature[]}
+   */
+  const PLANNED_FEATURES = [
+    {
+      title: "Bandcamp albums",
+      body: "as an alternative listening primitive. One album = one item; duration = sum of tracks; played = past 75% of the album as a whole.",
+    },
+    {
+      title: "OR tag filters",
+      body: "on intents (e.g. tribal OR relaxing). Own sequence per filter. A mix may appear in multiple intents; deletes wait until no remaining intent on that device wants the file.",
+    },
+    {
+      title: "Library import",
+      body: "from the laptop: match on-disk files to ~/.music-snd-downloaded.txt (SoundCloud, hearthis.at, and Bandcamp ids), seed the laptop cache, mark archive ids with no remaining file as already seen. Artist refresh itself is hackathon issue 09 (re-list known artists; do not resurrect committed rejects or old deletes).",
+    },
+    {
+      title: "Profile import",
+      body: "SoundCloud and hearthis.at follow lists.",
+    },
+    {
+      title: "Artist reposts",
+      body: "in addition to own uploads.",
+    },
+    {
+      title: "Search",
+      body: "across the catalog (and later across platforms) by tag, artist, title.",
+    },
+    {
+      title: "Suggested tags and ratings",
+      body: "from titles/metadata, later from audio analysis.",
+    },
+    {
+      title: "Peer cache file share",
+      body: "copy assigned Mix bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.",
+    },
+    {
+      title: "Catalog snapshot cache",
+      body: "disposable on-disk Catalog projection for faster boot; Event log replay remains authoritative if they disagree.",
+    },
+    {
+      title: "Incremental Event log sync",
+      body: "per-Peer cursors / since instead of full-log pull once logs get large.",
+    },
+    {
+      title: "SQLite (or similar) persistence",
+      body: "if JSONL Event log + sidecar JSON becomes awkward for size, query, or crash safety.",
+    },
+    {
+      title: "Cross-network meet relay",
+      body: "reach a paired Peer outside the LAN multicast domain without pasting a Locator (optional server/relay peer).",
+    },
+    {
+      title: "Web player as a paired peer",
+      body: "for ad-hoc listening from anywhere (same sync protocol).",
+    },
+    {
+      title: "Foobar (macOS) and Vanilla Music (Android)",
+      body: "opening intent folders as dumb consumers of files; signal capture stays in Tunebag until adapters exist.",
+    },
+  ];
+
   function prefersReducedMotion() {
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  /** @type {HTMLElement | null} */
+  let tipEl = null;
+
+  function ensureTip() {
+    if (!tipEl) tipEl = document.getElementById("concept-tip");
+    return tipEl;
+  }
+
+  /**
+   * @param {string} text
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function showTip(text, clientX, clientY) {
+    const el = ensureTip();
+    if (!el || !text) return;
+    el.textContent = text;
+    el.hidden = false;
+    moveTip(clientX, clientY);
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function moveTip(clientX, clientY) {
+    const el = ensureTip();
+    if (!el || el.hidden) return;
+    const pad = 12;
+    const tw = el.offsetWidth || 220;
+    const th = el.offsetHeight || 40;
+    let left = clientX + 14;
+    let top = clientY + 16;
+    if (left + tw + pad > window.innerWidth) left = clientX - tw - 12;
+    if (top + th + pad > window.innerHeight) top = clientY - th - 12;
+    el.style.left = `${Math.max(pad, left)}px`;
+    el.style.top = `${Math.max(pad, top)}px`;
+  }
+
+  function hideTip() {
+    const el = ensureTip();
+    if (!el) return;
+    el.hidden = true;
+    el.textContent = "";
   }
 
   function renderArticles(host) {
@@ -423,6 +649,23 @@
         };
       }
 
+      if (route === "down-gap-across") {
+        // Catalog → Mix: down from Catalog, horizontal in the Artist–Mix gap, then down into Mix.
+        const artist = box.artist;
+        const x1 = a.cx;
+        const y1 = a.y + a.h + gap;
+        const x2 = b.cx;
+        const y2 = b.y - gap;
+        const midY = artist
+          ? (artist.y + artist.h + b.y) / 2
+          : y1 + (y2 - y1) * 0.62;
+        return {
+          d: `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`,
+          lx: (x1 + x2) / 2,
+          ly: midY - 10,
+        };
+      }
+
       // Default: leave bottom → enter top. Elbow y is always between endpoints (never above start).
       const x1 = a.cx;
       const y1 = a.y + a.h + gap;
@@ -549,8 +792,15 @@
     for (const [key, el] of edgeEls) {
       const edge = EDGES.find((e) => edgeKey(e) === key);
       if (!edge) continue;
-      el.addEventListener("pointerenter", () => setActiveEdge(edge.from, edge.to, true));
-      el.addEventListener("pointerleave", () => setActiveEdge(edge.from, edge.to, false));
+      el.addEventListener("pointerenter", (ev) => {
+        setActiveEdge(edge.from, edge.to, true);
+        showTip(edge.tip, ev.clientX, ev.clientY);
+      });
+      el.addEventListener("pointermove", (ev) => moveTip(ev.clientX, ev.clientY));
+      el.addEventListener("pointerleave", () => {
+        setActiveEdge(edge.from, edge.to, false);
+        hideTip();
+      });
     }
 
     for (const concept of CONCEPTS) {
@@ -560,7 +810,10 @@
       g.dataset.id = concept.id;
       g.setAttribute("tabindex", "0");
       g.setAttribute("role", "link");
-      g.setAttribute("aria-label", `${concept.label}: jump to description`);
+      g.setAttribute(
+        "aria-label",
+        `${concept.label}: ${concept.tip} Click to jump to description.`,
+      );
       g.style.transformOrigin = `${b.cx}px ${b.cy}px`;
 
       const rect = document.createElementNS(svgNS, "rect");
@@ -589,10 +842,24 @@
           activate();
         }
       });
-      g.addEventListener("pointerenter", () => setActiveNode(concept.id, true));
-      g.addEventListener("pointerleave", () => setActiveNode(concept.id, false));
-      g.addEventListener("focus", () => setActiveNode(concept.id, true));
-      g.addEventListener("blur", () => setActiveNode(concept.id, false));
+      g.addEventListener("pointerenter", (ev) => {
+        setActiveNode(concept.id, true);
+        showTip(concept.tip, ev.clientX, ev.clientY);
+      });
+      g.addEventListener("pointermove", (ev) => moveTip(ev.clientX, ev.clientY));
+      g.addEventListener("pointerleave", () => {
+        setActiveNode(concept.id, false);
+        hideTip();
+      });
+      g.addEventListener("focus", () => {
+        setActiveNode(concept.id, true);
+        const rectBox = g.getBoundingClientRect();
+        showTip(concept.tip, rectBox.left + rectBox.width / 2, rectBox.bottom);
+      });
+      g.addEventListener("blur", () => {
+        setActiveNode(concept.id, false);
+        hideTip();
+      });
 
       nodeLayer.appendChild(g);
       nodeEls.set(concept.id, g);
@@ -615,13 +882,30 @@
     }
   }
 
+  /**
+   * @param {HTMLElement} host
+   */
+  function renderPlannedFeatures(host) {
+    host.replaceChildren();
+    for (const feature of PLANNED_FEATURES) {
+      const li = document.createElement("li");
+      const strong = document.createElement("strong");
+      strong.textContent = feature.title;
+      li.appendChild(strong);
+      li.appendChild(document.createTextNode(` ${feature.body}`));
+      host.appendChild(li);
+    }
+  }
+
   function init() {
     const articlesHost = document.getElementById("concept-articles");
     const graphHost = document.getElementById("concept-graph");
+    const plannedHost = document.getElementById("planned-features");
     if (!articlesHost || !graphHost) return;
 
     renderArticles(articlesHost);
     renderGraph(graphHost);
+    if (plannedHost) renderPlannedFeatures(plannedHost);
 
     let resizeTimer = 0;
     window.addEventListener("resize", () => {

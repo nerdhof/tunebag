@@ -1,6 +1,6 @@
 # Tunebag — later / next steps
 
-Show these at the end of the hackathon demo. Not in the build.
+Show these at the end of the hackathon demo (also on `/about#planned`). Not in the build.
 
 ## Planned features
 
@@ -11,8 +11,7 @@ Show these at the end of the hackathon demo. Not in the build.
 - **Artist reposts** in addition to own uploads.
 - **Search** across the catalog (and later across platforms) by tag, artist, title.
 - **Suggested tags and ratings** from titles/metadata, later from audio analysis.
-- **LAN peer discovery** (durable-sync issue 07; hackathon 11 wontfix): mDNS/DNS-SD advertise + browse; refresh Locator hints for trusted keys after key proof; unknown ads are pair candidates only (QR/short code). See ADR 0002.
-- **Persist peers + Event log** (durable-sync issues 02–03; hackathon 12 wontfix): survive process restart — Device identity, trusted Peer identities, last-known Locator hints, and Event log; Catalog via replay. See ADR 0001 / 0002.
+- **Peer cache file share**: copy assigned Mix bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.
 - **Catalog snapshot cache**: disposable on-disk Catalog projection for faster boot; Event log replay remains authoritative if they disagree.
 - **Incremental Event log sync**: per-Peer cursors / `since` instead of full-log pull once logs get large.
 - **SQLite (or similar) persistence**: if JSONL Event log + sidecar JSON becomes awkward for size, query, or crash safety.
