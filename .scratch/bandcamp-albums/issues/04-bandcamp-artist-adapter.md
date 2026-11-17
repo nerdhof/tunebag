@@ -16,4 +16,4 @@
 
 ## Comments
 
-- `BandcampSource` scrapes artist `/music` + album `data-tralbum`; keeps free/downloadable albums only (`freeDownloadPage` or `minimum_price == 0`) and skips discs where any track lacks anonymous stream `file`. Root and `/music` canonicalize to `/music`. Album page URLs raise actionable errors. Tests: `tests/test_bandcamp_source.py`, routing in `tests/test_source_routing.py`.
+- `BandcampSource` scrapes artist `/music` + album `data-tralbum`; keeps albums where every track has an anonymous stream `file` (paid-but-fully-streamable OK; partial/locked skipped). Root and `/music` canonicalize to `/music`. Album page URLs raise actionable errors. Tests: `tests/test_bandcamp_source.py`, routing in `tests/test_source_routing.py`. Follow-up: Isis (`isistheband.bandcamp.com`) was 0 albums under a too-strict `$0`/`freeDownloadPage` gate; relaxed to streamability.
