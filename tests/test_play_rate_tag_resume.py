@@ -31,6 +31,10 @@ class _RecordingPlayer(NullPlayer):
         super().stop()
         self.stops += 1
 
+    def finish(self) -> None:
+        """Simulate the current mix file ending (external player exits)."""
+        self._alive = False
+
 
 def _pair(
     tmp_path: Path,
@@ -760,6 +764,87 @@ def test_skip_advances_to_next_local_mix_without_marking_played(tmp_path: Path) 
     assert laptop.is_playing() is True
     assert next(m for m in laptop.mixes() if m.id == head).played is False
     assert len(recorder.plays) >= 2
+
+
+def test_mix_end_auto_continues_to_next_local_without_skip(
+    tmp_path: Path,
+) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    first = _add_mix(
+        laptop,
+        source,
+        title="Alpha",
+        duration_seconds=3600,
+        platform_id="alpha",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Beta",
+        duration_seconds=3600,
+        platform_id="beta",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Continue",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    laptop.fill_caches()
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    head = assignment.mix_ids[0]
+    nxt = assignment.mix_ids[1]
+    assert {head, nxt} == {first, second}
+
+    laptop.play(intent.id, head)
+    recorder.finish()
+    assert laptop.is_playing() is True
+
+    assert laptop.current_mix() == nxt
+    finished = next(m for m in laptop.mixes() if m.id == head)
+    assert finished.played is True
+    assert finished.skipped is False
+    assert len(laptop.pending_skips()) == 0
+    head_playhead = laptop.playhead(head)
+    assert head_playhead is not None
+    assert head_playhead.position_seconds == 3600.0
+    assert len(recorder.plays) >= 2
+    assert recorder.plays[-1][0] == tmp_path / "laptop" / "blobs" / str(nxt)
+
+
+def test_mix_end_stops_when_no_later_local_release(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder)
+    only = _add_mix(
+        laptop,
+        source,
+        title="Solo",
+        duration_seconds=1800,
+        platform_id="solo",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Solo continue",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.fill_caches()
+    laptop.play(intent.id, only)
+
+    recorder.finish()
+    assert laptop.is_playing() is False
+
+    assert laptop.current_mix() == only
+    finished = next(m for m in laptop.mixes() if m.id == only)
+    assert finished.played is True
+    assert finished.skipped is False
+    assert len(laptop.pending_skips()) == 0
+    head = laptop.playhead(only)
+    assert head is not None
+    assert head.position_seconds == 1800.0
 
 
 class _FakeClock:

@@ -271,6 +271,67 @@ def test_track_end_advances_to_next_catalog_track(tmp_path: Path) -> None:
     assert head.position_seconds == 600.0
 
 
+def test_album_end_auto_continues_to_next_local_release(tmp_path: Path) -> None:
+    recorder = _RecordingPlayer()
+    source = _bandcamp_album_source()
+    mix_url = "https://example.com/set-after-album"
+    source.bytes_by_url[mix_url] = b"mix-audio"
+    laptop, _phone, _ = _pair(tmp_path, source=source, player=recorder)
+    album = laptop.add_artists(["https://chrishuelsbeck.bandcamp.com/music"])[0]
+    other = laptop.add_mix(
+        title="DJ Set",
+        url=mix_url,
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="set-after-album",
+        artist_name="DJ Example",
+    )
+    laptop.rate_mix(album.id, Stars.FIVE)
+    laptop.rate_mix(other.id, Stars.FIVE)
+    # Pick a seed where the album is not last so natural end has a next local.
+    intent = None
+    assignment = None
+    for seed in range(1, 64):
+        candidate = laptop.create_intent(
+            f"Album then mix {seed}",
+            seed=seed,
+            device_hours=[(laptop.device_id, 7200)],
+        )
+        assigned = laptop.assignment(candidate.id)
+        if (
+            assigned is not None
+            and set(assigned.mix_ids) == {album.id, other.id}
+            and assigned.mix_ids.index(album.id) < assigned.mix_ids.index(other.id)
+        ):
+            intent = candidate
+            assignment = assigned
+            break
+    assert intent is not None and assignment is not None
+    laptop.wait_for_fill()
+    laptop.fill_caches()
+
+    laptop.play(intent.id, album.id)
+    # Three tracks: finish each until album completes.
+    recorder.finish()
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == album.id
+    recorder.finish()
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == album.id
+    recorder.finish()
+
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == other.id
+    finished = next(m for m in laptop.mixes() if m.id == album.id)
+    assert finished.played is True
+    assert finished.skipped is False
+    assert len(laptop.pending_skips()) == 0
+    album_head = laptop.playhead(album.id)
+    assert album_head is not None
+    assert album_head.position_seconds == float(album.duration_seconds)
+    assert recorder.plays[-1][0] == tmp_path / "laptop" / "blobs" / str(other.id)
+
+
 def test_listening_past_75_percent_of_album_marks_played(tmp_path: Path) -> None:
     # Summed duration 1800; 75% = 1350.
     source = _bandcamp_album_source()
