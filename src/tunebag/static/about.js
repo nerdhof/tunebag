@@ -109,10 +109,14 @@
       label: "Artist",
       layer: 3,
       col: COL.artist,
-      tip: "A source-platform creator whose uploads become Mixes in the Catalog.",
+      tip: "A source-platform creator whose uploads become Mix or Album Releases in the Catalog.",
       summary:
-        "A source-platform creator whose own uploads are ingested into the Catalog.",
-      points: ["Own uploads become Mixes in the Catalog.", "Delete of an Artist is sticky across Devices."],
+        "A source-platform creator whose uploads are ingested into the Catalog as Mix or Album Releases.",
+      points: [
+        "Listing shape is platform-defined (e.g. SoundCloud/hearthis → Mixes; Bandcamp/YouTube → Albums).",
+        "YouTube (including Music URLs) lists Album Releases from the channel releases tab.",
+        "Delete of an Artist is sticky across Devices.",
+      ],
     },
     {
       id: "sequence",
@@ -134,7 +138,7 @@
         "One audio file treated as a single listening item (typically a DJ set). Budgets and Played use its duration.",
       points: [
         "May carry Tags, Rating, Reject, Played, Last heard, and Playhead.",
-        "Album-style releases are later; not in this map.",
+        "Albums are the multi-track Release kind (Bandcamp/YouTube Artist → Album adapters); this node is the single-file kind.",
       ],
     },
     {
@@ -338,6 +342,10 @@
     {
       title: "Bandcamp track-level UX",
       body: "the Artist → Album adapter is in; later: per-track skip/reject, seek-bar marks, and titles while playing.",
+    },
+    {
+      title: "YouTube anonymous auth escape hatch",
+      body: "the Artist → Album adapter is in (channel releases tab under YouTube, including Music URLs as the same platform); later: cookies when anonymous fetch is blocked.",
     },
     {
       title: "OR tag filters",

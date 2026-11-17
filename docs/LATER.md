@@ -5,6 +5,7 @@ Show these at the end of the hackathon demo (also on `/about#planned`). Not in t
 ## Planned features
 
 - **Bandcamp track-level UX** — the Artist → Album adapter is in; later: per-track skip/reject, seek-bar marks, and titles while playing.
+- **YouTube anonymous auth escape hatch** — the Artist → Album adapter is in (channel releases tab under YouTube, including Music URLs as the same platform); later: cookies when anonymous fetch is blocked.
 - **OR tag filters** on intents (e.g. `tribal OR relaxing`). Own sequence per filter. A mix may appear in multiple intents; deletes wait until no remaining intent on that device wants the file.
 - **Library import** from the laptop: match on-disk files to `~/.music-snd-downloaded.txt` (SoundCloud, hearthis.at, and Bandcamp ids), seed the laptop cache, mark archive ids with no remaining file as already seen. Artist refresh itself is hackathon issue 09 (re-list known artists; do not resurrect committed rejects or old deletes).
 - **Profile import**: SoundCloud and hearthis.at follow lists.

@@ -10,7 +10,7 @@ Canonical vocabulary for the codebase. Align code and docs with these terms.
   _Avoid_: using Mix for multi-track albums
 - **Album** — a Release whose audio is an ordered list of tracks. Duration and size are the sums of its tracks. Played is past 75% of the whole Album timeline (not per track). Ordered track metadata (stable track ids, titles, durations, source permalinks) is Catalog data on the Release; track File bytes are not.
   _Avoid_: treating Album tracks as separate Releases (v1)
-- **Artist** — a source-platform creator whose own uploads are ingested into the Catalog as Releases (Mix or Album, depending on the platform and release shape).
+- **Artist** — a source-platform creator whose uploads are ingested into the Catalog as Releases (Mix or Album). Listing shape is platform-defined (e.g. SoundCloud/hearthis → Mix uploads; Bandcamp/YouTube → Album discography tabs), not a single “own uploads” feed across platforms. YouTube Music URLs are the same platform as YouTube, not a separate Catalog platform.
 - **Catalog** — the projected, fully replicated metadata on every paired device (artists, releases, tags, ratings, rejects, play history, intents, sequences, assignments). Derived only from the Event log.
 - **Tag** — free-text label; suggestions prefer existing tags. Intent membership uses AND of required tags. Empty intent tags mean untagged-only only when the artist filter is also empty; with artists set and tags empty, tagged and untagged releases of those artists are eligible.
 - **Rating** — score 1–5 (UI may show ★). Separate from reject. Unrated releases may still match a tagged intent.
