@@ -33,6 +33,13 @@ class Stars(int, Enum):
     FIVE = 5
 
 
+class ReleaseKind(str, Enum):
+    """Discriminant for a Catalog Release. Wire/API may still say mix."""
+
+    MIX = "mix"
+    ALBUM = "album"
+
+
 class Artist(BaseModel):
     id: UUID = Field(default_factory=new_id)
     platform: Platform
@@ -42,8 +49,18 @@ class Artist(BaseModel):
     added_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class AlbumTrack(BaseModel):
+    """Ordered track metadata on an Album Release (Catalog only; no bytes)."""
+
+    platform_id: str
+    title: str
+    url: str
+    duration_seconds: int
+    size_bytes: int | None = None
+
+
 class Mix(BaseModel):
-    """One audio file treated as a single listening item."""
+    """A Catalog Release (Mix or Album). Wire/API may still say mix."""
 
     id: UUID = Field(default_factory=new_id)
     artist_id: UUID
@@ -53,6 +70,8 @@ class Mix(BaseModel):
     url: str
     duration_seconds: int
     size_bytes: int | None = None
+    kind: ReleaseKind = ReleaseKind.MIX
+    tracks: list[AlbumTrack] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     stars: Stars | None = None
     rejected: bool = False

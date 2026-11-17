@@ -38,6 +38,7 @@ from tunebag.discovery import (
     NullLanDiscovery,
 )
 from tunebag.domain import (
+    AlbumTrack,
     Artist,
     Assignment,
     Device,
@@ -47,6 +48,7 @@ from tunebag.domain import (
     Platform,
     Playhead,
     RejectPending,
+    ReleaseKind,
     Sequence,
     SequenceEntry,
     SkipPending,
@@ -81,6 +83,7 @@ from tunebag.skip import SkipBuffer
 from tunebag.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
+    Upload,
     default_source,
 )
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
@@ -1191,20 +1194,12 @@ class DeviceAgent:
                     )
                 kept = 0
                 for upload in listing.uploads:
-                    if upload.duration_seconds < min_duration_seconds:
+                    mix = _mix_from_upload(artist.id, upload, min_duration_seconds)
+                    if mix is None:
                         continue
-                    key = (upload.platform, upload.platform_id)
+                    key = (mix.platform, mix.platform_id)
                     if key in known:
                         continue
-                    mix = Mix(
-                        artist_id=artist.id,
-                        platform=upload.platform,
-                        platform_id=upload.platform_id,
-                        title=upload.title,
-                        url=upload.url,
-                        duration_seconds=upload.duration_seconds,
-                        size_bytes=upload.size_bytes,
-                    )
                     self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
                     known.add(key)
                     added.append(self.catalog.mixes[mix.id])
@@ -1253,20 +1248,12 @@ class DeviceAgent:
             with self._view_notice_batch():
                 kept = 0
                 for upload in listing.uploads:
-                    if upload.duration_seconds < min_duration_seconds:
+                    mix = _mix_from_upload(artist.id, upload, min_duration_seconds)
+                    if mix is None:
                         continue
-                    key = (upload.platform, upload.platform_id)
+                    key = (mix.platform, mix.platform_id)
                     if key in known:
                         continue
-                    mix = Mix(
-                        artist_id=artist.id,
-                        platform=upload.platform,
-                        platform_id=upload.platform_id,
-                        title=upload.title,
-                        url=upload.url,
-                        duration_seconds=upload.duration_seconds,
-                        size_bytes=upload.size_bytes,
-                    )
                     self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
                     known.add(key)
                     added.append(self.catalog.mixes[mix.id])
@@ -3150,6 +3137,20 @@ class DeviceAgent:
                 tags = list(self._pending_tags[mix_id])
             if mix_id in self._pending_stars:
                 stars = self._pending_stars[mix_id]
+            kind_raw = payload.get("kind", ReleaseKind.MIX.value)
+            kind = ReleaseKind(kind_raw)
+            tracks = [
+                AlbumTrack(
+                    platform_id=str(t["platform_id"]),
+                    title=str(t["title"]),
+                    url=str(t["url"]),
+                    duration_seconds=int(t["duration_seconds"]),
+                    size_bytes=(
+                        None if t.get("size_bytes") is None else int(t["size_bytes"])
+                    ),
+                )
+                for t in payload.get("tracks", [])
+            ]
             mix = Mix(
                 id=mix_id,
                 artist_id=artist_id,
@@ -3159,6 +3160,8 @@ class DeviceAgent:
                 url=payload["url"],
                 duration_seconds=int(payload["duration_seconds"]),
                 size_bytes=size_bytes,
+                kind=kind,
+                tracks=tracks,
                 tags=tags,
                 stars=stars,
                 rejected=(
@@ -3489,6 +3492,54 @@ def _device_hours_from_spec(entries: list[DeviceHoursSpec]) -> list[DeviceHours]
     return hours
 
 
+def _mix_from_upload(
+    artist_id: UUID,
+    upload: Upload,
+    min_duration_seconds: int,
+) -> Mix | None:
+    """Build a Catalog Release from a source upload, or None if filtered out."""
+    if upload.tracks:
+        if len(upload.tracks) < 2:
+            return None
+        duration_seconds = sum(t.duration_seconds for t in upload.tracks)
+        if duration_seconds < min_duration_seconds:
+            return None
+        sizes = [t.size_bytes for t in upload.tracks]
+        size_bytes = sum(sizes) if all(s is not None for s in sizes) else None
+        return Mix(
+            artist_id=artist_id,
+            platform=upload.platform,
+            platform_id=upload.platform_id,
+            title=upload.title,
+            url=upload.url,
+            duration_seconds=duration_seconds,
+            size_bytes=size_bytes,
+            kind=ReleaseKind.ALBUM,
+            tracks=[
+                AlbumTrack(
+                    platform_id=t.platform_id,
+                    title=t.title,
+                    url=t.url,
+                    duration_seconds=t.duration_seconds,
+                    size_bytes=t.size_bytes,
+                )
+                for t in upload.tracks
+            ],
+        )
+    if upload.duration_seconds < min_duration_seconds:
+        return None
+    return Mix(
+        artist_id=artist_id,
+        platform=upload.platform,
+        platform_id=upload.platform_id,
+        title=upload.title,
+        url=upload.url,
+        duration_seconds=upload.duration_seconds,
+        size_bytes=upload.size_bytes,
+        kind=ReleaseKind.MIX,
+    )
+
+
 def _mix_added_payload(mix: Mix) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": str(mix.id),
@@ -3498,9 +3549,25 @@ def _mix_added_payload(mix: Mix) -> dict[str, Any]:
         "title": mix.title,
         "url": mix.url,
         "duration_seconds": mix.duration_seconds,
+        "kind": mix.kind.value,
     }
     if mix.size_bytes is not None:
         payload["size_bytes"] = int(mix.size_bytes)
+    if mix.tracks:
+        payload["tracks"] = [
+            {
+                "platform_id": t.platform_id,
+                "title": t.title,
+                "url": t.url,
+                "duration_seconds": t.duration_seconds,
+                **(
+                    {"size_bytes": int(t.size_bytes)}
+                    if t.size_bytes is not None
+                    else {}
+                ),
+            }
+            for t in mix.tracks
+        ]
     return payload
 
 

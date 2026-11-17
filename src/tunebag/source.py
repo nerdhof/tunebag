@@ -20,6 +20,17 @@ DEFAULT_MIN_DURATION_SECONDS = 20 * 60
 
 
 @dataclass(frozen=True)
+class Track:
+    """One ordered track on an album-shaped upload listing."""
+
+    platform_id: str
+    title: str
+    url: str
+    duration_seconds: int
+    size_bytes: int | None = None
+
+
+@dataclass(frozen=True)
 class Upload:
     platform: Platform
     platform_id: str
@@ -27,6 +38,7 @@ class Upload:
     url: str
     duration_seconds: int
     size_bytes: int | None = None
+    tracks: tuple[Track, ...] = ()
 
 
 @dataclass(frozen=True)
