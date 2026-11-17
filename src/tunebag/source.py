@@ -460,10 +460,12 @@ class CompositeSource:
         soundcloud: Source | None = None,
         hearthis: Source | None = None,
         bandcamp: Source | None = None,
+        youtube: Source | None = None,
     ) -> None:
         self._soundcloud: Source = soundcloud or SoundCloudSource()
         self._hearthis: Source = hearthis or HearthisSource()
         self._bandcamp: Source = bandcamp or BandcampSource()
+        self._youtube: Source = youtube or YouTubeSource()
 
     def list_uploads(self, artist_url: str) -> ArtistListing:
         return self._for_url(artist_url).list_uploads(artist_url)
@@ -487,9 +489,12 @@ class CompositeSource:
             return self._hearthis
         if "bandcamp.com" in host:
             return self._bandcamp
+        if "youtube.com" in host:
+            return self._youtube
         raise ValueError(
             f"unsupported artist URL host {host!r}; "
-            "use soundcloud.com, hearthis.at, or *.bandcamp.com"
+            "use soundcloud.com, hearthis.at, *.bandcamp.com, "
+            "youtube.com, or music.youtube.com"
         )
 
 

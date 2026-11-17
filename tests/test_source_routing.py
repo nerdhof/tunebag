@@ -74,13 +74,42 @@ def test_composite_routes_bandcamp_artist_hosts() -> None:
     assert ht.listed == []
 
 
+def test_composite_routes_youtube_hosts() -> None:
+    sc = _Stub("sc")
+    ht = _Stub("ht")
+    bc = _Stub("bc")
+    yt = _Stub("yt")
+    source = CompositeSource(soundcloud=sc, hearthis=ht, bandcamp=bc, youtube=yt)
+
+    source.list_uploads("https://www.youtube.com/@TOOLmusic")
+    source.list_uploads("https://music.youtube.com/@TOOLmusic")
+    source.fetch_bytes("https://www.youtube.com/watch?v=abc123")
+    source.fetch_bytes("https://music.youtube.com/watch?v=def456")
+
+    assert yt.listed == [
+        "https://www.youtube.com/@TOOLmusic",
+        "https://music.youtube.com/@TOOLmusic",
+    ]
+    assert yt.fetched == [
+        "https://www.youtube.com/watch?v=abc123",
+        "https://music.youtube.com/watch?v=def456",
+    ]
+    assert sc.listed == []
+    assert ht.listed == []
+    assert bc.listed == []
+
+
 def test_composite_rejects_unknown_host() -> None:
     source = CompositeSource(
         soundcloud=_Stub("sc"),
         hearthis=_Stub("ht"),
         bandcamp=_Stub("bc"),
+        youtube=_Stub("yt"),
     )
-    with pytest.raises(ValueError, match="unsupported artist URL host"):
+    with pytest.raises(
+        ValueError,
+        match=r"unsupported artist URL host.*youtube\.com",
+    ):
         source.list_uploads("https://mixcloud.com/artist")
 
 

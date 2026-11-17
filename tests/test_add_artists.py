@@ -108,6 +108,51 @@ def test_adding_same_artist_url_again_does_not_duplicate() -> None:
     assert second == []
 
 
+def test_youtube_host_and_tab_forms_dedupe_to_one_artist() -> None:
+    """Music host / bare handle /releases normalize like Bandcamp root vs /music."""
+    album = Upload(
+        platform=Platform.YOUTUBE,
+        platform_id="OLAK5uy_examplealbumid00000000000000",
+        title="Lateralus",
+        url="https://www.youtube.com/playlist?list=OLAK5uy_examplealbumid00000000000000",
+        duration_seconds=3600,
+        tracks=(),
+    )
+    music_url = "https://music.youtube.com/@TOOLmusic"
+    releases_url = "https://www.youtube.com/@TOOLmusic/releases"
+    source = FakeSource()
+    source.add_listing(
+        music_url,
+        ArtistListing(
+            platform=Platform.YOUTUBE,
+            platform_id="UCtoolchannel000000000000",
+            name="TOOL",
+            url=music_url,
+            uploads=[album],
+        ),
+    )
+    source.add_listing(
+        releases_url,
+        ArtistListing(
+            platform=Platform.YOUTUBE,
+            platform_id="UCtoolchannel000000000000",
+            name="TOOL",
+            url=releases_url,
+            uploads=[album],
+        ),
+    )
+    laptop = DeviceAgent("laptop", source=source)
+
+    first = laptop.add_artists([music_url])
+    artist_id = laptop.artists()[0].id
+    second = laptop.add_artists([releases_url])
+
+    assert [a.id for a in laptop.artists()] == [artist_id]
+    assert len(laptop.mixes()) == 1
+    assert second == []
+    assert [m.id for m in laptop.mixes()] == [first[0].id]
+
+
 def test_readding_artist_url_adds_only_new_uploads() -> None:
     source = FakeSource()
     source.add_listing(

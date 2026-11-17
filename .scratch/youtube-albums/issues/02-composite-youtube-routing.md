@@ -4,9 +4,13 @@
 
 **Blocked by:** 01: YouTube Artist Source lists Album Releases
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] CompositeSource routes youtube.com and music.youtube.com list/fetch to the YouTube Source.
-- [ ] Unsupported hosts still raise an actionable unsupported-host error (message includes YouTube in the allow list).
-- [ ] Artist URL normalization for YouTube participates in add/refresh dedupe the same way Bandcamp normalization does.
-- [ ] Routing tests cover YouTube hosts without hitting the network.
+- [x] CompositeSource routes youtube.com and music.youtube.com list/fetch to the YouTube Source.
+- [x] Unsupported hosts still raise an actionable unsupported-host error (message includes YouTube in the allow list).
+- [x] Artist URL normalization for YouTube participates in add/refresh dedupe the same way Bandcamp normalization does.
+- [x] Routing tests cover YouTube hosts without hitting the network.
+
+## Comments
+
+- Wired `youtube=` into `CompositeSource` (default `YouTubeSource`); hosts matching `youtube.com` (incl. `music.youtube.com`) dispatch list+fetch. Unsupported-host allow-list message includes YouTube. Agent `_normalize_artist_url` also applies `youtube_normalize_artist_url` so Music/host/tab forms dedupe. Tests in `tests/test_source_routing.py` and thin dedupe in `tests/test_add_artists.py`.
