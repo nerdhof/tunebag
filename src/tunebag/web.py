@@ -80,6 +80,7 @@ class DeviceHoursBody(BaseModel):
 class CreateIntentBody(BaseModel):
     name: str
     tags: list[str] = Field(default_factory=list)
+    artist_ids: list[UUID] = Field(default_factory=list)
     distribution: StarDistribution | None = None
     seed: int | None = None
     device_hours: list[DeviceHoursBody] = Field(default_factory=list)
@@ -88,6 +89,7 @@ class CreateIntentBody(BaseModel):
 class UpdateIntentBody(BaseModel):
     name: str | None = None
     tags: list[str] | None = None
+    artist_ids: list[UUID] | None = None
     distribution: StarDistribution | None = None
     device_hours: list[DeviceHoursBody] | None = None
 
@@ -835,6 +837,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "id": str(intent.id),
                     "name": intent.name,
                     "tags": intent.tags,
+                    "artist_ids": [str(artist_id) for artist_id in intent.artist_ids],
                     "distribution": intent.distribution.model_dump(),
                     "seed": intent.seed,
                     "device_hours": [_hours_json(dh) for dh in intent.device_hours],
@@ -852,6 +855,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             intent = agent.create_intent(
                 name,
                 tags=body.tags,
+                artist_ids=body.artist_ids,
                 distribution=body.distribution,
                 seed=body.seed,
                 device_hours=[_hours_spec(dh) for dh in body.device_hours],
@@ -871,6 +875,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         if (
             body.name is None
             and body.tags is None
+            and body.artist_ids is None
             and body.distribution is None
             and body.device_hours is None
         ):
@@ -883,6 +888,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 intent_id,
                 name=name,
                 tags=body.tags,
+                artist_ids=body.artist_ids,
                 distribution=body.distribution,
                 device_hours=(
                     [_hours_spec(dh) for dh in body.device_hours]

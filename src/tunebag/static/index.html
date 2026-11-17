@@ -169,8 +169,9 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              An intent is a shared plan: tag filter + rating distribution. Assign hours (and optional expiry) per
-              device after creating; both share one seeded sequence, and the smaller budget is the opening stretch.
+              An intent is a shared plan: tag filter, optional artist filter, and rating distribution. Assign hours
+              (and optional expiry) per device after creating; both share one seeded sequence, and the smaller budget
+              is the opening stretch.
             </span>
           </span>
         </h2>
@@ -184,15 +185,32 @@
                 Name
                 <input id="intent-name" type="text" required placeholder="Deep house commute" />
               </label>
-              <label class="inline-field grow" title="Only mixes with these tags are eligible">
+              <label
+                class="inline-field grow"
+                title="Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged."
+              >
                 Tags
                 <input
                   id="intent-tags"
                   type="text"
                   placeholder="deep, house"
                   autocomplete="off"
-                  title="Only mixes with these tags are eligible"
+                  title="Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged."
                 />
+              </label>
+            </div>
+            <div class="form-row">
+              <label
+                class="inline-field grow"
+                title="Optional. Leave empty for no artist filter. Selected artists match by OR."
+              >
+                Artists
+                <select
+                  id="intent-artists"
+                  multiple
+                  size="4"
+                  title="Optional. Leave empty for no artist filter. Selected artists match by OR."
+                ></select>
               </label>
             </div>
             <details id="intent-chances">

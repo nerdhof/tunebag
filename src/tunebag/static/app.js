@@ -152,6 +152,8 @@ function bindCollapsibleAdd(form, {
 let intentCollapsible = null;
 /** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
 let artistsCollapsible = null;
+/** @type {Map<string, string>} */
+let artistNameById = new Map();
 /** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
 let pairCollapsible = null;
 
@@ -539,10 +541,56 @@ function setChancesFromDist(dist) {
   writeChances(chances);
 }
 
+function clearIntentArtistSelection() {
+  const select = document.getElementById("intent-artists");
+  if (!select) return;
+  for (const option of select.options) {
+    option.selected = false;
+  }
+}
+
+function selectedIntentArtistIds() {
+  const select = document.getElementById("intent-artists");
+  if (!select) return [];
+  return Array.from(select.selectedOptions).map((option) => option.value);
+}
+
+function setIntentArtistSelection(artistIds) {
+  const select = document.getElementById("intent-artists");
+  if (!select) return;
+  const wanted = new Set(artistIds || []);
+  for (const option of select.options) {
+    option.selected = wanted.has(option.value);
+  }
+}
+
+async function refreshIntentArtistOptions() {
+  const select = document.getElementById("intent-artists");
+  if (!select) return;
+  const previouslySelected = new Set(selectedIntentArtistIds());
+  try {
+    const res = await fetch("/api/artists");
+    const data = await res.json();
+    const artists = data.artists || [];
+    artistNameById = new Map(artists.map((artist) => [artist.id, artist.name]));
+    select.innerHTML = "";
+    for (const artist of artists) {
+      const option = document.createElement("option");
+      option.value = artist.id;
+      option.textContent = artist.name;
+      option.selected = previouslySelected.has(artist.id);
+      select.appendChild(option);
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
 function clearIntentFormFields() {
   document.getElementById("intent-edit-id").value = "";
   document.getElementById("intent-name").value = "";
   document.getElementById("intent-tags").value = "";
+  clearIntentArtistSelection();
   writeChances({ ...CHANCE_DEFAULTS });
   document.getElementById("intent-chances").open = false;
 }
@@ -564,6 +612,7 @@ function beginEditIntent(intent) {
   document.getElementById("intent-edit-id").value = intent.id;
   document.getElementById("intent-name").value = intent.name;
   document.getElementById("intent-tags").value = intent.tags.join(", ");
+  setIntentArtistSelection(intent.artist_ids || []);
   setChancesFromDist(intent.distribution);
   document.getElementById("intent-chances").open = true;
   intentCollapsible?.expand({ submitLabel: "Save changes" });
@@ -2330,6 +2379,7 @@ function renderDeviceHoursPanel(intent, assignments = []) {
 async function refreshIntents({ force = false } = {}) {
   const list = document.getElementById("intent-list");
   if (!force && focusInside(list)) return;
+  await refreshIntentArtistOptions();
   const res = await fetch("/api/intents");
   const data = await res.json();
   list.innerHTML = "";
@@ -2438,11 +2488,17 @@ async function refreshIntents({ force = false } = {}) {
     const tagsEl = document.createElement("span");
     tagsEl.className = "intent-meta-tags";
     tagsEl.textContent = `Tags: ${intent.tags.length ? intent.tags.join(", ") : "-"}`;
+    const artistsEl = document.createElement("span");
+    artistsEl.className = "intent-meta-artists";
+    const artistIds = intent.artist_ids || [];
+    const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
+    artistsEl.textContent = `Artists: ${artistNames.length ? artistNames.join(", ") : "-"}`;
     const chancesEl = document.createElement("span");
     chancesEl.className = "intent-meta-chances has-tip";
     chancesEl.textContent = `Rating chances: ${formatChanceBlocks(intent.distribution)}`;
     chancesEl.dataset.tip = formatChancePercents(intent.distribution);
     meta.appendChild(tagsEl);
+    meta.appendChild(artistsEl);
     meta.appendChild(chancesEl);
     li.appendChild(meta);
 
@@ -2943,6 +2999,7 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
     document.getElementById("artist-urls").value = "";
     artistsCollapsible?.collapse();
     await refreshMixes();
+    await refreshIntentArtistOptions();
   } catch (err) {
     status.textContent = "Add artists request failed";
     console.error(err);
@@ -2960,6 +3017,7 @@ document.getElementById("refresh-all-artists").addEventListener("click", async (
     }
     status.textContent = `Refreshed · ${data.added} new mix(es) · ${data.artists} artists`;
     await refreshMixes();
+    await refreshIntentArtistOptions();
   } catch (err) {
     status.textContent = "Refresh artists request failed";
     console.error(err);
@@ -2998,6 +3056,7 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
   const body = {
     name,
     tags,
+    artist_ids: selectedIntentArtistIds(),
     distribution: {
       five: chances["chance-five"] / 100,
       four: chances["chance-four"] / 100,

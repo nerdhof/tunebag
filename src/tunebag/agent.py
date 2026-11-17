@@ -2135,6 +2135,7 @@ class DeviceAgent:
         name: str,
         *,
         tags: list[str] | None = None,
+        artist_ids: list[UUID] | None = None,
         distribution: StarDistribution | None = None,
         seed: int | None = None,
         device_hours: list[DeviceHoursSpec] | None = None,
@@ -2146,6 +2147,7 @@ class DeviceAgent:
             id=intent_id if intent_id is not None else new_id(),
             name=name,
             tags=list(tags or []),
+            artist_ids=list(artist_ids or []),
             distribution=distribution or StarDistribution(),
             device_hours=hours,
             seed=seed if seed is not None else random.randrange(1 << 31),
@@ -2210,6 +2212,7 @@ class DeviceAgent:
         *,
         name: str | None = None,
         tags: list[str] | None = None,
+        artist_ids: list[UUID] | None = None,
         distribution: StarDistribution | None = None,
         device_hours: list[DeviceHoursSpec] | None = None,
     ) -> Intent:
@@ -2222,6 +2225,8 @@ class DeviceAgent:
             updates["name"] = name
         if tags is not None:
             updates["tags"] = list(tags)
+        if artist_ids is not None:
+            updates["artist_ids"] = list(artist_ids)
         if distribution is not None:
             updates["distribution"] = distribution
         if device_hours is not None:
@@ -3843,6 +3848,7 @@ def _intent_payload(
         "id": str(intent.id),
         "name": intent.name,
         "tags": list(intent.tags),
+        "artist_ids": [str(artist_id) for artist_id in intent.artist_ids],
         "distribution": {
             "five": intent.distribution.five,
             "four": intent.distribution.four,
@@ -3899,6 +3905,7 @@ def _intent_from_payload(payload: dict[str, Any]) -> Intent:
         id=UUID(payload["id"]),
         name=payload["name"],
         tags=list(payload.get("tags") or []),
+        artist_ids=[UUID(artist_id) for artist_id in payload.get("artist_ids") or []],
         distribution=_distribution_from_payload(dist),
         device_hours=[
             DeviceHours(

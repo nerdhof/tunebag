@@ -1,4 +1,4 @@
-"""Build a seeded intent sequence from tag filter + star distribution.
+"""Build a seeded intent sequence from tag/artist filter + star distribution.
 
 Probabilities are always used as draw chances (any budget). Empty buckets are
 skipped and remaining probabilities are rescaled. The sequence fills until
@@ -36,21 +36,33 @@ def bucket_for(mix: Mix) -> StarBucket:
     return StarBucket.FIVE
 
 
-def matches_filter(mix: Mix, tags: list[str]) -> bool:
+def matches_filter(
+    mix: Mix,
+    tags: list[str],
+    artist_ids: list[UUID] | None = None,
+) -> bool:
     if mix.rejected:
         return False
-    if not tags:
+    artists = list(artist_ids or [])
+    if artists and mix.artist_id not in set(artists):
+        return False
+    if tags:
+        return set(tags).issubset(set(mix.tags))
+    # Empty tags: untagged-only when no artist filter; otherwise all tags OK.
+    if not artists:
         return len(mix.tags) == 0
-    required = set(tags)
-    return required.issubset(set(mix.tags))
+    return True
 
 
 def eligible_by_bucket(
-    mixes: list[Mix], tags: list[str], rng: random.Random
+    mixes: list[Mix],
+    tags: list[str],
+    rng: random.Random,
+    artist_ids: list[UUID] | None = None,
 ) -> dict[StarBucket, list[Mix]]:
     buckets: dict[StarBucket, list[Mix]] = defaultdict(list)
     for mix in mixes:
-        if matches_filter(mix, tags):
+        if matches_filter(mix, tags, artist_ids):
             buckets[bucket_for(mix)].append(mix)
     for bucket in buckets:
         # Fresh first; played or skipped mixes sit at the back.
@@ -88,7 +100,7 @@ def _draw_bucket(
 def build_sequence(intent: Intent, mixes: list[Mix]) -> Sequence:
     """Draw mixes until cumulative duration is at least max device budget."""
     rng = random.Random(intent.seed)
-    available = eligible_by_bucket(mixes, intent.tags, rng)
+    available = eligible_by_bucket(mixes, intent.tags, rng, intent.artist_ids)
     weights = intent.distribution.as_map()
     entries: list[SequenceEntry] = []
     used_seconds = 0

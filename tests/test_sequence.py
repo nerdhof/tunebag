@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from tunebag.agent import _intent_from_payload, _intent_payload
 from tunebag.domain import (
     DeviceHours,
     Intent,
@@ -14,7 +15,7 @@ from tunebag.domain import (
     StarBucket,
     Stars,
 )
-from tunebag.sequence import assign_by_budget, build_sequence
+from tunebag.sequence import assign_by_budget, build_sequence, matches_filter
 
 
 def _five_star_mixes(n: int) -> list[Mix]:
@@ -112,3 +113,156 @@ def test_build_sequence_fills_at_least_budget_with_overshoot() -> None:
         next(m.duration_seconds for m in mixes if m.id == e.mix_id) for e in entries
     )
     assert total == 8 * 3600 + 20 * 60
+
+
+def test_matches_filter_empty_tags_untagged_only_without_artists() -> None:
+    artist = uuid4()
+    untagged = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="u",
+        title="U",
+        url="https://example.com/u",
+        duration_seconds=60,
+    )
+    tagged = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="t",
+        title="T",
+        url="https://example.com/t",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    assert matches_filter(untagged, []) is True
+    assert matches_filter(tagged, []) is False
+
+
+def test_matches_filter_empty_tags_with_artist_allows_tagged_and_untagged() -> None:
+    artist_a = uuid4()
+    artist_b = uuid4()
+    tagged_a = Mix(
+        artist_id=artist_a,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="ta",
+        title="TA",
+        url="https://example.com/ta",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    untagged_a = Mix(
+        artist_id=artist_a,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="ua",
+        title="UA",
+        url="https://example.com/ua",
+        duration_seconds=60,
+    )
+    other = Mix(
+        artist_id=artist_b,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="ob",
+        title="OB",
+        url="https://example.com/ob",
+        duration_seconds=60,
+    )
+    assert matches_filter(tagged_a, [], [artist_a]) is True
+    assert matches_filter(untagged_a, [], [artist_a]) is True
+    assert matches_filter(other, [], [artist_a]) is False
+
+
+def test_matches_filter_tags_and_artist_intersection() -> None:
+    artist_a = uuid4()
+    artist_b = uuid4()
+    deep_a = Mix(
+        artist_id=artist_a,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="da",
+        title="DA",
+        url="https://example.com/da",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    house_a = Mix(
+        artist_id=artist_a,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="ha",
+        title="HA",
+        url="https://example.com/ha",
+        duration_seconds=60,
+        tags=["house"],
+    )
+    deep_b = Mix(
+        artist_id=artist_b,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="db",
+        title="DB",
+        url="https://example.com/db",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    assert matches_filter(deep_a, ["deep"], [artist_a]) is True
+    assert matches_filter(house_a, ["deep"], [artist_a]) is False
+    assert matches_filter(deep_b, ["deep"], [artist_a]) is False
+
+
+def test_build_sequence_empty_tags_with_artist_fills_tagged_and_untagged() -> None:
+    artist_a = uuid4()
+    artist_b = uuid4()
+    mixes = [
+        Mix(
+            artist_id=artist_a,
+            platform=Platform.SOUNDCLOUD,
+            platform_id="tagged",
+            title="Tagged",
+            url="https://example.com/tagged",
+            duration_seconds=3600,
+            tags=["deep"],
+            stars=Stars.FIVE,
+        ),
+        Mix(
+            artist_id=artist_a,
+            platform=Platform.SOUNDCLOUD,
+            platform_id="untagged",
+            title="Untagged",
+            url="https://example.com/untagged",
+            duration_seconds=3600,
+            stars=Stars.FIVE,
+        ),
+        Mix(
+            artist_id=artist_b,
+            platform=Platform.SOUNDCLOUD,
+            platform_id="other",
+            title="Other",
+            url="https://example.com/other",
+            duration_seconds=3600,
+            stars=Stars.FIVE,
+        ),
+    ]
+    intent = Intent(
+        name="Artist A",
+        tags=[],
+        artist_ids=[artist_a],
+        seed=1,
+        device_hours=[DeviceHours(device_id=uuid4(), budget_seconds=7200)],
+    )
+    ids = {e.mix_id for e in build_sequence(intent, mixes).entries}
+    assert ids == {mixes[0].id, mixes[1].id}
+
+
+def test_intent_payload_roundtrip_and_missing_artist_ids_default() -> None:
+    intent = Intent(
+        name="With artists",
+        tags=["deep"],
+        artist_ids=[uuid4(), uuid4()],
+        seed=7,
+        device_hours=[],
+    )
+    restored = _intent_from_payload(_intent_payload(intent))
+    assert restored.artist_ids == intent.artist_ids
+    assert restored.tags == intent.tags
+
+    legacy = _intent_payload(intent)
+    del legacy["artist_ids"]
+    from_legacy = _intent_from_payload(legacy)
+    assert from_legacy.artist_ids == []

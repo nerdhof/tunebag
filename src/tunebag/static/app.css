@@ -477,6 +477,15 @@ select {
   padding-right: 1.75rem;
 }
 
+#intent-artists {
+  appearance: auto;
+  height: auto;
+  min-height: calc(var(--control-height) * 3);
+  line-height: 1.3;
+  padding: 0.35rem 0.5rem;
+  background-image: none;
+}
+
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -611,6 +620,7 @@ button:disabled {
 }
 
 #intent-list .intent-meta-tags,
+#intent-list .intent-meta-artists,
 #intent-list .intent-meta-chances {
   min-width: 0;
 }

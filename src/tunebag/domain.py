@@ -144,11 +144,12 @@ class DeviceHours(BaseModel):
 
 
 class Intent(BaseModel):
-    """Shared plan: tag filter + star distribution. Devices attach hours/expiry."""
+    """Shared plan: tag + artist filter + star distribution. Devices attach hours/expiry."""
 
     id: UUID = Field(default_factory=new_id)
     name: str
-    tags: list[str] = Field(default_factory=list)  # AND; empty = untagged / exploratory
+    tags: list[str] = Field(default_factory=list)  # AND; empty+no artists = untagged only
+    artist_ids: list[UUID] = Field(default_factory=list)  # OR; empty = no artist filter
     distribution: StarDistribution = Field(default_factory=StarDistribution)
     device_hours: list[DeviceHours] = Field(default_factory=list)
     seed: int

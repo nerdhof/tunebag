@@ -11,7 +11,7 @@ Shared understanding locked 2026-11-13. Do not reopen unless product decisions c
 | Sequence | Seeded ordered list of mixes for one intent, built from the tag filter and rating distribution. Shared across devices. |
 | Assignment | Which device hours cover which prefix of the sequence. Separate from whether the file is on disk. |
 | File | Audio bytes present on a device. Local only. |
-| Intent | Tag filter + rating distribution. Device hours and expiry hang off the intent. |
+| Intent | Tag filter + optional artist filter + rating distribution. Device hours and expiry hang off the intent. |
 | Reject | Separate from rating. After a 20s local undo window, every device deletes the file and the mix never re-enters a sequence. |
 
 Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating distribution is six draw chances, 5★ through 1★ plus unrated, defaulting to 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3.
@@ -27,7 +27,7 @@ Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating d
 
 ### Intents
 
-- Tags on an intent mean AND (mix has all of them). Empty filter = untagged (exploratory).
+- Tags on an intent mean AND (mix has all of them). Empty tags with empty artist filter = untagged only (exploratory). Empty tags with artists set = that artist’s tagged and untagged releases. Artist filter is OR on `artist_ids`.
 - Rating distribution is always a draw probability, at any budget.
 - One seeded sequence fills until its duration is at least the largest device budget, and may include the mix that crosses that budget. Smaller budgets take the prefix (2h phone ≡ first 2h of 8h laptop).
 - Empty bucket → skip and rescale remaining probabilities.

@@ -71,6 +71,7 @@ def test_intent_has_name_tags_and_default_star_chances() -> None:
 
     assert intent.name == "Deep house"
     assert intent.tags == ["deep", "house"]
+    assert intent.artist_ids == []
     assert intent.distribution.five == 0.3
     assert intent.distribution.four == 0.2
     assert intent.distribution.three == 0.1
@@ -125,6 +126,74 @@ def test_several_tags_require_all_empty_tags_match_only_untagged() -> None:
     explor_seq = laptop.sequence(exploratory.id)
     assert explor_seq is not None
     assert [e.mix_id for e in explor_seq.entries] == [untagged]
+
+
+def test_artist_filter_excludes_other_artists() -> None:
+    laptop, _phone = _pair()
+    kept = laptop.add_mix(
+        title="Kept",
+        url="https://example.com/kept",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="kept",
+        artist_name="Artist A",
+    )
+    laptop.rate_mix(kept.id, Stars.FIVE)
+    other = laptop.add_mix(
+        title="Other",
+        url="https://example.com/other",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="other",
+        artist_name="Artist B",
+    )
+    laptop.rate_mix(other.id, Stars.FIVE)
+
+    intent = laptop.create_intent(
+        "Artist A",
+        tags=[],
+        artist_ids=[kept.artist_id],
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    seq = laptop.sequence(intent.id)
+    assert seq is not None
+    assert [e.mix_id for e in seq.entries] == [kept.id]
+
+
+def test_update_intent_artist_ids() -> None:
+    laptop, _phone = _pair()
+    mix_a = laptop.add_mix(
+        title="A",
+        url="https://example.com/a",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="a",
+        artist_name="Artist A",
+    )
+    laptop.rate_mix(mix_a.id, Stars.FIVE)
+    mix_b = laptop.add_mix(
+        title="B",
+        url="https://example.com/b",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="b",
+        artist_name="Artist B",
+    )
+    laptop.rate_mix(mix_b.id, Stars.FIVE)
+
+    intent = laptop.create_intent(
+        "Switch artists",
+        tags=[],
+        artist_ids=[mix_a.artist_id],
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    assert [e.mix_id for e in laptop.sequence(intent.id).entries] == [mix_a.id]
+
+    updated = laptop.update_intent(intent.id, artist_ids=[mix_b.artist_id])
+    assert updated.artist_ids == [mix_b.artist_id]
+    assert [e.mix_id for e in laptop.sequence(intent.id).entries] == [mix_b.id]
 
 
 def test_rejected_excluded_and_empty_bucket_skipped() -> None:
