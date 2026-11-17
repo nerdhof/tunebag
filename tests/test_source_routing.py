@@ -55,10 +55,33 @@ def test_composite_routes_soundcloud_and_hearthis() -> None:
     assert ht.fetched == ["https://hearthis.at/dj-y/track/"]
 
 
+def test_composite_routes_bandcamp_artist_hosts() -> None:
+    sc = _Stub("sc")
+    ht = _Stub("ht")
+    bc = _Stub("bc")
+    source = CompositeSource(soundcloud=sc, hearthis=ht, bandcamp=bc)
+
+    source.list_uploads("https://chrishuelsbeck.bandcamp.com/music")
+    source.list_uploads("https://chrishuelsbeck.bandcamp.com")
+    source.fetch_bytes("https://chrishuelsbeck.bandcamp.com/track/scores")
+
+    assert bc.listed == [
+        "https://chrishuelsbeck.bandcamp.com/music",
+        "https://chrishuelsbeck.bandcamp.com",
+    ]
+    assert bc.fetched == ["https://chrishuelsbeck.bandcamp.com/track/scores"]
+    assert sc.listed == []
+    assert ht.listed == []
+
+
 def test_composite_rejects_unknown_host() -> None:
-    source = CompositeSource(soundcloud=_Stub("sc"), hearthis=_Stub("ht"))
+    source = CompositeSource(
+        soundcloud=_Stub("sc"),
+        hearthis=_Stub("ht"),
+        bandcamp=_Stub("bc"),
+    )
     with pytest.raises(ValueError, match="unsupported artist URL host"):
-        source.list_uploads("https://bandcamp.com/artist")
+        source.list_uploads("https://mixcloud.com/artist")
 
 
 def test_soundcloud_upload_reads_optional_size_bytes() -> None:

@@ -336,8 +336,8 @@
    */
   const PLANNED_FEATURES = [
     {
-      title: "Bandcamp albums",
-      body: "as an alternative listening primitive. One album = one item; duration = sum of tracks; played = past 75% of the album as a whole.",
+      title: "Bandcamp track-level UX",
+      body: "the Artist → Album adapter is in; later: per-track skip/reject, seek-bar marks, and titles while playing.",
     },
     {
       title: "OR tag filters",

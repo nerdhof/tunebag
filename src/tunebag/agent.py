@@ -84,6 +84,7 @@ from tunebag.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
     Upload,
+    bandcamp_normalize_artist_url,
     default_source,
 )
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
@@ -3718,7 +3719,8 @@ class DeviceAgent:
 
 
 def _normalize_artist_url(url: str) -> str:
-    return url.strip().rstrip("/")
+    cleaned = url.strip().rstrip("/")
+    return bandcamp_normalize_artist_url(cleaned) or cleaned
 
 
 def _as_naive_utc(dt: datetime | None) -> datetime | None:
