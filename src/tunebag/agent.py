@@ -240,6 +240,8 @@ class DeviceAgent:
         self._playback_position: float = 0.0
         self._play_anchor_position: float = 0.0
         self._play_anchor_at: datetime | None = None
+        # Album local supervision: which Catalog track file the player is on.
+        self._album_play_index: int | None = None
         # Background fill: single-flight with coalesce so HTTP can return immediately.
         self._fill_lock = threading.Lock()
         self._fill_in_progress = False
@@ -698,17 +700,15 @@ class DeviceAgent:
         self._current_mix_id = mix_id
 
     def is_playing(self) -> bool:
-        if self._playing and not self._player.is_alive():
-            # External player exited; keep catalog current_mix for metered/resume.
-            self._freeze_playback_position()
-            self._playing = False
+        self._supervise_playback()
         return self._playing
 
     def play(self, intent_id: UUID, mix_id: UUID | None = None) -> Mix:
-        """Supervise local playback of an assigned mix that has a file on this device.
+        """Supervise local playback of an assigned Release that has Files on this device.
 
-        Resumes from the latest synced playhead when one exists for the mix.
-        Starts the local audio player against the cached blob (browser is remote only).
+        Resumes from the latest synced playhead when one exists. Mixes start the
+        cached blob; Albums start the Catalog-ordered track file for the timeline
+        position (browser is remote only).
         """
         if intent_id not in self.catalog.intents:
             raise KeyError(f"unknown intent {intent_id}")
@@ -734,8 +734,8 @@ class DeviceAgent:
         self._skips.cancel(target)
         existing = self.catalog.playheads.get(target)
         start = float(existing.position_seconds) if existing is not None else 0.0
-        blob = self._ensure_blob_on_disk(target)
-        self._player.play(blob, start_seconds=start)
+        self._ensure_blob_on_disk(target)
+        self._start_release_audio(mix, start)
         self._playing = True
         self._playing_intent_id = intent_id
         self.set_current_mix(target)
@@ -750,6 +750,7 @@ class DeviceAgent:
         self._player.stop()
         self._playing = False
         self._playing_intent_id = None
+        self._album_play_index = None
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
 
@@ -781,6 +782,7 @@ class DeviceAgent:
         if self.is_playing():
             self._player.stop()
             self._playing = False
+            self._album_play_index = None
             self._clear_play_anchor()
 
     def skip(self, intent_id: UUID | None = None) -> Mix:
@@ -819,6 +821,7 @@ class DeviceAgent:
 
     def playback_position(self) -> float:
         """Current local playback position (including a mid-mix resume point)."""
+        self._supervise_playback()
         if self._playing and self._play_anchor_at is not None:
             return self._computed_playback_position()
         return self._playback_position
@@ -886,15 +889,76 @@ class DeviceAgent:
         intent_id = self._playing_intent_id
         head = self.report_playhead(pos)
         if was_playing and self.is_playing() and intent_id is not None:
-            blob = self._ensure_blob_on_disk(mix_id)
-            self._player.play(blob, start_seconds=pos)
+            self._ensure_blob_on_disk(mix_id)
+            self._start_release_audio(mix, pos)
             self._playing = True
             self._playing_intent_id = intent_id
             self._set_play_anchor(pos)
         else:
             self._playback_position = pos
+            self._album_play_index = None
             self._clear_play_anchor()
         return head
+
+    def _album_track_path(self, mix: Mix, index: int) -> Path:
+        return self._blob_path(mix.id) / _album_track_filename(index, mix.tracks[index])
+
+    def _start_release_audio(self, mix: Mix, timeline_seconds: float) -> None:
+        """Start local AudioPlayer for a Mix blob or the mapped Album track file."""
+        if mix.kind is ReleaseKind.ALBUM:
+            if not mix.tracks:
+                raise ValueError("album has no tracks")
+            index, offset = _album_timeline_location(mix, timeline_seconds)
+            track_path = self._album_track_path(mix, index)
+            if not track_path.is_file():
+                raise FileNotFoundError(f"album track missing: {track_path}")
+            self._player.play(track_path, start_seconds=offset)
+            self._album_play_index = index
+            return
+        blob = self._ensure_blob_on_disk(mix.id)
+        self._player.play(blob, start_seconds=timeline_seconds)
+        self._album_play_index = None
+
+    def _supervise_playback(self) -> None:
+        """Advance Album tracks when the local player exits; stop Mixes as before.
+
+        Start the next track (or clear playing) before ``report_playhead`` so a
+        nested ``is_playing`` from prune/auto-sync cannot re-enter mid-advance.
+        """
+        if not self._playing or self._player.is_alive():
+            return
+        mix_id = self._current_mix_id
+        mix = self.catalog.mixes.get(mix_id) if mix_id is not None else None
+        if (
+            mix is not None
+            and mix.kind is ReleaseKind.ALBUM
+            and self._album_play_index is not None
+        ):
+            next_index = self._album_play_index + 1
+            if next_index < len(mix.tracks):
+                timeline = float(
+                    sum(t.duration_seconds for t in mix.tracks[:next_index])
+                )
+                track_path = self._album_track_path(mix, next_index)
+                if not track_path.is_file():
+                    raise FileNotFoundError(f"album track missing: {track_path}")
+                self._player.play(track_path, start_seconds=0.0)
+                self._album_play_index = next_index
+                self._set_play_anchor(timeline)
+                self.report_playhead(timeline)
+                return
+            # Last track finished: pin to Album end on the Release timeline.
+            end = float(mix.duration_seconds)
+            self._playback_position = end
+            self._playing = False
+            self._album_play_index = None
+            self._clear_play_anchor()
+            self.report_playhead(end)
+            return
+        # External player exited; keep catalog current_mix for metered/resume.
+        self._freeze_playback_position()
+        self._playing = False
+        self._album_play_index = None
 
     def _set_play_anchor(self, position: float) -> None:
         self._playback_position = float(position)
@@ -3935,3 +3999,18 @@ def _album_track_filename(index: int, track: AlbumTrack) -> str:
     if not cleaned:
         cleaned = "track"
     return f"{index + 1:02d}-{cleaned[:60]}-{track.platform_id}.bin"
+
+
+def _album_timeline_location(mix: Mix, position_seconds: float) -> tuple[int, float]:
+    """Map Album-timeline seconds to (track_index, offset_within_track)."""
+    if not mix.tracks:
+        return 0, 0.0
+    remaining = max(0.0, float(position_seconds))
+    last_index = len(mix.tracks) - 1
+    for index, track in enumerate(mix.tracks):
+        duration = float(track.duration_seconds)
+        if index == last_index or remaining < duration:
+            offset = min(remaining, duration) if duration > 0 else 0.0
+            return index, offset
+        remaining -= duration
+    return last_index, float(mix.tracks[last_index].duration_seconds)
