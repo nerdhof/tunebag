@@ -10,7 +10,7 @@
    *   2 Device
    *   3 Intent, Sequence, Assignment, Cache, Player
    *   4 Event log, Catalog, Tag
-   *   5 Artist, Mix, Rating
+   *   5 Artist, Release, Rating
    *   6 Reject
    */
   const COL = {
@@ -86,7 +86,7 @@
       summary:
         "The projected, fully replicated metadata on every paired Device. Derived only from the Event log.",
       points: [
-        "Includes Artists, Mixes, Tags, Ratings, Rejects, play history, Intents, Sequences, Assignments.",
+        "Includes Artists, Releases, Tags, Ratings, Rejects, play history, Intents, Sequences, Assignments.",
         "Disposable: rebuilt by replaying the Event log.",
       ],
     },
@@ -109,11 +109,11 @@
       label: "Artist",
       layer: 3,
       col: COL.artist,
-      tip: "A source-platform creator whose uploads become Mix or Album Releases in the Catalog.",
+      tip: "A source-platform creator whose uploads become Releases (Mix or Album) in the Catalog.",
       summary:
-        "A source-platform creator whose uploads are ingested into the Catalog as Mix or Album Releases.",
+        "A source-platform creator whose uploads are ingested into the Catalog as Releases (Mix or Album).",
       points: [
-        "Listing shape is platform-defined (e.g. SoundCloud/hearthis → Mixes; Bandcamp/YouTube → Albums).",
+        "Listing shape is platform-defined (e.g. SoundCloud/hearthis → Mix uploads; Bandcamp/YouTube → Album discography).",
         "YouTube (including Music URLs) lists Album Releases from the channel releases tab.",
         "Delete of an Artist is sticky across Devices.",
       ],
@@ -123,22 +123,26 @@
       label: "Sequence",
       layer: 4,
       col: COL.intent,
-      tip: "Seeded ordered Mix list for one Intent, filled to the largest Device budget.",
+      tip: "Seeded ordered Release list for one Intent, filled to the largest Device budget.",
       summary:
-        "A seeded ordered list of Mixes for one Intent. Fills until cumulative duration meets the largest Device budget.",
-      points: ["May include the Mix that crosses the budget.", "Smaller Device budgets cover the opening stretch."],
+        "A seeded ordered list of Releases for one Intent. Fills until cumulative duration meets the largest Device budget.",
+      points: [
+        "May include the Release that crosses the budget.",
+        "Smaller Device budgets cover the opening stretch.",
+      ],
     },
     {
-      id: "mix",
-      label: "Mix",
+      id: "release",
+      label: "Release",
       layer: 4,
       col: COL.artist,
-      tip: "One listening item (usually a DJ set); duration drives budgets and Played.",
+      tip: "One listening item in the Catalog — either a Mix or an Album.",
       summary:
-        "One audio file treated as a single listening item (typically a DJ set). Budgets and Played use its duration.",
+        "One listening item in the Catalog. A Release is either a Mix (single file, typically a DJ set) or an Album (ordered tracks). Budgets, Played, Rating, Reject, tags, Playhead, and Last heard attach to the Release as a whole.",
       points: [
-        "May carry Tags, Rating, Reject, Played, Last heard, and Playhead.",
-        "Albums are the multi-track Release kind (Bandcamp/YouTube Artist → Album adapters); this node is the single-file kind.",
+        "Mix: one audio file; duration and size are that file’s.",
+        "Album: ordered tracks; duration/size are sums; Played uses the whole Album timeline (v1).",
+        "Wire/API names may still say mix / mix_id; the domain term is Release.",
       ],
     },
     {
@@ -156,17 +160,20 @@
       label: "Tag",
       layer: 5,
       col: COL.catalog,
-      tip: "Free-text label on a Mix; Intent membership is AND of required Tags.",
-      summary: "A free-text label on a Mix. Suggestions prefer existing tags.",
-      points: ["Intent membership uses AND of required Tags.", "Unrated Mixes may still match a tagged Intent."],
+      tip: "Free-text label on a Release; Intent membership is AND of required Tags.",
+      summary: "A free-text label on a Release. Suggestions prefer existing tags.",
+      points: [
+        "Intent membership uses AND of required Tags.",
+        "Unrated Releases may still match a tagged Intent.",
+      ],
     },
     {
       id: "rating",
       label: "Rating",
       layer: 5,
       col: COL.artist,
-      tip: "1–5★ score on a Mix; Intents draw by rating distribution (separate from Reject).",
-      summary: "Score 1–5 on a Mix (UI may show ★). Separate from Reject.",
+      tip: "1–5★ score on a Release; Intents draw by rating distribution (separate from Reject).",
+      summary: "Score 1–5 on a Release (UI may show ★). Separate from Reject.",
       points: [
         "Rating distribution on an Intent sets draw chances including unrated.",
         "Default distribution: 0.3 / 0.2 / 0.1 / 0.05 / 0.05 / 0.3 (5★…1★, unrated).",
@@ -181,7 +188,8 @@
       summary:
         "“Never assign again” until Un-reject. After a 20s local undo window, File bytes are deleted on every Device.",
       points: [
-        "Un-reject clears Reject so the Mix may re-enter Sequences.",
+        "Applies to the whole Release (not individual Album tracks) in v1.",
+        "Un-reject clears Reject so the Release may re-enter Sequences.",
         "Un-reject does not by itself restore File bytes — Cache fill runs when assigned again.",
       ],
     },
@@ -195,7 +203,8 @@
         "The set of Files (audio bytes) a Device currently holds for its Assignments.",
       points: [
         "Filled from origin, Peer, or USB as needed by Assignments.",
-        "Metered mode caps origin downloads to the current Mix + one ahead per Intent.",
+        "One File blob for a Mix; an Album needs every track file local before it counts as present.",
+        "Metered mode caps origin downloads to the current Release + one ahead per Intent.",
       ],
     },
     {
@@ -274,36 +283,36 @@
     },
     {
       from: "catalog",
-      to: "mix",
+      to: "release",
       label: "contains",
-      tip: "Catalog holds Mix metadata (tags, rating, reject, …) from Events.",
+      tip: "Catalog holds Release metadata (tags, rating, reject, …) from Events.",
       dashed: true,
       route: "down-gap-across",
     },
     {
       from: "artist",
-      to: "mix",
+      to: "release",
       label: "owns",
-      tip: "Ingesting an Artist brings their uploads in as Mixes.",
+      tip: "Ingesting an Artist brings their uploads in as Releases (Mix or Album).",
     },
     {
-      from: "mix",
+      from: "release",
       to: "tag",
       label: "has",
-      tip: "Mixes carry free-text Tags used by Intent filters.",
+      tip: "Releases carry free-text Tags used by Intent filters.",
     },
     {
-      from: "mix",
+      from: "release",
       to: "rating",
       label: "has",
       tip: "Optional 1–5★ score; feeds Intent draw chances.",
       labelT: 0.72,
     },
     {
-      from: "mix",
+      from: "release",
       to: "reject",
       label: "may",
-      tip: "A Mix can be Rejected so it leaves future Assignments.",
+      tip: "A Release can be Rejected so it leaves future Assignments.",
     },
     {
       from: "intent",
@@ -321,7 +330,7 @@
       from: "assignment",
       to: "cache",
       label: "needs",
-      tip: "Assigned Mixes are what the Cache should fill.",
+      tip: "Assigned Releases are what the Cache should fill.",
     },
     {
       from: "cache",
@@ -349,7 +358,7 @@
     },
     {
       title: "OR tag filters",
-      body: "on intents (e.g. tribal OR relaxing). Own sequence per filter. A mix may appear in multiple intents; deletes wait until no remaining intent on that device wants the file.",
+      body: "on intents (e.g. tribal OR relaxing). Own sequence per filter. A release may appear in multiple intents; deletes wait until no remaining intent on that device wants the file.",
     },
     {
       title: "Library import",
@@ -373,7 +382,7 @@
     },
     {
       title: "Peer cache file share",
-      body: "copy assigned Mix bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.",
+      body: "copy assigned Release bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.",
     },
     {
       title: "Catalog snapshot cache",
@@ -658,7 +667,7 @@
       }
 
       if (route === "down-gap-across") {
-        // Catalog → Mix: down from Catalog, horizontal in the Artist–Mix gap, then down into Mix.
+        // Catalog → Release: down from Catalog, horizontal in the Artist–Release gap, then down into Release.
         const artist = box.artist;
         const x1 = a.cx;
         const y1 = a.y + a.h + gap;
@@ -692,7 +701,7 @@
         const t = edge.labelT ?? 0.5;
         return { d: `M ${x1} ${y1} L ${x2} ${y2}`, lx: x1 + 18, ly: y1 + (y2 - y1) * t };
       }
-      // Shared elbow height for siblings (e.g. Mix → Tag / Reject).
+      // Shared elbow height for siblings (e.g. Release → Tag / Reject).
       const midY = y1 + (y2 - y1) * 0.45;
       return {
         d: `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`,
@@ -927,10 +936,11 @@
       if (nav) new ResizeObserver(() => fitSectionNav()).observe(nav);
     }
 
-    // Deep-link support: /about#concept-mix
+    // Deep-link support: /about#concept-release (legacy: #concept-mix)
     const hash = location.hash.replace(/^#/, "");
     if (hash.startsWith("concept-")) {
-      const id = hash.slice("concept-".length);
+      let id = hash.slice("concept-".length);
+      if (id === "mix") id = "release";
       if (byId[id]) {
         requestAnimationFrame(() => highlightArticle(id));
       }
