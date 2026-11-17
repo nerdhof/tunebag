@@ -1,4 +1,6 @@
 let localDeviceId = null;
+let localFingerprint = null;
+let localPriority = null;
 let currentMixId = null;
 let peersCache = [];
 const expandedCatalogArtists = new Set();
@@ -46,6 +48,90 @@ function setSymbolButton(btn, symbol, label) {
   btn.setAttribute("aria-label", label);
   btn.dataset.tip = label;
 }
+
+/**
+ * Collapse add/create fields behind ✚; expand morphs the button to ✓ for submit.
+ * @returns {{ expand: (opts?: {submitLabel?: string}) => void, collapse: () => void, isExpanded: () => boolean }}
+ */
+function bindCollapsibleAdd(form, {
+  button,
+  expandLabel,
+  submitLabel,
+  focusSelector = null,
+  onExpand = null,
+  onCollapse = null,
+} = {}) {
+  const btn = typeof button === "string" ? form.querySelector(button) : button;
+  const fieldNodes = () => form.querySelectorAll(".add-form-fields");
+
+  function isExpanded() {
+    return form.classList.contains("add-form-open");
+  }
+
+  function syncUi(activeSubmitLabel) {
+    const open = isExpanded();
+    for (const el of fieldNodes()) {
+      el.hidden = !open;
+    }
+    if (open) {
+      setSymbolButton(btn, BTN.save, activeSubmitLabel || submitLabel);
+    } else {
+      setSymbolButton(btn, BTN.add, expandLabel);
+    }
+  }
+
+  function expand(opts = {}) {
+    const wasOpen = isExpanded();
+    form.classList.add("add-form-open");
+    syncUi(opts.submitLabel || submitLabel);
+    if (!wasOpen) {
+      onExpand?.();
+      if (focusSelector) {
+        form.querySelector(focusSelector)?.focus?.();
+      }
+    }
+  }
+
+  function collapse() {
+    const wasOpen = isExpanded();
+    form.classList.remove("add-form-open");
+    syncUi();
+    if (wasOpen) {
+      onCollapse?.();
+    }
+  }
+
+  form.classList.remove("add-form-open");
+  syncUi();
+
+  btn.addEventListener("click", (event) => {
+    if (!isExpanded()) {
+      event.preventDefault();
+      expand();
+    }
+  });
+
+  form.addEventListener(
+    "submit",
+    (event) => {
+      if (!isExpanded()) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        expand();
+      }
+    },
+    true,
+  );
+
+  return { expand, collapse, isExpanded };
+}
+
+/** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
+let intentCollapsible = null;
+/** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
+let artistsCollapsible = null;
+/** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
+let pairCollapsible = null;
 
 /** First click arms (💥); second click runs onConfirm. */
 function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
@@ -544,6 +630,7 @@ async function refreshHealth() {
     if (meteredToggle) {
       meteredToggle.checked = Boolean(data.metered);
     }
+    applyTrustedPeersList(peersCache);
   } catch (err) {
     el.textContent = "unreachable";
     console.error(err);
@@ -578,6 +665,7 @@ function renderPairSession(session) {
     confirmPanel.hidden = true;
     cancelBtn.hidden = true;
     qr.hidden = true;
+    pinEl.value = "";
     stopPairPoll();
     return;
   }
@@ -586,7 +674,7 @@ function renderPairSession(session) {
     hostPanel.hidden = false;
     confirmPanel.hidden = true;
     if (session.pin) {
-      pinEl.textContent = session.pin;
+      pinEl.value = session.pin;
     }
     if (session.offer) {
       payloadEl.textContent = JSON.stringify(session.offer, null, 2);
@@ -599,12 +687,13 @@ function renderPairSession(session) {
     document.getElementById("pair-peer-name").textContent = session.peer_name || "peer";
     document.getElementById("pair-sas").textContent = session.sas || "…";
     if (session.role === "host" && session.pin) {
-      pinEl.textContent = session.pin;
+      pinEl.value = session.pin;
     }
   } else if (session.state === "complete") {
     confirmPanel.hidden = true;
     hostPanel.hidden = true;
     cancelBtn.hidden = true;
+    pinEl.value = "";
     stopPairPoll();
   }
 }
@@ -612,8 +701,9 @@ function renderPairSession(session) {
 async function refreshPairing() {
   const res = await fetch("/api/pairing");
   const payload = await res.json();
-  const fp = payload.fingerprint || payload.short_code || "…";
-  document.getElementById("device-fingerprint").textContent = fp;
+  localFingerprint = payload.fingerprint || payload.short_code || null;
+  localPriority = payload.priority != null ? payload.priority : null;
+  applyTrustedPeersList(peersCache);
   await refreshPairingSession();
 }
 
@@ -658,25 +748,32 @@ function fillPairCandidateSelect(candidates, previousValue) {
   }
 }
 
-function applyPeersPayload(data) {
-  peersCache = data.peers || [];
+function applyTrustedPeersList(peers) {
+  peersCache = peers || [];
   const list = document.getElementById("peer-list");
-  if (list) {
-    list.innerHTML = "";
-    if (!peersCache.length) {
-      const li = document.createElement("li");
-      li.textContent = "No peers yet";
-      li.className = "muted";
-      list.appendChild(li);
-    } else {
-      for (const peer of peersCache) {
-        const li = document.createElement("li");
-        const fp = peer.fingerprint ? ` · ${peer.fingerprint}` : "";
-        li.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
-        list.appendChild(li);
-      }
-    }
+  if (!list) return;
+  list.innerHTML = "";
+  const selfLi = document.createElement("li");
+  selfLi.className = "peer-self";
+  const selfName =
+    document.getElementById("device-name")?.textContent?.trim() || "this device";
+  const selfPrio =
+    localPriority != null ? ` (priority ${localPriority})` : "";
+  const selfFp = localFingerprint ? ` · ${localFingerprint}` : "";
+  const selfStrong = document.createElement("strong");
+  selfStrong.textContent = `${selfName}${selfPrio}${selfFp}`;
+  selfLi.appendChild(selfStrong);
+  list.appendChild(selfLi);
+  for (const peer of peersCache) {
+    const li = document.createElement("li");
+    const fp = peer.fingerprint ? ` · ${peer.fingerprint}` : "";
+    li.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
+    list.appendChild(li);
   }
+}
+
+function applyPeersPayload(data) {
+  applyTrustedPeersList(data.peers || []);
   fillPairCandidateSelect(data.candidates || []);
 }
 
@@ -1627,11 +1724,13 @@ async function refreshPlayer() {
   if (!playerSeekDragging) {
     lastKnownPositionSeconds = pos;
   }
+  const artist = data.artist || "Unknown";
   const title = data.title || "Untitled";
+  const label = `${artist} - ${title}`;
   now.textContent =
     data.size_bytes != null && Number(data.size_bytes) > 0
-      ? `${title} (${formatBytes(data.size_bytes)})`
-      : title;
+      ? `${label} (${formatBytes(data.size_bytes)})`
+      : label;
   const ratingEl = document.getElementById("player-stars");
   const tagsEl = document.getElementById("player-tags");
   if (document.activeElement !== ratingEl) {
@@ -2433,6 +2532,41 @@ async function joinPairSession({ peer_url, pin, session_id }) {
   }
 }
 
+async function copyPairPin() {
+  const pinEl = document.getElementById("pair-pin");
+  const copyBtn = document.getElementById("pair-pin-copy-btn");
+  const pin = (pinEl?.value || "").trim();
+  if (!pin) return;
+  pinEl.focus();
+  pinEl.select();
+  let ok = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(pin);
+      ok = true;
+    }
+  } catch (err) {
+    console.error(err);
+  }
+  if (!ok) {
+    try {
+      ok = document.execCommand("copy");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  if (ok && copyBtn) {
+    const prev = copyBtn.dataset.tip || "Copy PIN";
+    copyBtn.dataset.tip = "Copied";
+    setTimeout(() => {
+      if (copyBtn.dataset.tip === "Copied") copyBtn.dataset.tip = prev;
+    }, 1500);
+  } else {
+    const status = document.getElementById("pair-status");
+    if (status) status.textContent = "Could not copy PIN — select and copy manually";
+  }
+}
+
 document.getElementById("pair-start-btn").addEventListener("click", () => {
   void startPairSession();
 });
@@ -2441,6 +2575,9 @@ document.getElementById("pair-cancel-btn").addEventListener("click", () => {
 });
 document.getElementById("pair-confirm-btn").addEventListener("click", () => {
   void confirmPairSession();
+});
+document.getElementById("pair-pin-copy-btn").addEventListener("click", () => {
+  void copyPairPin();
 });
 document.getElementById("pair-candidate").addEventListener("change", (event) => {
   const value = event.target.value;

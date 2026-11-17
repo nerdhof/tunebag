@@ -293,6 +293,19 @@ button.confirm-pending {
   flex-shrink: 0;
 }
 
+/* Collapsible add/create: fields hidden until ✚ expands to ✓ */
+form:not(.add-form-open) .add-form-fields {
+  display: none !important;
+}
+
+form.add-form-open .add-form-fields-inline {
+  display: contents;
+}
+
+.add-form-actions {
+  margin: 0.75rem 0;
+}
+
 .inline-field {
   display: flex;
   flex-direction: column;
@@ -321,7 +334,11 @@ button.confirm-pending {
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
   align-items: center;
-  margin: 0.75rem 0;
+  margin: 0.75rem 0 0.35rem;
+}
+
+#player-now {
+  margin: 0 0 0.75rem;
 }
 
 .player-transport .form-row {
@@ -417,7 +434,7 @@ button,
 .form-row select,
 .hours-editor input:not([type="checkbox"]):not([type="range"]),
 .hours-editor select,
-#pairing input:not([type="checkbox"]):not([type="range"]),
+#peers input:not([type="checkbox"]):not([type="range"]),
 #artists-form input:not([type="checkbox"]):not([type="range"]),
 #intents input:not([type="checkbox"]):not([type="range"]),
 #intents select,
@@ -501,6 +518,31 @@ button:disabled {
   margin: 0.75rem 0;
 }
 
+.peers-add-heading {
+  margin: 0.5rem 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.peers-add-row > button {
+  min-width: 2.5rem;
+}
+
+.pair-pin-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.pair-pin-row label {
+  display: inline;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .pair-scan {
   margin: 0.75rem 0;
 }
@@ -514,14 +556,14 @@ button:disabled {
   background: #000;
 }
 
-#pairing label:not(.inline-field),
+#peers label:not(.inline-field),
 #artists-form label:not(.inline-field),
 #intents label:not(.inline-field) {
   display: block;
   margin: 0.75rem 0;
 }
 
-#pairing textarea,
+#peers textarea,
 #intents textarea {
   padding: 0.5rem 0.65rem;
   border-radius: 8px;
@@ -534,8 +576,8 @@ button:disabled {
   min-height: 0;
 }
 
-#pairing label:not(.inline-field) input,
-#pairing label:not(.inline-field) textarea,
+#peers label:not(.inline-field) input,
+#peers label:not(.inline-field) textarea,
 #intents label:not(.inline-field) input,
 #intents label:not(.inline-field) select {
   display: block;
@@ -693,12 +735,73 @@ button:disabled {
   width: 2rem;
 }
 
-#pairing pre {
+#peers pre {
   overflow: auto;
   font-size: 0.75rem;
   background: var(--bg);
   padding: 0.75rem;
   border-radius: 8px;
+}
+
+.peers-add-heading {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.peers-add-row > button {
+  min-width: 2.5rem;
+}
+
+.pair-pin-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.pair-pin-row label {
+  display: inline;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+#pair-pin {
+  width: 8.5rem;
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: center;
+  cursor: text;
+}
+
+#pair-pin-copy-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0.1rem 0.25rem;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#pair-pin-copy-btn:hover,
+#pair-pin-copy-btn:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
 }
 
 #peer-list {

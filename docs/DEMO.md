@@ -39,8 +39,8 @@ Say *why* it’s filling: this device wants N hours of this Intent — so Tuneba
 
 Real value: a second device — e.g. the phone.
 
-1. Phone UI → pair → show PIN → copy.
-2. Laptop UI → pair → select phone → paste PIN.
+1. Phone UI → peers → ⌕ (Show PIN) → copy.
+2. Laptop UI → peers → select phone → paste PIN → + (Join).
 3. Confirm matching codes on both.
 
 Show the Catalog already there and the phone **cache** starting to fill for its assignment.
