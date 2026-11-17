@@ -2118,7 +2118,7 @@ async function refreshFiles({ force = false } = {}) {
   if (!groups.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.className = "muted";
     td.textContent =
       "No assigned audio yet — create an intent with hours, or press Fill caches";
@@ -2140,7 +2140,7 @@ async function refreshFiles({ force = false } = {}) {
     header.setAttribute("role", "button");
 
     const intentCell = document.createElement("td");
-    intentCell.colSpan = 6;
+    intentCell.colSpan = 7;
     const toggle = document.createElement("span");
     toggle.className = "cache-intent-toggle";
     toggle.setAttribute("aria-hidden", "true");
@@ -2177,6 +2177,10 @@ async function refreshFiles({ force = false } = {}) {
       const blankIntent = document.createElement("td");
       blankIntent.textContent = "";
       tr.appendChild(blankIntent);
+
+      const artist = document.createElement("td");
+      artist.textContent = file.artist || "Unknown";
+      tr.appendChild(artist);
 
       const title = document.createElement("td");
       title.textContent = file.title || "";
@@ -2739,7 +2743,7 @@ async function refreshIntents({ force = false } = {}) {
         table.className = "intent-seq-table";
         const thead = document.createElement("thead");
         const headRow = document.createElement("tr");
-        for (const label of ["#", "Title", "Bucket", "Duration"]) {
+        for (const label of ["#", "Artist", "Title", "Bucket", "Duration"]) {
           const th = document.createElement("th");
           th.textContent = label;
           headRow.appendChild(th);
@@ -2752,6 +2756,9 @@ async function refreshIntents({ force = false } = {}) {
           const pos = document.createElement("td");
           pos.textContent = String(entry.position + 1);
           tr.appendChild(pos);
+          const artist = document.createElement("td");
+          artist.textContent = entry.artist || "Unknown";
+          tr.appendChild(artist);
           const title = document.createElement("td");
           title.textContent = entry.title || entry.mix_id;
           tr.appendChild(title);

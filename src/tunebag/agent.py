@@ -552,8 +552,10 @@ class DeviceAgent:
                 else:
                     status = "pending"
                 duration = int(mix.duration_seconds)
+                artist = self.catalog.artists.get(mix.artist_id)
                 entry: dict[str, Any] = {
                     "id": mix_id,
+                    "artist": artist.name if artist is not None else "Unknown",
                     "title": mix.title,
                     "duration_seconds": duration,
                     "status": status,
@@ -596,8 +598,10 @@ class DeviceAgent:
             if mix is None:
                 continue
             duration = int(mix.duration_seconds)
+            artist = self.catalog.artists.get(mix.artist_id)
             entry: dict[str, Any] = {
                 "id": mix_id,
+                "artist": artist.name if artist is not None else "Unknown",
                 "title": mix.title,
                 "duration_seconds": duration,
                 "status": "cached",

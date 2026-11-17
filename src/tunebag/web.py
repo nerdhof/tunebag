@@ -457,6 +457,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "mixes": [
                         {
                             "id": str(mix["id"]),
+                            "artist": mix["artist"],
                             "title": mix["title"],
                             "duration_seconds": mix["duration_seconds"],
                             "status": mix["status"],
@@ -980,6 +981,19 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         if sequence is None:
             raise HTTPException(status_code=404, detail="sequence not found")
         mix_by_id = {mix.id: mix for mix in agent.mixes()}
+        artists_by_id = {a.id: a for a in agent.artists()}
+
+        def _entry_fields(entry) -> dict:
+            mix = mix_by_id.get(entry.mix_id)
+            if mix is None:
+                return {"artist": None, "title": None, "duration_seconds": None}
+            artist = artists_by_id.get(mix.artist_id)
+            return {
+                "artist": artist.name if artist is not None else "Unknown",
+                "title": mix.title,
+                "duration_seconds": mix.duration_seconds,
+            }
+
         device_names = {
             device.id: device.name for device in agent.catalog.devices.values()
         }
@@ -996,16 +1010,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "mix_id": str(entry.mix_id),
                     "position": entry.position,
                     "bucket": entry.bucket.value,
-                    "title": (
-                        mix_by_id[entry.mix_id].title
-                        if entry.mix_id in mix_by_id
-                        else None
-                    ),
-                    "duration_seconds": (
-                        mix_by_id[entry.mix_id].duration_seconds
-                        if entry.mix_id in mix_by_id
-                        else None
-                    ),
+                    **_entry_fields(entry),
                 }
                 for entry in sequence.entries
             ],
