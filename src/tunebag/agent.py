@@ -132,7 +132,7 @@ _VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
     EventType.ASSIGNMENT_SET: _INTENTS,
     EventType.ASSIGNMENT_CLEARED: _INTENTS,
     EventType.DEVICE_PAIRED: _PEERS,
-    EventType.DEVICE_UNPAIRED: _PEERS,
+    EventType.DEVICE_UNPAIRED: (UIViewSection.PEERS, UIViewSection.INTENTS),
 }
 
 
@@ -1230,6 +1230,8 @@ class DeviceAgent:
         if device_id == self.device.id:
             raise ValueError("cannot unpair this Device")
         self._append_and_apply(EventType.DEVICE_UNPAIRED, {"id": str(device_id)})
+        # Hours/assignments cleared in apply; drop Cache blobs only that peer needed.
+        self._prune_unassigned_files()
 
     def start_pairing_session(self) -> dict[str, Any]:
         """Host: open an ephemeral pairing session and show its PIN locally."""
@@ -2436,9 +2438,22 @@ class DeviceAgent:
             shutil.rmtree(folder, ignore_errors=True)
 
     def _revoke_peer(self, device_id: UUID) -> None:
-        """Drop trust, Locator hints, and buffered events for a Peer."""
+        """Drop trust, hours/assignments, Locator hints, and buffered events for a Peer.
+
+        Catalog rows authored while paired (mixes, intents, tags, …) stay. Only the
+        device_hours / assignment projection for this Identity is cleared.
+        """
         self._unpaired_device_ids.add(device_id)
         self.catalog.remove_device(device_id)
+        for intent in list(self.catalog.intents.values()):
+            if any(dh.device_id == device_id for dh in intent.device_hours):
+                remaining = [dh for dh in intent.device_hours if dh.device_id != device_id]
+                self.catalog.upsert_intent(
+                    intent.model_copy(update={"device_hours": remaining})
+                )
+            self.catalog.clear_assignment(intent.id, device_id)
+        for key in [k for k in self._pending_assignments if k[1] == device_id]:
+            del self._pending_assignments[key]
         if device_id in self._peer_urls:
             self._peer_urls.pop(device_id, None)
             self._persist_locator_hints()
@@ -3087,6 +3102,8 @@ class DeviceAgent:
             hours_changed = False
             for raw in payload.get("device_hours") or []:
                 device_id = UUID(raw["device_id"])
+                if device_id in self._unpaired_device_ids:
+                    continue
                 if not self._merge_beats(
                     ("intent_hours", str(intent_id), str(device_id)), event
                 ):
@@ -3108,6 +3125,10 @@ class DeviceAgent:
                 ):
                     continue
                 if hours_map.pop(device_id, None) is not None:
+                    hours_changed = True
+            for unpaired_id in list(hours_map):
+                if unpaired_id in self._unpaired_device_ids:
+                    hours_map.pop(unpaired_id, None)
                     hours_changed = True
             merged_hours = list(hours_map.values())
             if meta_wins:
@@ -3154,6 +3175,10 @@ class DeviceAgent:
         if event.type is EventType.ASSIGNMENT_SET:
             intent_id = UUID(payload["intent_id"])
             device_id = UUID(payload["device_id"])
+            if device_id in self._unpaired_device_ids:
+                self.catalog.clear_assignment(intent_id, device_id)
+                self._pending_assignments.pop((intent_id, device_id), None)
+                return
             if not self._merge_beats(
                 ("assignment", str(intent_id), str(device_id)), event
             ):

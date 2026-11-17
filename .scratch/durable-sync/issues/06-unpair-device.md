@@ -16,3 +16,5 @@
 ## Comments
 
 - Implemented on DeviceAgent: `unpair(device_id)` appends `DEVICE_UNPAIRED`; apply revokes via `_revoke_peer` (remove from Catalog peers, drop Locator hint, clear buffered events, drop live proof). Sticky `_unpaired_device_ids` ignores that author’s future ingest (not buffered); remote `DEVICE_PAIRED` cannot restore trust — only local `pair` / short code. Past Catalog rows remain. Tests in `tests/test_unpair_device.py`.
+- Listener surface: `POST /api/peers/{device_id}/unpair` returns peers payload; Peers list has confirm-to-unpair (⌫→💥). HTTP tests in `tests/test_web_unpair.py`.
+- On apply, `_revoke_peer` also clears that Peer’s `device_hours` and assignments (intent rows stay). INTENT_UPSERTED / ASSIGNMENT_SET will not re-add hours/assignments for sticky-unpaired ids. UI notices: `peers` + `intents`.

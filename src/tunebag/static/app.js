@@ -798,8 +798,43 @@ function applyTrustedPeersList(peers) {
   list.appendChild(selfLi);
   for (const peer of peersCache) {
     const li = document.createElement("li");
+    li.className = "peer-row";
+    const label = document.createElement("span");
     const fp = peer.fingerprint ? ` · ${peer.fingerprint}` : "";
-    li.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
+    label.textContent = `${peer.name} (priority ${peer.priority})${fp}`;
+    li.appendChild(label);
+    const unpairBtn = document.createElement("button");
+    unpairBtn.type = "button";
+    unpairBtn.className = "peer-unpair";
+    bindConfirmDelete(unpairBtn, {
+      label: `Unpair ${peer.name}`,
+      onConfirm: async () => {
+        const status = document.getElementById("sync-status");
+        if (status) status.textContent = `Unpairing ${peer.name}…`;
+        try {
+          const res = await fetch(`/api/peers/${peer.id}/unpair`, {
+            method: "POST",
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const detail = data.detail;
+            if (status) {
+              status.textContent =
+                typeof detail === "string"
+                  ? detail
+                  : detail?.[0]?.msg || "Unpair failed";
+            }
+            return;
+          }
+          applyPeersPayload(data);
+          if (status) status.textContent = `Unpaired ${peer.name}`;
+        } catch (err) {
+          if (status) status.textContent = "Unpair request failed";
+          console.error(err);
+        }
+      },
+    });
+    li.appendChild(unpairBtn);
     list.appendChild(li);
   }
 }

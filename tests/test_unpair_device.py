@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tunebag.agent import DeviceAgent
+from tunebag.agent import (
+    EXPLORE_DEFAULT_BUDGET_SECONDS,
+    EXPLORE_INTENT_ID,
+    DeviceAgent,
+)
 from tunebag.domain import Platform
 from tunebag.events import EventType
 from tunebag.source import FakeSource
@@ -48,6 +52,41 @@ def _add_mix(
         platform_id=platform_id,
         artist_name="DJ Example",
     )
+
+
+def test_unpair_clears_device_hours_keeps_intent_and_history(
+    tmp_path: Path,
+) -> None:
+    """Unpair drops hours/assignments for that Peer; Explore and past mixes stay."""
+    laptop = DeviceAgent("laptop", priority=1, data_dir=tmp_path / "laptop")
+    phone = DeviceAgent("phone", priority=10, data_dir=tmp_path / "phone")
+    assert laptop.seed_default_intents_if_empty()
+    assert phone.seed_default_intents_if_empty()
+    laptop.connect(phone)
+    phone.pair(laptop.pairing_payload())
+    laptop.sync(fill=False)
+    phone.sync(fill=False)
+
+    explore = laptop.catalog.intents[EXPLORE_INTENT_ID]
+    assert {dh.device_id for dh in explore.device_hours} == {
+        laptop.device_id,
+        phone.device_id,
+    }
+    assert laptop.assignment(EXPLORE_INTENT_ID, phone.device_id) is not None
+
+    laptop.unpair(phone.device_id)
+
+    explore = laptop.catalog.intents[EXPLORE_INTENT_ID]
+    assert explore.name == "Explore"
+    assert {dh.device_id for dh in explore.device_hours} == {laptop.device_id}
+    assert explore.device_hours[0].budget_seconds == EXPLORE_DEFAULT_BUDGET_SECONDS
+    assert laptop.assignment(EXPLORE_INTENT_ID, phone.device_id) is None
+    assert laptop.assignment(EXPLORE_INTENT_ID, laptop.device_id) is not None
+
+    restarted = DeviceAgent("laptop", priority=1, data_dir=tmp_path / "laptop")
+    explore = restarted.catalog.intents[EXPLORE_INTENT_ID]
+    assert {dh.device_id for dh in explore.device_hours} == {laptop.device_id}
+    assert restarted.assignment(EXPLORE_INTENT_ID, phone.device_id) is None
 
 
 def test_unpair_ignores_future_events_keeps_history_and_requires_re_pair(

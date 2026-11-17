@@ -246,6 +246,15 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     def peers() -> dict:
         return _peers_payload()
 
+    @app.post("/api/peers/{device_id}/unpair")
+    def unpair_peer(device_id: UUID) -> dict:
+        """Revoke trust in a Peer via replicated DEVICE_UNPAIRED."""
+        try:
+            agent.unpair(device_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _peers_payload()
+
     @app.post("/api/discovery/refresh")
     def discovery_refresh() -> dict:
         """Force a LAN browse; returns the same payload as GET /api/peers."""
