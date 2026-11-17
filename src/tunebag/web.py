@@ -510,6 +510,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "tags": mix.tags,
                     "stars": int(mix.stars) if mix.stars is not None else None,
                     "played": mix.played,
+                    "skipped": mix.skipped,
                     "rejected": mix.rejected,
                     "last_heard_at": (
                         mix.last_heard_at.isoformat()
@@ -602,6 +603,10 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     def player_state() -> dict:
         current = agent.current_mix()
         mix = agent.mix(current) if current is not None else None
+        artist_name = None
+        if mix is not None:
+            artist = agent.catalog.artists.get(mix.artist_id)
+            artist_name = artist.name if artist is not None else "Unknown"
         pending_until = None
         if current is not None:
             pending = next(
@@ -618,6 +623,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 else None
             ),
             "current_mix_id": str(current) if current is not None else None,
+            "artist": artist_name,
             "title": mix.title if mix is not None else None,
             "duration_seconds": mix.duration_seconds if mix is not None else None,
             "size_bytes": (
@@ -681,7 +687,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "position_seconds": agent.playback_position(),
             "current_mix_id": str(current) if current is not None else None,
             "played": played,
-            "later": agent.later_features() if played else [],
         }
 
     @app.post("/api/player/skip")
@@ -715,7 +720,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "position_seconds": head.position_seconds,
             "played": mix.played if mix is not None else False,
             "playing": agent.is_playing(),
-            "later": agent.later_features() if mix is not None and mix.played else [],
         }
 
     @app.post("/api/player/seek")
@@ -731,7 +735,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "position_seconds": head.position_seconds,
             "played": mix.played if mix is not None else False,
             "playing": agent.is_playing(),
-            "later": agent.later_features() if mix is not None and mix.played else [],
         }
 
     @app.post("/api/player/mark-played")
@@ -744,7 +747,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "ok": True,
             "mix": {"id": str(mix.id), "played": mix.played},
             "playing": agent.is_playing(),
-            "later": agent.later_features(),
         }
 
     @app.get("/api/later")

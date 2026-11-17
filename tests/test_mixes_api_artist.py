@@ -42,6 +42,38 @@ def test_mixes_api_includes_artist_fields(tmp_path: Path) -> None:
     assert row["size_bytes"] == 4_000_000
 
 
+def test_player_api_uses_catalog_artist_name(tmp_path: Path) -> None:
+    """GET /api/player shows Artist.name from the added SoundCloud/Bandcamp link."""
+    source = FakeSource()
+    source.bytes_by_url["https://example.com/a"] = b"audio:a"
+    agent = DeviceAgent("laptop", source=source, data_dir=tmp_path / "laptop")
+    mix = agent.add_mix(
+        title="Set A",
+        url="https://example.com/a",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="a",
+        artist_name="DJ Example",
+        size_bytes=4_000_000,
+    )
+    intent = agent.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(agent.device_id, 3600)],
+    )
+    agent.fill_caches()
+    agent.play(intent.id, mix.id)
+
+    client = TestClient(create_app(agent))
+    res = client.get("/api/player")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["current_mix_id"] == str(mix.id)
+    assert body["artist"] == "DJ Example"
+    assert body["title"] == "Set A"
+
+
 def test_delete_artists_api_removes_artist_and_mixes(tmp_path: Path) -> None:
     source = FakeSource()
     source.add_listing(
