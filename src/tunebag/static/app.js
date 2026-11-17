@@ -51,17 +51,25 @@ function setSymbolButton(btn, symbol, label) {
 
 /**
  * Collapse add/create fields behind ✚; expand morphs the button to ✓ for submit.
+ * Optional cancel (×) shows while expanded and discards without submitting.
  * @returns {{ expand: (opts?: {submitLabel?: string}) => void, collapse: () => void, isExpanded: () => boolean }}
  */
 function bindCollapsibleAdd(form, {
   button,
   expandLabel,
   submitLabel,
+  cancelButton = null,
   focusSelector = null,
   onExpand = null,
   onCollapse = null,
+  onCancel = null,
 } = {}) {
   const btn = typeof button === "string" ? form.querySelector(button) : button;
+  const cancelBtn = cancelButton
+    ? typeof cancelButton === "string"
+      ? form.querySelector(cancelButton)
+      : cancelButton
+    : null;
   const fieldNodes = () => form.querySelectorAll(".add-form-fields");
 
   function isExpanded() {
@@ -77,6 +85,12 @@ function bindCollapsibleAdd(form, {
       setSymbolButton(btn, BTN.save, activeSubmitLabel || submitLabel);
     } else {
       setSymbolButton(btn, BTN.add, expandLabel);
+    }
+    if (cancelBtn) {
+      cancelBtn.hidden = !open;
+      if (open) {
+        setSymbolButton(cancelBtn, BTN.cancel, "Cancel");
+      }
     }
   }
 
@@ -109,6 +123,11 @@ function bindCollapsibleAdd(form, {
       event.preventDefault();
       expand();
     }
+  });
+
+  cancelBtn?.addEventListener("click", () => {
+    onCancel?.();
+    collapse();
   });
 
   form.addEventListener(
@@ -517,13 +536,17 @@ function setChancesFromDist(dist) {
   writeChances(chances);
 }
 
-function resetIntentForm() {
+function clearIntentFormFields() {
   document.getElementById("intent-edit-id").value = "";
   document.getElementById("intent-name").value = "";
   document.getElementById("intent-tags").value = "";
   writeChances({ ...CHANCE_DEFAULTS });
-  setSymbolButton(document.getElementById("intent-submit"), BTN.add, "Create intent");
-  document.getElementById("intent-cancel").hidden = true;
+  document.getElementById("intent-chances").open = false;
+}
+
+function resetIntentForm() {
+  clearIntentFormFields();
+  intentCollapsible?.collapse();
 }
 
 function hoursUntilExpiry(iso) {
@@ -540,8 +563,7 @@ function beginEditIntent(intent) {
   document.getElementById("intent-tags").value = intent.tags.join(", ");
   setChancesFromDist(intent.distribution);
   document.getElementById("intent-chances").open = true;
-  setSymbolButton(document.getElementById("intent-submit"), BTN.save, "Save changes");
-  document.getElementById("intent-cancel").hidden = false;
+  intentCollapsible?.expand({ submitLabel: "Save changes" });
   document.getElementById("intent-form").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -653,6 +675,14 @@ function startPairPoll() {
   }, 1000);
 }
 
+function collapsePairForm() {
+  const url = document.getElementById("peer-url");
+  const pin = document.getElementById("pair-code");
+  if (url) url.value = "";
+  if (pin) pin.value = "";
+  pairCollapsible?.collapse();
+}
+
 function renderPairSession(session) {
   const hostPanel = document.getElementById("pair-host-panel");
   const confirmPanel = document.getElementById("pair-confirm-panel");
@@ -669,6 +699,7 @@ function renderPairSession(session) {
     stopPairPoll();
     return;
   }
+  pairCollapsible?.expand();
   cancelBtn.hidden = false;
   if (session.role === "host" && session.state === "waiting") {
     hostPanel.hidden = false;
@@ -718,6 +749,7 @@ async function refreshPairingSession() {
     if (data.complete && data.peer) {
       document.getElementById("pair-status").textContent = `Paired with ${data.peer.name}`;
       renderPairSession(data.session || { active: false });
+      collapsePairForm();
       await refreshPeers();
       await refreshIntents({ force: true });
       stopPairPoll();
@@ -2491,6 +2523,7 @@ async function confirmPairSession() {
     if (data.complete && data.peer) {
       status.textContent = `Paired with ${data.peer.name}`;
       renderPairSession(data.session || { active: false });
+      collapsePairForm();
       await refreshPeers();
       await refreshIntents({ force: true });
       stopPairPoll();
@@ -2566,6 +2599,26 @@ async function copyPairPin() {
     if (status) status.textContent = "Could not copy PIN — select and copy manually";
   }
 }
+
+pairCollapsible = bindCollapsibleAdd(document.getElementById("pair-form"), {
+  button: "#pair-join-btn",
+  expandLabel: "Join peer",
+  submitLabel: "Join peer",
+  cancelButton: "#pair-form-cancel",
+  focusSelector: "#peer-url",
+  onCancel: () => {
+    document.getElementById("peer-url").value = "";
+    document.getElementById("pair-code").value = "";
+    const candidate = document.getElementById("pair-candidate");
+    if (candidate) candidate.value = "";
+    document.getElementById("pair-status").textContent = "";
+    stopPairScan();
+    const sessionCancel = document.getElementById("pair-cancel-btn");
+    if (sessionCancel && !sessionCancel.hidden) {
+      void cancelPairSession();
+    }
+  },
+});
 
 document.getElementById("pair-start-btn").addEventListener("click", () => {
   void startPairSession();
@@ -2760,6 +2813,18 @@ async function postRefreshArtists(artistIds) {
   return { ok: true, ...data };
 }
 
+artistsCollapsible = bindCollapsibleAdd(document.getElementById("artists-form"), {
+  button: "#artists-submit",
+  expandLabel: "Add artists",
+  submitLabel: "Add artists",
+  cancelButton: "#artists-cancel",
+  focusSelector: "#artist-urls",
+  onCancel: () => {
+    document.getElementById("artist-urls").value = "";
+    document.getElementById("artists-status").textContent = "";
+  },
+});
+
 document.getElementById("artists-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const status = document.getElementById("artists-status");
@@ -2782,6 +2847,8 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
       return;
     }
     status.textContent = `Added ${data.added} mixes · ${data.artists} artists`;
+    document.getElementById("artist-urls").value = "";
+    artistsCollapsible?.collapse();
     await refreshMixes();
   } catch (err) {
     status.textContent = "Add artists request failed";
@@ -2806,9 +2873,16 @@ document.getElementById("refresh-all-artists").addEventListener("click", async (
   }
 });
 
-document.getElementById("intent-cancel").addEventListener("click", () => {
-  document.getElementById("intent-status").textContent = "";
-  resetIntentForm();
+intentCollapsible = bindCollapsibleAdd(document.getElementById("intent-form"), {
+  button: "#intent-submit",
+  expandLabel: "Create intent",
+  submitLabel: "Create intent",
+  cancelButton: "#intent-cancel",
+  focusSelector: "#intent-name",
+  onCancel: () => {
+    document.getElementById("intent-status").textContent = "";
+    clearIntentFormFields();
+  },
 });
 
 document.getElementById("intent-form").addEventListener("submit", async (event) => {

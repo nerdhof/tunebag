@@ -141,7 +141,7 @@
         <hr class="intent-list-rule" />
         <form id="intent-form">
           <input id="intent-edit-id" type="hidden" value="" />
-          <div class="add-form-fields">
+          <div class="add-form-fields" hidden>
             <div class="form-row">
               <label class="inline-field grow">
                 Name
@@ -192,7 +192,7 @@
           </div>
           <div class="form-row add-form-actions">
             <button type="submit" id="intent-submit" aria-label="Create intent" data-tip="Create intent">✚</button>
-            <button type="button" id="intent-cancel" hidden aria-label="Cancel edit" data-tip="Cancel">×</button>
+            <button type="button" id="intent-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
           </div>
         </form>
         <p id="intent-status" class="muted" role="status"></p>
@@ -279,7 +279,7 @@
           </table>
         </div>
         <form id="artists-form" class="form-row">
-          <div class="add-form-fields add-form-fields-inline">
+          <div class="add-form-fields add-form-fields-inline" hidden>
             <label class="inline-field grow">
               Artist URL
               <input
@@ -301,6 +301,7 @@
             </label>
           </div>
           <button type="submit" id="artists-submit" aria-label="Add artists" data-tip="Add artists">✚</button>
+          <button type="button" id="artists-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
           <button
             type="button"
             id="refresh-all-artists"
@@ -401,7 +402,7 @@
         <button type="button" id="sync-btn" aria-label="Sync catalog" data-tip="Sync catalog">⇄</button>
         <p id="sync-status" class="muted" role="status"></p>
         <form id="pair-form">
-          <div class="add-form-fields">
+          <div class="add-form-fields" hidden>
             <h3 class="peers-add-heading">Add peer</h3>
             <div class="form-row peers-add-row">
               <label class="inline-field grow">
@@ -492,11 +493,12 @@
           </div>
           <div class="form-row add-form-actions">
             <button type="submit" id="pair-join-btn" aria-label="Join peer" data-tip="Join peer">✚</button>
+            <button type="button" id="pair-form-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
           </div>
         </form>
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=39"></script>
+    <script src="/static/app.js?v=45"></script>
   </body>
 </html>
