@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -278,3 +278,62 @@ def test_expiry_removes_device_not_shrink_budget(tmp_path: Path) -> None:
     assert phone_rows == []
     laptop_row = next(dh for dh in updated.device_hours if dh.device_id == laptop.device_id)
     assert laptop_row.budget_seconds == 7200
+
+
+def test_aware_expires_at_does_not_crash_sync_or_block_peer_catalog(
+    tmp_path: Path,
+) -> None:
+    """UI ISO-Z expiry must not 500 /api/sync and block peer catalog writes."""
+    laptop, phone, _source, _clock = _pair(tmp_path)
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
+
+    aware_expiry = datetime(2024, 1, 1, 13, 0, 0, tzinfo=UTC)
+    intent = laptop.create_intent(
+        "Temp phone",
+        seed=1,
+        device_hours=[
+            (phone.device_id, 3600, aware_expiry),
+            (laptop.device_id, 7200),
+        ],
+    )
+    phone_hours = next(
+        dh for dh in intent.device_hours if dh.device_id == phone.device_id
+    )
+    assert phone_hours.expires_at is not None
+    assert phone_hours.expires_at.tzinfo is None
+    assert phone_hours.expires_at == datetime(2024, 1, 1, 13, 0, 0)
+
+    # Pre-fix catalog state: aware expires_at already in memory.
+    poisoned = intent.model_copy(
+        update={
+            "device_hours": [
+                dh.model_copy(update={"expires_at": aware_expiry})
+                if dh.device_id == phone.device_id
+                else dh
+                for dh in intent.device_hours
+            ]
+        }
+    )
+    laptop.catalog.upsert_intent(poisoned)
+    phone.catalog.upsert_intent(poisoned)
+
+    laptop.sync(fill=False)
+    phone.sync(fill=False)
+
+    mix = laptop.add_mix(
+        title="After aware expiry",
+        url="https://example.com/after-aware",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="after-aware",
+        artist_name="DJ Example",
+    )
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
+    assert mix.id in {m.id for m in phone.mixes()}
+
+    laptop.delete_intent(intent.id)
+    laptop.wait_for_sync()
+    phone.wait_for_sync()
+    assert intent.id not in {i.id for i in phone.intents()}

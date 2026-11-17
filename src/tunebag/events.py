@@ -26,6 +26,7 @@ class EventType(str, Enum):
     ASSIGNMENT_SET = "assignment_set"
     ASSIGNMENT_CLEARED = "assignment_cleared"
     PLAYED = "played"
+    SKIPPED = "skipped"
     PLAYHEAD = "playhead"
     LAST_HEARD = "last_heard"
     DEVICE_PAIRED = "device_paired"

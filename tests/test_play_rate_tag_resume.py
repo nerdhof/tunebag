@@ -13,6 +13,7 @@ from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, Stars
 from tunebag.events import EventType
 from tunebag.player import NullPlayer
+from tunebag.skip import SKIP_EFFECTIVE_SECONDS
 from tunebag.source import FakeSource
 
 
@@ -139,7 +140,8 @@ def test_mark_played_counts_as_played_without_waiting(tmp_path: Path) -> None:
 
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.played is True
-    assert laptop.is_playing() is False
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == mix_id
 
 
 def test_listening_past_75_percent_counts_as_played(tmp_path: Path) -> None:
@@ -166,6 +168,8 @@ def test_listening_past_75_percent_counts_as_played(tmp_path: Path) -> None:
     laptop.report_playhead(750)
 
     assert next(m for m in laptop.mixes() if m.id == mix_id).played is True
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == mix_id
 
 
 def test_stop_before_75_percent_leaves_mix_in_sequence_and_on_disk(
@@ -316,6 +320,14 @@ def test_played_file_deleted_once_replacement_is_local(tmp_path: Path) -> None:
     assert {m.id for m in laptop.files()} == {head}
     laptop.play(intent.id, head)
     laptop.mark_played()
+
+    # Still current: keep bytes so playback can continue.
+    assert head in {m.id for m in laptop.files()}
+    assert other in {m.id for m in laptop.files()}
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == head
+
+    laptop.stop()
 
     assert head not in {m.id for m in laptop.files()}
     assert other in {m.id for m in laptop.files()}
@@ -665,7 +677,8 @@ def test_seek_past_75_percent_marks_played(tmp_path: Path) -> None:
     laptop.seek(750)
 
     assert next(m for m in laptop.mixes() if m.id == mix_id).played is True
-    assert laptop.is_playing() is False
+    assert laptop.is_playing() is True
+    assert laptop.current_mix() == mix_id
 
 
 def test_pause_keeps_mix_and_play_resumes(tmp_path: Path) -> None:
@@ -747,3 +760,160 @@ def test_skip_advances_to_next_local_mix_without_marking_played(tmp_path: Path) 
     assert laptop.is_playing() is True
     assert next(m for m in laptop.mixes() if m.id == head).played is False
     assert len(recorder.plays) >= 2
+
+
+class _FakeClock:
+    def __init__(self, start: datetime | None = None) -> None:
+        self._now = start or datetime(2024, 1, 1, 12, 0, 0)
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += timedelta(seconds=seconds)
+
+
+def test_skip_keeps_sequence_until_five_minute_delay(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    laptop, _phone, source = _pair(tmp_path, clock=clock)
+    first = _add_mix(
+        laptop,
+        source,
+        title="Alpha",
+        duration_seconds=3600,
+        platform_id="alpha",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Beta",
+        duration_seconds=3600,
+        platform_id="beta",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Skip delay",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    before = laptop.sequence(intent.id)
+    assert before is not None
+    before_ids = [e.mix_id for e in before.entries]
+    assert set(before_ids) == {first, second}
+    head = before_ids[0]
+    other = before_ids[1]
+
+    laptop.fill_caches()
+    laptop.play(intent.id, head)
+    laptop.skip()
+
+    mid = laptop.sequence(intent.id)
+    assert mid is not None
+    assert [e.mix_id for e in mid.entries] == before_ids
+    abandoned = next(m for m in laptop.mixes() if m.id == head)
+    assert abandoned.played is False
+    assert abandoned.skipped is False
+    assert len(laptop.pending_skips()) == 1
+
+    clock.advance(SKIP_EFFECTIVE_SECONDS - 1)
+    assert laptop.commit_pending_skips() == []
+    still = next(m for m in laptop.mixes() if m.id == head)
+    assert still.skipped is False
+
+    clock.advance(1)
+    committed = laptop.commit_pending_skips()
+    assert committed == [head]
+    done = next(m for m in laptop.mixes() if m.id == head)
+    assert done.skipped is True
+    assert done.played is False
+    after = laptop.sequence(intent.id)
+    assert after is not None
+    assert [e.mix_id for e in after.entries] == [other, head]
+    assert not any(e.type is EventType.PLAYED for e in laptop.export_events())
+    assert any(e.type is EventType.SKIPPED for e in laptop.export_events())
+
+
+def test_pending_skip_canceled_when_mix_played_again(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    laptop, _phone, source = _pair(tmp_path, clock=clock)
+    first = _add_mix(
+        laptop,
+        source,
+        title="Alpha",
+        duration_seconds=3600,
+        platform_id="alpha",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Beta",
+        duration_seconds=3600,
+        platform_id="beta",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Skip cancel",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    before = laptop.sequence(intent.id)
+    assert before is not None
+    head = [e.mix_id for e in before.entries][0]
+    other = [e.mix_id for e in before.entries][1]
+    assert {head, other} == {first, second}
+
+    laptop.fill_caches()
+    laptop.play(intent.id, head)
+    laptop.skip()
+    assert len(laptop.pending_skips()) == 1
+
+    laptop.play(intent.id, head)
+    assert laptop.pending_skips() == []
+
+    clock.advance(SKIP_EFFECTIVE_SECONDS + 1)
+    assert laptop.commit_pending_skips() == []
+    mix = next(m for m in laptop.mixes() if m.id == head)
+    assert mix.skipped is False
+    assert mix.played is False
+
+
+def test_skipped_file_deleted_once_replacement_is_local(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    laptop, _phone, source = _pair(tmp_path, clock=clock)
+    first = _add_mix(
+        laptop,
+        source,
+        title="Alpha",
+        duration_seconds=3600,
+        platform_id="alpha",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Beta",
+        duration_seconds=3600,
+        platform_id="beta",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Skip file",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    before = laptop.sequence(intent.id)
+    assert before is not None
+    head = [e.mix_id for e in before.entries][0]
+    assert {head, [e.mix_id for e in before.entries][1]} == {first, second}
+
+    laptop.fill_caches()
+    assert head in {m.id for m in laptop.files()}
+    laptop.play(intent.id, head)
+    laptop.skip()
+    clock.advance(SKIP_EFFECTIVE_SECONDS)
+    laptop.commit_pending_skips()
+
+    assert next(m for m in laptop.mixes() if m.id == head).skipped is True
+    assert head not in {m.id for m in laptop.files()}

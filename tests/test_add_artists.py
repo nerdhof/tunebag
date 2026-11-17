@@ -94,6 +94,75 @@ def test_several_artist_urls_in_one_step() -> None:
     assert {a.name for a in laptop.artists()} == {"DJ Alpha", "DJ Beta"}
 
 
+def test_adding_same_artist_url_again_does_not_duplicate() -> None:
+    source = _source_with_two_artists()
+    laptop = DeviceAgent("laptop", source=source)
+
+    first = laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+    artist_id = laptop.artists()[0].id
+    second = laptop.add_artists(["https://soundcloud.com/dj-alpha/"])
+
+    assert [a.id for a in laptop.artists()] == [artist_id]
+    assert [m.title for m in laptop.mixes()] == ["Alpha Long Set"]
+    assert [m.id for m in laptop.mixes()] == [first[0].id]
+    assert second == []
+
+
+def test_readding_artist_url_adds_only_new_uploads() -> None:
+    source = FakeSource()
+    source.add_listing(
+        "https://soundcloud.com/dj-alpha",
+        ArtistListing(
+            platform=Platform.SOUNDCLOUD,
+            platform_id="alpha",
+            name="DJ Alpha",
+            url="https://soundcloud.com/dj-alpha",
+            uploads=[
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="a1",
+                    title="Alpha Long Set",
+                    url="https://soundcloud.com/dj-alpha/long",
+                    duration_seconds=3600,
+                ),
+            ],
+        ),
+    )
+    laptop = DeviceAgent("laptop", source=source)
+    laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+
+    source.add_listing(
+        "https://soundcloud.com/dj-alpha",
+        ArtistListing(
+            platform=Platform.SOUNDCLOUD,
+            platform_id="alpha",
+            name="DJ Alpha",
+            url="https://soundcloud.com/dj-alpha",
+            uploads=[
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="a1",
+                    title="Alpha Long Set",
+                    url="https://soundcloud.com/dj-alpha/long",
+                    duration_seconds=3600,
+                ),
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="a2",
+                    title="Alpha Night",
+                    url="https://soundcloud.com/dj-alpha/night",
+                    duration_seconds=4000,
+                ),
+            ],
+        ),
+    )
+    added = laptop.add_artists(["https://soundcloud.com/dj-alpha"])
+
+    assert len(laptop.artists()) == 1
+    assert {m.title for m in laptop.mixes()} == {"Alpha Long Set", "Alpha Night"}
+    assert [m.title for m in added] == ["Alpha Night"]
+
+
 def test_default_min_duration_drops_short_uploads() -> None:
     source = _source_with_two_artists()
     laptop = DeviceAgent("laptop", source=source)

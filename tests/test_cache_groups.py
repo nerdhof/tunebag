@@ -282,3 +282,44 @@ def test_refresh_intent_folders_removes_orphan_dirs(tmp_path: Path) -> None:
     assert not orphan_dir.exists()
     assert agent.intent_folder(intent.id).is_dir()
     assert mix_id in {m.id for m in agent.files()}
+
+
+def test_cache_groups_order_intents_by_sequence_urgency(tmp_path: Path) -> None:
+    """Intent groups sort by soonest listen need; mixes stay assignment order."""
+    agent, source = _agent(tmp_path)
+    a0 = _add_mix(agent, source, title="A0", duration_seconds=3600, platform_id="a0")
+    a1 = _add_mix(agent, source, title="A1", duration_seconds=1800, platform_id="a1")
+    b0 = _add_mix(agent, source, title="B0", duration_seconds=3600, platform_id="b0")
+    agent.tag_mix(a0, ["alpha"])
+    agent.tag_mix(a1, ["alpha"])
+    agent.tag_mix(b0, ["bravo"])
+    orphan = _add_mix(agent, source, title="Orphan", duration_seconds=600, platform_id="o")
+
+    intent_a = agent.create_intent(
+        "Alpha",
+        tags=["alpha"],
+        seed=1,
+        device_hours=[(agent.device_id, 7200)],
+    )
+    intent_b = agent.create_intent(
+        "Bravo",
+        tags=["bravo"],
+        seed=1,
+        device_hours=[(agent.device_id, 3600)],
+    )
+    assignment_a = agent.assignment(intent_a.id)
+    assignment_b = agent.assignment(intent_b.id)
+    assert assignment_a is not None and assignment_b is not None
+    assert set(assignment_a.mix_ids) == {a0, a1}
+    assert list(assignment_b.mix_ids) == [b0]
+
+    # Catalog order is Alpha then Bravo; progress on Bravo makes it sooner.
+    agent.set_current_mix(b0)
+    agent._playback_position = 900.0
+    agent._store_local_file(orphan, b"audio:o")
+
+    groups = agent.cache_groups()
+    assert [g["name"] for g in groups] == ["Bravo", "Alpha", "Other"]
+    assert [m["id"] for m in groups[0]["mixes"]] == [b0]
+    assert [m["id"] for m in groups[1]["mixes"]] == list(assignment_a.mix_ids)
+    assert [m["id"] for m in groups[2]["mixes"]] == [orphan]

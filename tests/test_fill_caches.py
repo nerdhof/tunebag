@@ -454,3 +454,70 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
     cached_ids = {m.id for m in laptop.files()}
     assert set(new_ids).issubset(cached_ids)
     assert not set(old_ids).intersection(cached_ids)
+
+
+def test_fill_caches_picks_sooner_intent_before_later_mix(tmp_path: Path) -> None:
+    """Cross-intent fill uses sequence urgency, not catalog intent order."""
+    laptop, _phone, source = _pair(tmp_path)
+    a0 = _add_mix(
+        laptop,
+        source,
+        title="A0",
+        duration_seconds=3600,
+        platform_id="a0",
+        tags=["alpha"],
+        stars=Stars.FIVE,
+    )
+    a1 = _add_mix(
+        laptop,
+        source,
+        title="A1",
+        duration_seconds=3600,
+        platform_id="a1",
+        tags=["alpha"],
+        stars=Stars.FIVE,
+    )
+    b0 = _add_mix(
+        laptop,
+        source,
+        title="B0",
+        duration_seconds=3600,
+        platform_id="b0",
+        tags=["bravo"],
+        stars=Stars.FIVE,
+    )
+    intent_a = laptop.create_intent(
+        "Alpha",
+        tags=["alpha"],
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    intent_b = laptop.create_intent(
+        "Bravo",
+        tags=["bravo"],
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    assignment_a = laptop.assignment(intent_a.id)
+    assignment_b = laptop.assignment(intent_b.id)
+    assert assignment_a is not None and assignment_b is not None
+    assert set(assignment_a.mix_ids) == {a0, a1}
+    assert list(assignment_b.mix_ids) == [b0]
+    head, tail = assignment_a.mix_ids[0], assignment_a.mix_ids[1]
+    head_url = laptop.catalog.mixes[head].url
+    tail_url = laptop.catalog.mixes[tail].url
+
+    # Deep into Alpha's first mix: Bravo's head (urgency 0) beats Alpha's next
+    # mix (urgency ≈ 100). Catalog order would still finish Alpha first.
+    laptop._store_local_file(head, source.bytes_by_url[head_url])
+    laptop.set_current_mix(head)
+    laptop._playback_position = 3500.0
+    source.fetch_calls.clear()
+
+    laptop.fill_caches()
+
+    assert source.fetch_calls == [
+        "https://example.com/b0",
+        tail_url,
+    ]
+    assert {m.id for m in laptop.files()} == {a0, a1, b0}

@@ -57,6 +57,7 @@ class Mix(BaseModel):
     stars: Stars | None = None
     rejected: bool = False
     played: bool = False
+    skipped: bool = False
     last_heard_at: datetime | None = None
     added_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -191,3 +192,12 @@ class RejectPending(BaseModel):
     device_id: UUID
     created_at: datetime = Field(default_factory=datetime.utcnow)
     undo_until: datetime
+
+
+class SkipPending(BaseModel):
+    """Local-only skip during the 5 min delay. Not synced until committed."""
+
+    mix_id: UUID
+    device_id: UUID
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    effective_at: datetime

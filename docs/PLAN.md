@@ -57,6 +57,7 @@ Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating d
 - Rating and reject are separate.
 - Tags editable from list and player; suggest existing tags.
 - Played → back of pool; delete bytes once replacement is local.
+- Skip → 5 min local delay (no sync yet); then sticky Skipped (not Played) → back of pool; delete bytes once replacement is local.
 - Reject → 20s local undo (no sync yet); then tombstone + delete everywhere.
 
 ### Pairing

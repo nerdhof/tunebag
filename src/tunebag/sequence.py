@@ -53,12 +53,13 @@ def eligible_by_bucket(
         if matches_filter(mix, tags):
             buckets[bucket_for(mix)].append(mix)
     for bucket in buckets:
-        # Unplayed first; played mixes sit at the back. Seed shuffles within each group.
-        unplayed = [m for m in buckets[bucket] if not m.played]
-        played = [m for m in buckets[bucket] if m.played]
-        rng.shuffle(unplayed)
-        rng.shuffle(played)
-        buckets[bucket] = unplayed + played
+        # Fresh first; played or skipped mixes sit at the back.
+        # Seed shuffles within each group.
+        fresh = [m for m in buckets[bucket] if not m.played and not m.skipped]
+        retired = [m for m in buckets[bucket] if m.played or m.skipped]
+        rng.shuffle(fresh)
+        rng.shuffle(retired)
+        buckets[bucket] = fresh + retired
     return buckets
 
 
