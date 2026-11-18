@@ -1805,6 +1805,10 @@ function renderSeekMarks(tracks, duration, artist) {
     section.setAttribute("aria-label", `Seek to ${title}`);
     section.style.left = `${startPct}%`;
     section.style.width = `${Math.max(0, widthPct)}%`;
+    const durationEl = document.createElement("span");
+    durationEl.className = "player-seek-duration";
+    durationEl.textContent = formatClock(trackDuration);
+    section.appendChild(durationEl);
     marksEl.appendChild(section);
 
     const label = document.createElement("span");
@@ -2042,9 +2046,26 @@ function appendArtistFoldName(artistLabel, artistName, mixes) {
   );
 }
 
-/** Pad 0–99 as 00–99 so single-digit % aligns; 100 stays "100". */
-function formatStatPct(pct) {
-  return String(pct).padStart(2, "0");
+/** Pct first, then symbol (+ optional suffix); fixed-width digits keep columns aligned. */
+function buildArtistStatEl(className, symbol, pct, suffix = null) {
+  const el = document.createElement("span");
+  el.className = `artist-stat ${className}`;
+  const pctEl = document.createElement("span");
+  pctEl.className = "artist-stat-pct";
+  pctEl.textContent = String(pct);
+  el.appendChild(pctEl);
+  const pctSign = document.createElement("span");
+  pctSign.className = "artist-stat-pct-sign";
+  pctSign.textContent = "%";
+  el.appendChild(pctSign);
+  el.appendChild(document.createTextNode(symbol));
+  if (suffix != null) {
+    const suffixEl = document.createElement("span");
+    suffixEl.className = "artist-stat-avg";
+    suffixEl.textContent = suffix;
+    el.appendChild(suffixEl);
+  }
+  return el;
 }
 
 function buildArtistStatsEl(mixes) {
@@ -2052,24 +2073,27 @@ function buildArtistStatsEl(mixes) {
   if (stats.count <= 0) return null;
   const wrap = document.createElement("span");
   wrap.className = "artist-stats";
-  const rating = document.createElement("span");
-  rating.className = "artist-stat artist-stat-rating";
-  const avgText =
-    stats.avgStars != null ? `${stats.avgStars.toFixed(1)}★` : "★";
-  rating.textContent = `${avgText}${formatStatPct(stats.ratedPct)}%`;
-  wrap.appendChild(rating);
-  const tagged = document.createElement("span");
-  tagged.className = "artist-stat artist-stat-tagged";
-  tagged.textContent = `#${formatStatPct(stats.taggedPct)}%`;
-  wrap.appendChild(tagged);
-  const reject = document.createElement("span");
-  reject.className = "artist-stat artist-stat-reject";
-  reject.textContent = `✕${formatStatPct(stats.rejectedPct)}%`;
-  wrap.appendChild(reject);
-  const played = document.createElement("span");
-  played.className = "artist-stat artist-stat-played";
-  played.textContent = `▶${formatStatPct(stats.playedPct)}%`;
-  wrap.appendChild(played);
+  const avgSuffix =
+    stats.avgStars != null ? stats.avgStars.toFixed(1) : "0.0";
+  const ratingEl = buildArtistStatEl(
+    "artist-stat-rating",
+    "★",
+    stats.ratedPct,
+    avgSuffix,
+  );
+  if (stats.avgStars == null) {
+    ratingEl.querySelector(".artist-stat-avg")?.classList.add("is-empty");
+  }
+  wrap.appendChild(ratingEl);
+  wrap.appendChild(
+    buildArtistStatEl("artist-stat-tagged", "#", stats.taggedPct),
+  );
+  wrap.appendChild(
+    buildArtistStatEl("artist-stat-reject", "✕", stats.rejectedPct),
+  );
+  wrap.appendChild(
+    buildArtistStatEl("artist-stat-played", "▶", stats.playedPct),
+  );
   return wrap;
 }
 
@@ -2183,6 +2207,8 @@ async function refreshMixes({ force = false } = {}) {
       artistCell.colSpan = 5;
       const artistInner = document.createElement("div");
       artistInner.className = "artist-row-inner";
+      const foldMain = document.createElement("div");
+      foldMain.className = "artist-fold-main";
       const artistLabel = document.createElement("span");
       artistLabel.className = "artist-label";
       const toggle = document.createElement("span");
@@ -2207,9 +2233,10 @@ async function refreshMixes({ force = false } = {}) {
         artistLabel.appendChild(document.createTextNode(" "));
         artistLabel.appendChild(link);
       }
-      artistInner.appendChild(artistLabel);
+      foldMain.appendChild(artistLabel);
       const statsEl = buildArtistStatsEl(group.mixes);
-      if (statsEl) artistInner.appendChild(statsEl);
+      if (statsEl) foldMain.appendChild(statsEl);
+      artistInner.appendChild(foldMain);
       const refreshBtn = document.createElement("button");
       refreshBtn.type = "button";
       refreshBtn.className = "artist-refresh";

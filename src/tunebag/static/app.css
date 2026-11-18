@@ -503,6 +503,29 @@ form.add-form-open .add-form-fields-inline {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
+.player-seek-duration {
+  position: absolute;
+  top: 0.15rem;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 0.2rem);
+  overflow: hidden;
+  color: color-mix(in srgb, var(--accent) 90%, var(--fg));
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.player-seek-section:hover .player-seek-duration,
+.player-seek-section.is-hot .player-seek-duration {
+  opacity: 1;
+}
+
 .player-seek-label {
   position: absolute;
   /* Sit just above the bar inside the headroom column. */
@@ -1322,7 +1345,8 @@ button:disabled {
   position: sticky;
   top: 0;
   background: var(--card);
-  z-index: 1;
+  /* Above artist-stats overlays so folds don't paint over the header while scrolling */
+  z-index: 2;
   font-weight: 600;
 }
 
@@ -1353,18 +1377,97 @@ button:disabled {
   width: 100%;
 }
 
+#catalog-table .artist-fold-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+}
+
 #catalog-table .artist-label {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 0.35rem;
 }
 
 #catalog-table .artist-stats {
   display: inline-flex;
-  gap: 0.55rem;
+  gap: 0;
   flex-shrink: 0;
   margin-left: auto;
+  font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  line-height: 1.2;
+  position: relative;
+  top: -0.55em;
+  z-index: 0;
+  /* Soft veil so stats stay readable when overlapping long titles */
+  --artist-stats-veil: color-mix(in srgb, var(--muted) 12%, var(--card));
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--artist-stats-veil) 22%,
+    var(--artist-stats-veil)
+  );
+  padding-left: 0.65rem;
+}
+
+#catalog-table .artist-row:hover .artist-stats {
+  --artist-stats-veil: color-mix(in srgb, var(--muted) 20%, var(--card));
+}
+
+#catalog-table .artist-row[data-expanded="true"] .artist-stats {
+  --artist-stats-veil: color-mix(in srgb, var(--accent) 12%, var(--card));
+}
+
+#catalog-table .artist-stat-pct {
+  display: inline-block;
+  min-width: 2ch;
+  text-align: right;
+}
+
+#catalog-table .artist-stat-pct-sign {
+  font-size: 0.75em;
+}
+
+#catalog-table .artist-stat-avg {
+  display: inline-block;
+  min-width: 2.5ch;
+  text-align: left;
+}
+
+#catalog-table .artist-stat-avg.is-empty {
+  color: var(--muted);
+}
+
+#catalog-table .artist-stat + .artist-stat {
+  margin-left: 0.2ch;
+}
+
+@media (max-width: 40rem) {
+  #catalog-table .artist-fold-main {
+    /* Stats sit on top of the title when the fold is tight */
+    min-height: 1.35em;
+  }
+
+  #catalog-table .artist-stats {
+    position: absolute;
+    top: -0.7em;
+    right: 0;
+    z-index: 0;
+    font-size: 0.7rem;
+    pointer-events: none;
+  }
+
+  #catalog-table .artist-label {
+    /* Keep a little clear space under the overlay for the name start */
+    max-width: 100%;
+  }
 }
 
 #catalog-table .artist-stat-rating {

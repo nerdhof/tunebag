@@ -276,9 +276,18 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     assert "artist-stat-tagged" in js
     assert "artist-stat-reject" in js
     assert "artist-stat-played" in js
-    assert "#${stats.taggedPct}%" in js
-    assert "✕${stats.rejectedPct}%" in js
-    assert "▶${stats.playedPct}%" in js
+    assert "buildArtistStatEl" in js
+    assert "artist-stat-pct" in js
+    assert "artist-stat-pct-sign" in js
+    assert "artist-stat-avg" in js
+    assert "artist-fold-main" in js
+    assert 'buildArtistStatEl("artist-stat-tagged", "#", stats.taggedPct)' in js
+    assert 'buildArtistStatEl("artist-stat-reject", "✕", stats.rejectedPct)' in js
+    assert 'buildArtistStatEl("artist-stat-played", "▶", stats.playedPct)' in js
+    assert "artist-stat-rating" in js
+    assert '"0.0"' in js
+    assert "is-empty" in js
+    assert "avgSuffix" in js
 
 
 def test_unreject_api_clears_committed_reject(tmp_path: Path) -> None:
