@@ -105,22 +105,81 @@ function normalizeArtistNeedle(text) {
 
 /**
  * Categorical OKLCH swatches for tags (N=64).
- * Hue is golden-angled; L/C step so neighbors differ on more than one axis.
- * Slot assignment is a pure function of the current distinct tag set
- * (hash preferred + alpha-ordered linear probe), so clients agree after sync
- * without storing color in the Catalog.
+ * Built once via maximin packing over an L/C/hue grid so arbitrary slot
+ * pairs stay farther apart than golden-angle indexing (which can land ~8°
+ * apart). Assignment stays hash-preferred + alpha linear probe — not
+ * distance-optimized per catalog — so merge recolors stay rare.
  */
 const TAG_CHIP_PALETTE = (() => {
   const n = 64;
+  const Ls = [0.44, 0.52, 0.6, 0.68];
+  const Cs = [0.1, 0.135, 0.17, 0.2];
+  /** @type {{ L: number, C: number, hue: number }[]} */
+  const candidates = [];
+  for (const L of Ls) {
+    for (const C of Cs) {
+      for (let hue = 0; hue < 360; hue += 8) {
+        candidates.push({ L, C, hue });
+      }
+    }
+  }
+
+  function oklchDist(a, b) {
+    const dL = (a.L - b.L) * 2.8;
+    const dC = (a.C - b.C) * 2.2;
+    const dh = Math.min(
+      Math.abs(a.hue - b.hue),
+      360 - Math.abs(a.hue - b.hue),
+    );
+    const dH = 2 * Math.sqrt(Math.max(a.C * b.C, 0)) * Math.sin((dh * Math.PI) / 360);
+    return Math.hypot(dL, dC, dH * 3.2);
+  }
+
+  /** @type {{ L: number, C: number, hue: number }[]} */
   const out = [];
-  for (let i = 0; i < n; i += 1) {
-    const hue = (i * 137.508) % 360;
-    const L = 0.46 + (i % 4) * 0.055; // 0.46 … 0.625
-    const C = 0.12 + ((i * 3) % 5) * 0.016; // ~0.12 … 0.184
-    out.push({ L, C, hue });
+  // Deterministic seed: mid-light, mid-chroma, hue 0.
+  let seedIdx = 0;
+  let seedScore = Infinity;
+  for (let i = 0; i < candidates.length; i += 1) {
+    const c = candidates[i];
+    const score = Math.hypot(c.L - 0.52, c.C - 0.135, Math.min(c.hue, 360 - c.hue) / 180);
+    if (score < seedScore) {
+      seedScore = score;
+      seedIdx = i;
+    }
+  }
+  out.push(candidates[seedIdx]);
+  const taken = new Set([seedIdx]);
+
+  while (out.length < n) {
+    let bestIdx = -1;
+    let bestMin = -1;
+    for (let i = 0; i < candidates.length; i += 1) {
+      if (taken.has(i)) continue;
+      let minD = Infinity;
+      for (const sw of out) {
+        const d = oklchDist(candidates[i], sw);
+        if (d < minD) minD = d;
+      }
+      if (
+        minD > bestMin ||
+        (minD === bestMin &&
+          bestIdx >= 0 &&
+          candidates[i].hue < candidates[bestIdx].hue)
+      ) {
+        bestMin = minD;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) break;
+    taken.add(bestIdx);
+    out.push(candidates[bestIdx]);
   }
   return out;
 })();
+
+/** Muted swatch for not-yet-created tag suggestions. */
+const TAG_CHIP_CREATE_SWATCH = { L: 0.58, C: 0.01, hue: 0 };
 
 function tagChipHash(tag) {
   let hash = 2166136261;
@@ -134,6 +193,7 @@ function tagChipHash(tag) {
 /**
  * Unique palette slots for a tag set: preferred = hash % N; conflicts walk
  * alphabetically and take the smallest k with (hash + k) % N free.
+ * When the table is full (|tags| > N), further tags reuse hash % N (no loop).
  * @param {Iterable<string>} allTags
  * @returns {Map<string, number>}
  */
@@ -151,13 +211,16 @@ function assignTagChipSlots(allTags) {
     const preferred = tagChipHash(key) % n;
     let slot = preferred;
     if (used.size < n) {
-      let k = 0;
-      while (used.has(slot) && k < n) {
-        k += 1;
-        slot = (preferred + k) % n;
+      for (let k = 0; k < n; k += 1) {
+        const cand = (preferred + k) % n;
+        if (!used.has(cand)) {
+          slot = cand;
+          break;
+        }
       }
       used.add(slot);
     }
+    // else: palette full — reuse preferred (intentional collision)
     slots.set(key, slot);
   }
   return slots;
@@ -377,7 +440,9 @@ function mountTagEditor(root, options) {
       highlightIndex = Math.max(0, rows.length - 1);
     }
     const slots = assignTagChipSlots(
-      colorContextTags(rows.map((row) => row.tag)),
+      colorContextTags(
+        rows.filter((row) => !row.create).map((row) => row.tag),
+      ),
     );
     suggestList.replaceChildren();
     rows.forEach((row, index) => {
@@ -386,10 +451,14 @@ function mountTagEditor(root, options) {
       item.className = "tag-suggest";
       if (index === highlightIndex) item.classList.add("is-active");
       if (row.create) item.classList.add("is-create");
-      const key = normalizeTag(row.tag);
-      const slot =
-        slots.get(key) ?? tagChipHash(key) % TAG_CHIP_PALETTE.length;
-      const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
+      const [border, fill] = row.create
+        ? tagChipSwatchCss(TAG_CHIP_CREATE_SWATCH)
+        : tagChipSwatchCss(
+            TAG_CHIP_PALETTE[
+              slots.get(normalizeTag(row.tag)) ??
+                tagChipHash(normalizeTag(row.tag)) % TAG_CHIP_PALETTE.length
+            ],
+          );
       item.style.setProperty("--tag-chip-border", border);
       item.style.setProperty("--tag-chip-fill", fill);
       const label = document.createElement("span");
