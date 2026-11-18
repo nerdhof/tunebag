@@ -420,10 +420,12 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-seek-rail {
+  --seek-bar-height: 1.25rem;
   grid-area: rail;
   position: relative;
   flex: 1 1 auto;
   width: 100%;
+  height: var(--seek-bar-height);
   min-width: 0;
   display: flex;
   align-items: center;
@@ -431,23 +433,24 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-seek-marks {
-  /* Include headroom so section hit-targets above the bar receive events. */
+  /* Headroom + bar band as one continuous overlay (avoids Firefox range-height gaps). */
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
   top: calc(-1 * var(--seek-label-headroom, 5.5rem));
+  height: calc(var(--seek-label-headroom, 5.5rem) + var(--seek-bar-height));
+  bottom: auto;
   overflow: visible;
   pointer-events: none;
   z-index: 2;
 }
 
 .player-seek-mark {
-  /* Anchor to the bar band at the bottom of the expanded marks layer. */
+  /* Full bar-band height so ticks stay centered with the range. */
   position: absolute;
-  top: auto;
-  bottom: 0.15rem;
-  height: 0.85rem;
+  top: var(--seek-label-headroom, 5.5rem);
+  bottom: 0;
+  height: auto;
   width: 2px;
   margin-left: -1px;
   background: color-mix(in srgb, var(--fg) 75%, transparent);
@@ -455,14 +458,14 @@ form.add-form-open .add-form-fields-inline {
   pointer-events: none;
 }
 
-/* Bar-band tint (range stays on top for scrubbing). */
+/* Bar-band tint; meets the headroom section with no gap. */
 .player-seek-section-fill {
   position: absolute;
   left: 0;
-  top: auto;
+  top: var(--seek-label-headroom, 5.5rem);
   bottom: 0;
-  height: 1.1rem;
-  border-radius: 2px;
+  height: auto;
+  border-radius: 0 0 2px 2px;
   background: transparent;
   pointer-events: none;
   z-index: 0;
@@ -504,7 +507,7 @@ form.add-form-open .add-form-fields-inline {
   position: absolute;
   /* Sit just above the bar inside the headroom column. */
   top: auto;
-  bottom: calc(100% - var(--seek-label-headroom, 5.5rem) + 0.25rem);
+  bottom: calc(var(--seek-bar-height) + 0.2rem);
   max-width: none;
   padding: 0;
   overflow: visible;
@@ -531,12 +534,13 @@ form.add-form-open .add-form-fields-inline {
   width: 100%;
   min-width: 0;
   margin: 0;
-  height: auto;
-  min-height: 0;
+  height: var(--seek-bar-height);
+  min-height: var(--seek-bar-height);
+  max-height: var(--seek-bar-height);
   padding: 0;
   border: none;
   background: transparent;
-  line-height: normal;
+  line-height: var(--seek-bar-height);
 }
 
 @media (max-width: 40rem) {

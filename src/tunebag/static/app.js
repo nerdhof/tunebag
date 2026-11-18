@@ -1563,6 +1563,10 @@ let playerSeekDragging = false;
 let playerPollTimer = null;
 let playerSeekTracks = [];
 let playerSeekArtist = "";
+/** Stable key for current marks layout; skip DOM rebuild while unchanged. */
+let playerSeekMarksKey = "";
+/** Track index currently highlighted (−1 = none). Survives poll refreshes. */
+let playerSeekHotIndex = -1;
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1632,6 +1636,7 @@ function trackStartSeconds(tracks, index) {
 }
 
 function setSeekTrackHighlight(index) {
+  playerSeekHotIndex = index;
   const marksEl = document.getElementById("player-seek-marks");
   if (!marksEl) return;
   for (const el of marksEl.querySelectorAll(
@@ -1643,6 +1648,7 @@ function setSeekTrackHighlight(index) {
 }
 
 function clearSeekTrackHighlight() {
+  playerSeekHotIndex = -1;
   const marksEl = document.getElementById("player-seek-marks");
   if (!marksEl) return;
   for (const el of marksEl.querySelectorAll(
@@ -1650,6 +1656,18 @@ function clearSeekTrackHighlight() {
   )) {
     el.classList.remove("is-hot");
   }
+}
+
+function seekMarksLayoutKey(tracks, duration, artist) {
+  if (!Array.isArray(tracks) || tracks.length < 2) return "";
+  return JSON.stringify({
+    artist: String(artist || ""),
+    duration: Math.max(0, Number(duration) || 0),
+    tracks: tracks.map((track) => [
+      String(track?.title || ""),
+      Math.max(0, Number(track?.duration_seconds) || 0),
+    ]),
+  });
 }
 
 async function seekToPlayerPosition(positionSeconds) {
@@ -1734,12 +1752,17 @@ function renderSeekMarks(tracks, duration, artist) {
   const rail = seekbar?.closest(".player-seek-rail");
   const seekRow = seekbar?.closest(".player-seek");
   if (!marksEl || !seekbar) return;
-  marksEl.replaceChildren();
   const list = Array.isArray(tracks) ? tracks : [];
   const total = Math.max(0, Number(duration) || 0);
+  const layoutKey = seekMarksLayoutKey(list, total, artist);
   if (list.length < 2 || total <= 0) {
+    if (playerSeekMarksKey !== "") {
+      marksEl.replaceChildren();
+      playerSeekMarksKey = "";
+    }
     playerSeekTracks = [];
     playerSeekArtist = "";
+    clearSeekTrackHighlight();
     seekbar.removeAttribute("title");
     rail?.classList.remove("has-track-labels");
     setSeekLabelHeadroom(seekRow, [], "");
@@ -1748,6 +1771,15 @@ function renderSeekMarks(tracks, duration, artist) {
   playerSeekTracks = list;
   playerSeekArtist = String(artist || "");
   seekbar.removeAttribute("title");
+  // Poll refreshes call this every 500ms; keep DOM stable so hover/is-hot survive.
+  if (layoutKey === playerSeekMarksKey && marksEl.childElementCount > 0) {
+    if (playerSeekHotIndex >= 0) {
+      setSeekTrackHighlight(playerSeekHotIndex);
+    }
+    return;
+  }
+  playerSeekMarksKey = layoutKey;
+  marksEl.replaceChildren();
   rail?.classList.add("has-track-labels");
   setSeekLabelHeadroom(seekRow, list, playerSeekArtist);
   let cumulative = 0;
@@ -1789,6 +1821,9 @@ function renderSeekMarks(tracks, duration, artist) {
       mark.style.left = `${(cumulative / total) * 100}%`;
       marksEl.appendChild(mark);
     }
+  }
+  if (playerSeekHotIndex >= 0) {
+    setSeekTrackHighlight(playerSeekHotIndex);
   }
 }
 
@@ -2007,6 +2042,11 @@ function appendArtistFoldName(artistLabel, artistName, mixes) {
   );
 }
 
+/** Pad 0–99 as 00–99 so single-digit % aligns; 100 stays "100". */
+function formatStatPct(pct) {
+  return String(pct).padStart(2, "0");
+}
+
 function buildArtistStatsEl(mixes) {
   const stats = artistGroupStats(mixes);
   if (stats.count <= 0) return null;
@@ -2016,19 +2056,19 @@ function buildArtistStatsEl(mixes) {
   rating.className = "artist-stat artist-stat-rating";
   const avgText =
     stats.avgStars != null ? `${stats.avgStars.toFixed(1)}★` : "★";
-  rating.textContent = `${avgText}${stats.ratedPct}%`;
+  rating.textContent = `${avgText}${formatStatPct(stats.ratedPct)}%`;
   wrap.appendChild(rating);
   const tagged = document.createElement("span");
   tagged.className = "artist-stat artist-stat-tagged";
-  tagged.textContent = `#${stats.taggedPct}%`;
+  tagged.textContent = `#${formatStatPct(stats.taggedPct)}%`;
   wrap.appendChild(tagged);
   const reject = document.createElement("span");
   reject.className = "artist-stat artist-stat-reject";
-  reject.textContent = `✕${stats.rejectedPct}%`;
+  reject.textContent = `✕${formatStatPct(stats.rejectedPct)}%`;
   wrap.appendChild(reject);
   const played = document.createElement("span");
   played.className = "artist-stat artist-stat-played";
-  played.textContent = `▶${stats.playedPct}%`;
+  played.textContent = `▶${formatStatPct(stats.playedPct)}%`;
   wrap.appendChild(played);
   return wrap;
 }
