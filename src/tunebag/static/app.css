@@ -351,7 +351,10 @@ form.add-form-open .add-form-fields-inline {
   width: 100%;
 }
 
-/* Clip angled seek titles here only — not #player — so tag chips/picker can paint out. */
+/*
+ * Hard-clip angled seek titles at the transport edge (no clip-margin — that
+ * reintroduced page scroll). Tags live in .player-below, outside this clip.
+ */
 .player-transport {
   display: flex;
   flex-direction: column;
@@ -359,7 +362,11 @@ form.add-form-open .add-form-fields-inline {
   align-items: stretch;
   margin: 0.75rem 0 0;
   overflow: clip;
-  overflow-clip-margin: 12rem;
+}
+
+#player,
+.player-below {
+  overflow: visible;
 }
 
 .player-top {
@@ -419,15 +426,12 @@ form.add-form-open .add-form-fields-inline {
 .player-seek.has-track-labels {
   padding-top: var(--seek-label-headroom, 5.5rem);
   box-sizing: content-box;
-  /* Paint long titles outside the seek box without contributing scrollable overflow. */
-  overflow: clip;
-  overflow-clip-margin: 12rem;
+  overflow: visible; /* transport hard-clips overhang; keep labels inside headroom */
 }
 
 .player-below {
   margin-top: 0.55rem;
   min-width: 0;
-  overflow: visible;
 }
 
 #player-now {
