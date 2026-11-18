@@ -30,7 +30,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from tunebag.activity import ActivityEntry, ActivityLog
-from tunebag.catalog import Catalog
 from tunebag.discovery import (
     DISCOVERY_REFRESH_SECONDS,
     LanAdvertisement,
@@ -50,9 +49,7 @@ from tunebag.domain import (
     RejectPending,
     ReleaseKind,
     Sequence,
-    SequenceEntry,
     SkipPending,
-    StarBucket,
     StarDistribution,
     Stars,
     default_intent_platforms,
@@ -78,6 +75,12 @@ from tunebag.pairing import (
     save_locator_hints,
 )
 from tunebag.player import AudioPlayer, default_player
+from tunebag.projection import (
+    CatalogState,
+    LocalEffects,
+    _intent_from_payload,
+    apply as apply_catalog_event,
+)
 from tunebag.reject import RejectBuffer
 from tunebag.sequence import assign_by_budget, build_sequence
 from tunebag.skip import SkipBuffer
@@ -93,7 +96,6 @@ from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 
 _HTTP_TIMEOUT = 5.0
 PLAYED_THRESHOLD = 0.75
-PLAYHEAD_NEAR_SECONDS = 120.0
 # Meaningful listen: position reaches min(10s, 2% of duration); rising edge only.
 LAST_HEARD_CAP_SECONDS = 10.0
 LAST_HEARD_DURATION_FRACTION = 0.02
@@ -114,9 +116,6 @@ EXPLORE_DISTRIBUTION = StarDistribution(
 )
 # (device_id, budget) or (device_id, budget, expires_at)
 DeviceHoursSpec = tuple[UUID, int] | tuple[UUID, int, datetime | None]
-MergeKey = tuple[str, ...]
-# Author time first (causal on one Device); (device_id, seq, id) breaks ties.
-MergeWin = tuple[datetime, UUID, int, UUID]
 
 # Catalog Event → UI section notices (Device-local; see ui-view-notices spec).
 _MIXES = (UIViewSection.MIXES,)
@@ -163,7 +162,7 @@ class DeviceAgent:
         # multi-agent tests (default ~/.tunebag) do not collide on one identity.json.
         persist = data_dir is not None
         self._persist = persist
-        self.catalog = Catalog(data_dir=data_dir)
+        self.catalog = CatalogState(data_dir=data_dir)
         self.data_dir = self.catalog.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._locator_hints_path = self.data_dir / "locator_hints.json"
@@ -206,24 +205,9 @@ class DeviceAgent:
         )
         self._pair_candidates: dict[str, dict[str, Any]] = {}
         self._seen_event_ids: set[UUID] = set()
-        # Events whose author is not yet in Catalog; flushed on DEVICE_PAIRED / pair.
-        self._unknown_author_buffer: dict[UUID, Event] = {}
-        # Sticky until local re-pair (pairing session); remote DEVICE_PAIRED cannot undo.
-        self._unpaired_device_ids: set[UUID] = set()
         # Ephemeral pairing session (host and/or guest view); never persisted.
         self._pairing_session: dict[str, Any] | None = None
         self._local_files: dict[UUID, bytes] = {}
-        # Deterministic merge bookkeeping (same events ⇒ same Catalog).
-        self._merge_wins: dict[MergeKey, MergeWin] = {}
-        self._deleted_artists: set[UUID] = set()
-        self._rejected_mix_ids: set[UUID] = set()
-        self._played_mix_ids: set[UUID] = set()
-        self._skipped_mix_ids: set[UUID] = set()
-        self._pending_tags: dict[UUID, list[str]] = {}
-        self._pending_stars: dict[UUID, Stars] = {}
-        self._pending_last_heard: dict[UUID, datetime] = {}
-        self._pending_sequences: dict[UUID, Sequence] = {}
-        self._pending_assignments: dict[tuple[UUID, UUID], Assignment | None] = {}
         self._event_seq = 0
         # Serialize append/ingest/apply against background sync threads.
         # RLock so a multi-event local write (intent upsert + sequence +
@@ -2889,29 +2873,11 @@ class DeviceAgent:
         if folder.is_dir():
             shutil.rmtree(folder, ignore_errors=True)
 
-    def _revoke_peer(self, device_id: UUID) -> None:
-        """Drop trust, hours/assignments, Locator hints, and buffered events for a Peer.
-
-        Catalog rows authored while paired (mixes, intents, tags, …) stay. Only the
-        device_hours / assignment projection for this Identity is cleared.
-        """
-        self._unpaired_device_ids.add(device_id)
-        self.catalog.remove_device(device_id)
-        for intent in list(self.catalog.intents.values()):
-            if any(dh.device_id == device_id for dh in intent.device_hours):
-                remaining = [dh for dh in intent.device_hours if dh.device_id != device_id]
-                self.catalog.upsert_intent(
-                    intent.model_copy(update={"device_hours": remaining})
-                )
-            self.catalog.clear_assignment(intent.id, device_id)
-        for key in [k for k in self._pending_assignments if k[1] == device_id]:
-            del self._pending_assignments[key]
+    def _cleanup_revoked_peer_session(self, device_id: UUID) -> None:
+        """Drop Locator hints and in-process meet state after Catalog unpair."""
         if device_id in self._peer_urls:
             self._peer_urls.pop(device_id, None)
             self._persist_locator_hints()
-        for event_id, event in list(self._unknown_author_buffer.items()):
-            if event.device_id == device_id:
-                self._unknown_author_buffer.pop(event_id, None)
         for agent in list(self._reachable):
             if agent.device_id == device_id:
                 self._proved_agents.discard(id(agent))
@@ -2935,7 +2901,7 @@ class DeviceAgent:
                 (d for d in self.catalog.devices.values() if d.public_key_pem == public_key_pem),
                 None,
             )
-        self._unpaired_device_ids.discard(peer_id)
+        self.catalog.unpaired_device_ids.discard(peer_id)
         if existing is not None:
             peer = existing
         else:
@@ -3017,7 +2983,7 @@ class DeviceAgent:
                         raise InvalidSignature("event signature mismatch")
                     self._event_seq = max(self._event_seq, int(event.seq))
                 else:
-                    if event.device_id in self._unpaired_device_ids:
+                    if event.device_id in self.catalog.unpaired_device_ids:
                         self._seen_event_ids.add(event.id)
                         continue
                     author = self.catalog.devices.get(event.device_id)
@@ -3045,61 +3011,6 @@ class DeviceAgent:
         self._schedule_auto_sync()
         return event
 
-    def _merge_win_for(self, event: Event) -> MergeWin:
-        return (event.created_at, event.device_id, int(event.seq), event.id)
-
-    def _merge_beats(self, key: MergeKey, event: Event) -> bool:
-        """Last-by author time, then (device_id, seq, event.id)."""
-        incoming = self._merge_win_for(event)
-        current = self._merge_wins.get(key)
-        if current is None or incoming > current:
-            self._merge_wins[key] = incoming
-            return True
-        return False
-
-    def _flush_pending_intent_projection(self, intent_id: UUID) -> None:
-        """Apply buffered Sequence/Assignment after Intent upsert wins."""
-        sequence = self._pending_sequences.pop(intent_id, None)
-        if sequence is not None:
-            self.catalog.set_sequence(sequence)
-        for key, assignment in list(self._pending_assignments.items()):
-            if key[0] != intent_id:
-                continue
-            del self._pending_assignments[key]
-            if assignment is None:
-                self.catalog.clear_assignment(intent_id, key[1])
-            else:
-                self.catalog.set_assignment(assignment)
-
-    def _playhead_should_apply(
-        self, existing: Playhead | None, event: Event, position: float
-    ) -> bool:
-        """Hybrid Playhead merge using signed author time (event.created_at)."""
-        key: MergeKey = ("playhead", str(event.payload["mix_id"]))
-        incoming = self._merge_win_for(event)
-        if existing is None:
-            self._merge_wins[key] = incoming
-            return True
-        delta = abs((event.created_at - existing.updated_at).total_seconds())
-        if delta <= PLAYHEAD_NEAR_SECONDS:
-            if position > existing.position_seconds:
-                self._merge_wins[key] = incoming
-                return True
-            if position < existing.position_seconds:
-                return False
-            # Equal position: later author time, else last-by-(device_id, seq, event.id).
-            if event.created_at > existing.updated_at:
-                self._merge_wins[key] = incoming
-                return True
-            if event.created_at < existing.updated_at:
-                return False
-            return self._merge_beats(key, event)
-        if event.created_at > existing.updated_at:
-            self._merge_wins[key] = incoming
-            return True
-        if event.created_at < existing.updated_at:
-            return False
-        return self._merge_beats(key, event)
     def _schedule_auto_sync(self) -> None:
         """Pull on this device and nudge trusted reachable peers to pull too.
 
@@ -3189,13 +3100,13 @@ class DeviceAgent:
                 return
             if event.device_id == self.device.id:
                 return
-            if event.device_id in self._unpaired_device_ids:
+            if event.device_id in self.catalog.unpaired_device_ids:
                 return
             author = self.catalog.devices.get(event.device_id)
             if author is None:
-                self._unknown_author_buffer[event.id] = event
+                self.catalog.unknown_author_buffer[event.id] = event
                 return
-            self._unknown_author_buffer.pop(event.id, None)
+            self.catalog.unknown_author_buffer.pop(event.id, None)
             self._commit_foreign_event(event, author.public_key_pem)
 
     def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
@@ -3216,18 +3127,18 @@ class DeviceAgent:
         pending = sorted(
             (
                 event
-                for event in self._unknown_author_buffer.values()
+                for event in self.catalog.unknown_author_buffer.values()
                 if event.device_id == author_id
             ),
             key=lambda e: (e.created_at, int(e.seq), e.id),
         )
         for event in pending:
-            self._unknown_author_buffer.pop(event.id, None)
+            self.catalog.unknown_author_buffer.pop(event.id, None)
             if event.id in self._seen_event_ids:
                 continue
             author = self.catalog.devices.get(event.device_id)
             if author is None:
-                self._unknown_author_buffer[event.id] = event
+                self.catalog.unknown_author_buffer[event.id] = event
                 continue
             self._commit_foreign_event(event, author.public_key_pem)
 
@@ -3410,319 +3321,28 @@ class DeviceAgent:
             self.remove_local_file(retired_mix_id)
 
     def _apply(self, event: Event) -> None:
-        payload = event.payload
+        """Project Event into CatalogState, then run device-local File/folder effects."""
+        _, effects = apply_catalog_event(
+            self.catalog,
+            event,
+            local_device_id=self.device.id,
+            now=self._clock(),
+        )
+        self._run_local_effects(effects)
         if event.type is EventType.DEVICE_PAIRED:
-            device_id = UUID(payload["id"])
-            if device_id == self.device.id:
-                return
-            if device_id in self._unpaired_device_ids:
-                # Only a local re-pair (QR / short code) may restore trust.
-                if event.device_id != self.device.id:
-                    return
-                self._unpaired_device_ids.discard(device_id)
-            public_key_pem = payload["public_key_pem"]
-            existing = self.catalog.devices.get(device_id)
-            if existing is None and any(
-                d.public_key_pem == public_key_pem for d in self.catalog.devices.values()
-            ):
-                return
-            # Idempotent upsert by device id (and by public key when already trusted).
-            self.catalog.add_device(
-                Device(
-                    id=device_id if existing is None else existing.id,
-                    name=payload["name"],
-                    public_key_pem=public_key_pem,
-                    priority=int(payload.get("priority", 100)),
-                    paired_at=(
-                        existing.paired_at if existing is not None else self._clock()
-                    ),
-                )
-            )
-            self._flush_buffered_events_for(device_id)
-            return
-        if event.type is EventType.DEVICE_UNPAIRED:
-            device_id = UUID(payload["id"])
-            if device_id == self.device.id:
-                return
-            self._revoke_peer(device_id)
-            return
-        if event.type is EventType.ARTIST_ADDED:
-            artist_id = UUID(payload["id"])
-            if artist_id in self._deleted_artists:
-                return
-            self.catalog.add_artist(
-                Artist(
-                    id=artist_id,
-                    platform=Platform(payload["platform"]),
-                    platform_id=payload["platform_id"],
-                    name=payload["name"],
-                    url=payload["url"],
-                )
-            )
-            return
-        if event.type is EventType.ARTIST_DELETED:
-            artist_id = UUID(payload["id"])
-            self._deleted_artists.add(artist_id)
-            removed_mix_ids = self.catalog.delete_artist(artist_id)
-            for mix_id in removed_mix_ids:
-                self.remove_local_file(mix_id)
-            return
-        if event.type is EventType.MIX_ADDED:
-            mix_id = UUID(payload["id"])
-            artist_id = UUID(payload["artist_id"])
-            if artist_id in self._deleted_artists:
-                return
-            raw_size = payload.get("size_bytes")
-            size_bytes = None if raw_size is None else int(raw_size)
-            existing = self.catalog.mixes.get(mix_id)
-            tags = list(existing.tags) if existing is not None else []
-            stars = existing.stars if existing is not None else None
-            if mix_id in self._pending_tags:
-                tags = list(self._pending_tags[mix_id])
-            if mix_id in self._pending_stars:
-                stars = self._pending_stars[mix_id]
-            kind_raw = payload.get("kind", ReleaseKind.MIX.value)
-            kind = ReleaseKind(kind_raw)
-            tracks = [
-                AlbumTrack(
-                    platform_id=str(t["platform_id"]),
-                    title=str(t["title"]),
-                    url=str(t["url"]),
-                    duration_seconds=int(t["duration_seconds"]),
-                    size_bytes=(
-                        None if t.get("size_bytes") is None else int(t["size_bytes"])
-                    ),
-                )
-                for t in payload.get("tracks", [])
-            ]
-            mix = Mix(
-                id=mix_id,
-                artist_id=artist_id,
-                platform=Platform(payload["platform"]),
-                platform_id=payload["platform_id"],
-                title=payload["title"],
-                url=payload["url"],
-                duration_seconds=int(payload["duration_seconds"]),
-                size_bytes=size_bytes,
-                kind=kind,
-                tracks=tracks,
-                tags=tags,
-                stars=stars,
-                rejected=(
-                    True
-                    if mix_id in self._rejected_mix_ids
-                    else (existing.rejected if existing is not None else False)
-                ),
-                played=(
-                    True
-                    if mix_id in self._played_mix_ids
-                    else (existing.played if existing is not None else False)
-                ),
-                skipped=(
-                    True
-                    if mix_id in self._skipped_mix_ids
-                    else (existing.skipped if existing is not None else False)
-                ),
-                last_heard_at=(
-                    self._pending_last_heard.get(mix_id)
-                    if mix_id in self._pending_last_heard
-                    else (existing.last_heard_at if existing is not None else None)
-                ),
-            )
-            self.catalog.add_mix(mix)
-            return
-        if event.type is EventType.MIX_TAGGED:
-            mix_id = UUID(payload["mix_id"])
-            if not self._merge_beats(("tags", str(mix_id)), event):
-                return
-            tags = list(payload["tags"])
-            self._pending_tags[mix_id] = tags
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None:
-                self.catalog.add_mix(mix.model_copy(update={"tags": tags}))
-            return
-        if event.type is EventType.MIX_RATED:
-            mix_id = UUID(payload["mix_id"])
-            if not self._merge_beats(("stars", str(mix_id)), event):
-                return
-            stars = Stars(int(payload["stars"]))
-            self._pending_stars[mix_id] = stars
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None:
-                self.catalog.add_mix(mix.model_copy(update={"stars": stars}))
-            return
-        if event.type is EventType.MIX_REJECTED:
-            mix_id = UUID(payload["mix_id"])
-            if not self._merge_beats(("reject", str(mix_id)), event):
-                return
-            self._rejected_mix_ids.add(mix_id)
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None:
-                self.catalog.add_mix(mix.model_copy(update={"rejected": True}))
+            device_id = UUID(event.payload["id"])
+            if device_id != self.device.id and device_id in self.catalog.devices:
+                self._flush_buffered_events_for(device_id)
+        elif event.type is EventType.DEVICE_UNPAIRED:
+            device_id = UUID(event.payload["id"])
+            if device_id != self.device.id:
+                self._cleanup_revoked_peer_session(device_id)
+
+    def _run_local_effects(self, effects: LocalEffects) -> None:
+        for mix_id in effects.delete_files:
             self.remove_local_file(mix_id)
-            return
-        if event.type is EventType.MIX_UNREJECTED:
-            mix_id = UUID(payload["mix_id"])
-            if not self._merge_beats(("reject", str(mix_id)), event):
-                return
-            self._rejected_mix_ids.discard(mix_id)
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None:
-                self.catalog.add_mix(mix.model_copy(update={"rejected": False}))
-            return
-        if event.type is EventType.INTENT_UPSERTED:
-            intent_id = UUID(payload["id"])
-            meta_wins = self._merge_beats(("intent", str(intent_id)), event)
-            existing = self.catalog.intents.get(intent_id)
-            hours_map: dict[UUID, DeviceHours] = {
-                dh.device_id: dh for dh in (existing.device_hours if existing else [])
-            }
-            hours_changed = False
-            for raw in payload.get("device_hours") or []:
-                device_id = UUID(raw["device_id"])
-                if device_id in self._unpaired_device_ids:
-                    continue
-                if not self._merge_beats(
-                    ("intent_hours", str(intent_id), str(device_id)), event
-                ):
-                    continue
-                hours_map[device_id] = DeviceHours(
-                    device_id=device_id,
-                    budget_seconds=int(raw["budget_seconds"]),
-                    expires_at=(
-                        _as_naive_utc(datetime.fromisoformat(raw["expires_at"]))
-                        if raw.get("expires_at")
-                        else None
-                    ),
-                )
-                hours_changed = True
-            for raw_cleared in payload.get("cleared_device_ids") or []:
-                device_id = UUID(raw_cleared)
-                if not self._merge_beats(
-                    ("intent_hours", str(intent_id), str(device_id)), event
-                ):
-                    continue
-                if hours_map.pop(device_id, None) is not None:
-                    hours_changed = True
-            for unpaired_id in list(hours_map):
-                if unpaired_id in self._unpaired_device_ids:
-                    hours_map.pop(unpaired_id, None)
-                    hours_changed = True
-            merged_hours = list(hours_map.values())
-            if meta_wins:
-                intent = _intent_from_payload(payload).model_copy(
-                    update={"device_hours": merged_hours}
-                )
-                self.catalog.upsert_intent(intent)
-                self._flush_pending_intent_projection(intent_id)
-            elif existing is not None and hours_changed:
-                self.catalog.upsert_intent(
-                    existing.model_copy(update={"device_hours": merged_hours})
-                )
-            return
-        if event.type is EventType.INTENT_DELETED:
-            intent_id = UUID(payload["id"])
-            if not self._merge_beats(("intent", str(intent_id)), event):
-                return
-            self.catalog.delete_intent(intent_id)
-            self._pending_sequences.pop(intent_id, None)
-            for key in [k for k in self._pending_assignments if k[0] == intent_id]:
-                del self._pending_assignments[key]
+        for intent_id in effects.remove_intent_folders:
             self._remove_intent_folder(intent_id)
-            return
-        if event.type is EventType.SEQUENCE_BUILT:
-            intent_id = UUID(payload["intent_id"])
-            if not self._merge_beats(("sequence", str(intent_id)), event):
-                return
-            sequence = Sequence(
-                intent_id=intent_id,
-                entries=[
-                    SequenceEntry(
-                        mix_id=UUID(entry["mix_id"]),
-                        position=int(entry["position"]),
-                        bucket=_bucket_from_payload(entry["bucket"]),
-                    )
-                    for entry in payload["entries"]
-                ],
-            )
-            if intent_id not in self.catalog.intents:
-                self._pending_sequences[intent_id] = sequence
-                return
-            self.catalog.set_sequence(sequence)
-            return
-        if event.type is EventType.ASSIGNMENT_SET:
-            intent_id = UUID(payload["intent_id"])
-            device_id = UUID(payload["device_id"])
-            if device_id in self._unpaired_device_ids:
-                self.catalog.clear_assignment(intent_id, device_id)
-                self._pending_assignments.pop((intent_id, device_id), None)
-                return
-            if not self._merge_beats(
-                ("assignment", str(intent_id), str(device_id)), event
-            ):
-                return
-            assignment = Assignment(
-                intent_id=intent_id,
-                device_id=device_id,
-                mix_ids=[UUID(mix_id) for mix_id in payload["mix_ids"]],
-                budget_seconds=int(payload["budget_seconds"]),
-            )
-            if intent_id not in self.catalog.intents:
-                self._pending_assignments[(intent_id, device_id)] = assignment
-                return
-            self.catalog.set_assignment(assignment)
-            return
-        if event.type is EventType.ASSIGNMENT_CLEARED:
-            intent_id = UUID(payload["intent_id"])
-            device_id = UUID(payload["device_id"])
-            if not self._merge_beats(
-                ("assignment", str(intent_id), str(device_id)), event
-            ):
-                return
-            if intent_id not in self.catalog.intents:
-                self._pending_assignments[(intent_id, device_id)] = None
-                return
-            self.catalog.clear_assignment(intent_id, device_id)
-            return
-        if event.type is EventType.PLAYHEAD:
-            mix_id = UUID(payload["mix_id"])
-            position = float(payload["position_seconds"])
-            existing = self.catalog.playheads.get(mix_id)
-            if not self._playhead_should_apply(existing, event, position):
-                return
-            self.catalog.set_playhead(
-                Playhead(
-                    mix_id=mix_id,
-                    device_id=event.device_id,
-                    position_seconds=position,
-                    updated_at=event.created_at,
-                )
-            )
-            return
-        if event.type is EventType.PLAYED:
-            mix_id = UUID(payload["mix_id"])
-            self._played_mix_ids.add(mix_id)
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None and not mix.played:
-                self.catalog.add_mix(mix.model_copy(update={"played": True}))
-            return
-        if event.type is EventType.SKIPPED:
-            mix_id = UUID(payload["mix_id"])
-            self._skipped_mix_ids.add(mix_id)
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None and not mix.skipped:
-                self.catalog.add_mix(mix.model_copy(update={"skipped": True}))
-            return
-        if event.type is EventType.LAST_HEARD:
-            mix_id = UUID(payload["mix_id"])
-            if not self._merge_beats(("last_heard", str(mix_id)), event):
-                return
-            heard_at = event.created_at
-            self._pending_last_heard[mix_id] = heard_at
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None:
-                self.catalog.add_mix(mix.model_copy(update={"last_heard_at": heard_at}))
-            return
 
     def _sign(self, event: Event) -> str:
         signature = self._private_key.sign(_event_bytes(event))
@@ -3952,65 +3572,6 @@ def _intent_payload(
     if cleared_device_ids:
         payload["cleared_device_ids"] = [str(device_id) for device_id in cleared_device_ids]
     return payload
-
-
-def _bucket_from_payload(raw: str) -> StarBucket:
-    # Older sequences stored unrated+1★+2★ as "rest".
-    if raw == "rest":
-        return StarBucket.UNRATED
-    return StarBucket(raw)
-
-
-def _distribution_from_payload(dist: dict[str, Any]) -> StarDistribution:
-    if "unrated" not in dist and "rest" in dist:
-        return StarDistribution(
-            five=float(dist.get("five", 0.3)),
-            four=float(dist.get("four", 0.2)),
-            three=float(dist.get("three", 0.1)),
-            two=0.0,
-            one=0.0,
-            unrated=float(dist["rest"]),
-        )
-    return StarDistribution(
-        five=float(dist.get("five", 0.3)),
-        four=float(dist.get("four", 0.2)),
-        three=float(dist.get("three", 0.1)),
-        two=float(dist.get("two", 0.05)),
-        one=float(dist.get("one", 0.05)),
-        unrated=float(dist.get("unrated", 0.3)),
-    )
-
-
-def _platforms_from_payload(payload: dict[str, Any]) -> list[Platform]:
-    raw = payload.get("platforms")
-    if raw is None:
-        return default_intent_platforms()
-    return [Platform(value) for value in raw]
-
-
-def _intent_from_payload(payload: dict[str, Any]) -> Intent:
-    dist = payload.get("distribution") or {}
-    return Intent(
-        id=UUID(payload["id"]),
-        name=payload["name"],
-        tags=list(payload.get("tags") or []),
-        artist_ids=[UUID(artist_id) for artist_id in payload.get("artist_ids") or []],
-        platforms=_platforms_from_payload(payload),
-        distribution=_distribution_from_payload(dist),
-        device_hours=[
-            DeviceHours(
-                device_id=UUID(dh["device_id"]),
-                budget_seconds=int(dh["budget_seconds"]),
-                expires_at=(
-                    _as_naive_utc(datetime.fromisoformat(dh["expires_at"]))
-                    if dh.get("expires_at")
-                    else None
-                ),
-            )
-            for dh in payload.get("device_hours") or []
-        ],
-        seed=int(payload["seed"]),
-    )
 
 
 def _event_bytes(event: Event) -> bytes:
