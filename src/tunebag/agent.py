@@ -11,10 +11,9 @@ import json
 import logging
 import random
 import secrets
-import shutil
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,6 +81,8 @@ from tunebag.projection import (
     apply as apply_catalog_event,
 )
 from tunebag.reject import RejectBuffer
+from tunebag.release_cache import OriginFetch, ReleaseCache
+from tunebag.release_layout import album_timeline_location
 from tunebag.sequence import assign_by_budget, build_sequence
 from tunebag.skip import SkipBuffer
 from tunebag.source import (
@@ -207,7 +208,11 @@ class DeviceAgent:
         self._seen_event_ids: set[UUID] = set()
         # Ephemeral pairing session (host and/or guest view); never persisted.
         self._pairing_session: dict[str, Any] | None = None
-        self._local_files: dict[UUID, bytes] = {}
+        self._cache = ReleaseCache(
+            self.data_dir,
+            self.catalog,
+            on_changed=lambda: self._mark_view_sections(UIViewSection.CACHE),
+        )
         self._event_seq = 0
         # Serialize append/ingest/apply against background sync threads.
         # RLock so a multi-event local write (intent upsert + sequence +
@@ -435,7 +440,7 @@ class DeviceAgent:
         """Mixes that have local audio bytes on this device."""
         return [
             self.catalog.mixes[mix_id]
-            for mix_id in self._local_file_ids()
+            for mix_id in self._cache.local_ids()
             if mix_id in self.catalog.mixes
         ]
 
@@ -649,49 +654,22 @@ class DeviceAgent:
 
         Albums use ``album_track_bytes`` — a single blob is not meaningful.
         """
-        mix = self.catalog.mixes.get(mix_id)
-        if mix is not None and mix.kind is ReleaseKind.ALBUM:
-            return None
-        if mix_id in self._local_files:
-            return self._local_files[mix_id]
-        blob = self._blob_path(mix_id)
-        if blob.is_file():
-            data = blob.read_bytes()
-            self._local_files[mix_id] = data
-            return data
-        return None
+        return self._cache.mix_bytes(mix_id)
 
     def album_track_bytes(self, mix_id: UUID) -> list[bytes] | None:
         """Ordered track bytes for a complete Album, else None (peer handoff)."""
-        mix = self.catalog.mixes.get(mix_id)
-        if mix is None or mix.kind is not ReleaseKind.ALBUM:
-            return None
-        if not self._album_complete_on_disk(mix):
-            return None
-        cache_dir = self._blob_path(mix_id)
-        return [
-            (cache_dir / _album_track_filename(index, track)).read_bytes()
-            for index, track in enumerate(mix.tracks)
-        ]
+        return self._cache.album_bytes(mix_id)
 
     def remove_local_file(self, mix_id: UUID) -> None:
         """Drop local audio for a Release so it can be fetched again."""
-        blob = self._blob_path(mix_id)
-        had = mix_id in self._local_files or blob.exists()
-        self._local_files.pop(mix_id, None)
-        if blob.is_dir():
-            shutil.rmtree(blob, ignore_errors=True)
-        elif blob.is_file():
-            blob.unlink()
+        had = self._cache.remove(mix_id)
         self._refresh_intent_folders()
         if had:
             self._mark_view_sections(UIViewSection.CACHE)
 
     def intent_folder(self, intent_id: UUID) -> Path:
         """Directory of this device's assigned files for an intent."""
-        path = self.data_dir / "intents" / str(intent_id)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self._cache.intent_folder(intent_id)
 
     def is_metered(self) -> bool:
         return self._metered
@@ -934,14 +912,14 @@ class DeviceAgent:
         return head
 
     def _album_track_path(self, mix: Mix, index: int) -> Path:
-        return self._blob_path(mix.id) / _album_track_filename(index, mix.tracks[index])
+        return self._cache.album_track_path(mix, index)
 
     def _start_release_audio(self, mix: Mix, timeline_seconds: float) -> None:
         """Start local AudioPlayer for a Mix blob or the mapped Album track file."""
         if mix.kind is ReleaseKind.ALBUM:
             if not mix.tracks:
                 raise ValueError("album has no tracks")
-            index, offset = _album_timeline_location(mix, timeline_seconds)
+            index, offset = album_timeline_location(mix, timeline_seconds)
             track_path = self._album_track_path(mix, index)
             if not track_path.is_file():
                 raise FileNotFoundError(f"album track missing: {track_path}")
@@ -2355,7 +2333,7 @@ class DeviceAgent:
                 continue
             wanted.update(assignment.mix_ids)
         playing = self.current_mix() if self.is_playing() else None
-        for mix_id in list(self._local_file_ids()):
+        for mix_id in list(self._cache.local_ids()):
             if mix_id in wanted:
                 continue
             if playing is not None and mix_id == playing:
@@ -2464,169 +2442,31 @@ class DeviceAgent:
         *,
         override_intent_id: UUID | None = None,
     ) -> None:
+        """Urgency/metered/preferred-origin policy; Cache owns peer/origin I/O."""
         if self._has_local_file(mix_id):
             return
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
             return
-        if mix.kind is ReleaseKind.ALBUM:
-            self._ensure_local_album(
-                intent_id, mix, override_intent_id=override_intent_id
-            )
-            return
-        label = mix.title
-        # Drop work from a pre-refresh assignment; Cache UI already shows the new list.
-        if not self._assignment_includes(self, intent_id, mix_id):
-            self.note(f"fill skip unassigned: {label}")
-            return
-
-        def _store_if_still_assigned(payload: bytes) -> bool:
-            if not self._assignment_includes(self, intent_id, mix_id):
-                self.note(f"fill discard unassigned: {label}")
-                return False
-            self._store_local_file(mix_id, payload)
-            return True
-
-        # Prefer a copy from any reachable peer that already has the bytes.
-        # Peer / USB copies ignore the metered cap.
-        for peer in self._reachable:
-            if not self._trusts_public_key(peer.public_key_pem):
-                continue
-            peer_bytes = peer.file_bytes(mix_id)
-            if peer_bytes is not None:
-                self.note(f"copy from peer {peer.name}: {label}")
-                kept = False
-
-                def _copy() -> None:
-                    nonlocal kept
-                    kept = _store_if_still_assigned(peer_bytes)
-
-                self._with_download(mix_id, _copy)
-                if kept:
-                    self.note(f"cached: {label}")
-                return
-
+        peers = [
+            peer
+            for peer in self._reachable
+            if self._trusts_public_key(peer.public_key_pem)
+        ]
         preferred = self._preferred_origin_agent(intent_id, mix_id)
-        if preferred is self:
-            if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
-                return
-            self.note(f"download from origin: {label}")
-            kept = False
-
-            def _fetch_preferred() -> None:
-                nonlocal kept
-                kept = _store_if_still_assigned(
-                    self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress)
-                )
-
-            self._with_download(mix_id, _fetch_preferred)
-            if kept:
-                self.note(f"cached: {label}")
-            return
-        if preferred is not None:
-            # Preferred peer is reachable but does not have the file yet — wait.
-            return
-        # Preferred unreachable (or no other assignee): fetch our own hours.
-        if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
-            return
-        self.note(f"download from origin: {label}")
-        kept = False
-
-        def _fetch_fallback() -> None:
-            nonlocal kept
-            kept = _store_if_still_assigned(
-                self.source.fetch_bytes(mix.url, on_progress=self._on_download_progress)
-            )
-
-        self._with_download(mix_id, _fetch_fallback)
-        if kept:
-            self.note(f"cached: {label}")
-
-    def _ensure_local_album(
-        self,
-        intent_id: UUID,
-        mix: Mix,
-        *,
-        override_intent_id: UUID | None = None,
-    ) -> None:
-        mix_id = mix.id
-        label = mix.title
-        # Incomplete leftover dirs must not linger as fake cache state; drop before refill.
-        self._clear_album_cache_dir(mix_id)
-        if not self._assignment_includes(self, intent_id, mix_id):
-            self.note(f"fill skip unassigned: {label}")
-            return
-
-        def _store_tracks_if_still_assigned(payloads: list[bytes]) -> bool:
-            if not self._assignment_includes(self, intent_id, mix_id):
-                self.note(f"fill discard unassigned: {label}")
-                return False
-            self._store_album_tracks(mix, payloads)
-            return True
-
-        for peer in self._reachable:
-            if not self._trusts_public_key(peer.public_key_pem):
-                continue
-            peer_tracks = peer.album_track_bytes(mix_id)
-            if peer_tracks is not None:
-                self.note(f"copy from peer {peer.name}: {label}")
-                kept = False
-
-                def _copy() -> None:
-                    nonlocal kept
-                    kept = _store_tracks_if_still_assigned(peer_tracks)
-
-                self._with_download(mix_id, _copy)
-                if kept:
-                    self.note(f"cached: {label}")
-                return
-
-        preferred = self._preferred_origin_agent(intent_id, mix_id)
-        if preferred is self:
-            if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
-                return
-            self.note(f"download from origin: {label}")
-            kept = False
-
-            def _fetch_preferred() -> None:
-                nonlocal kept
-                kept = _store_tracks_if_still_assigned(
-                    self._fetch_album_track_bytes(mix)
-                )
-
-            self._with_download(mix_id, _fetch_preferred)
-            if kept:
-                self.note(f"cached: {label}")
-            return
-        if preferred is not None:
-            return
-        if not self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
-            return
-        self.note(f"download from origin: {label}")
-        kept = False
-
-        def _fetch_fallback() -> None:
-            nonlocal kept
-            kept = _store_tracks_if_still_assigned(self._fetch_album_track_bytes(mix))
-
-        self._with_download(mix_id, _fetch_fallback)
-        if kept:
-            self.note(f"cached: {label}")
-
-    def _fetch_album_track_bytes(self, mix: Mix) -> list[bytes]:
-        """Fetch every Album track; clean incomplete cache dir on failure."""
-        payloads: list[bytes] = []
-        try:
-            for track in mix.tracks:
-                payloads.append(
-                    self.source.fetch_bytes(
-                        track.url, on_progress=self._on_download_progress
-                    )
-                )
-        except Exception:
-            self._clear_album_cache_dir(mix.id)
-            raise
-        return payloads
+        origin: OriginFetch | None = None
+        if preferred is self or preferred is None:
+            if self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
+                origin = _SourceOriginFetch(self.source, self._on_download_progress)
+        # Else preferred peer is reachable but lacks bytes — wait (origin stays None).
+        self._cache.ensure_complete(
+            mix,
+            peers=peers,
+            origin=origin,
+            still_assigned=lambda: self._assignment_includes(self, intent_id, mix_id),
+            note=self.note,
+            wrap_download=self._with_download,
+        )
 
     def _on_download_progress(self, downloaded: int, total: int | None) -> None:
         with self._download_lock:
@@ -2699,179 +2539,36 @@ class DeviceAgent:
         return assignment is not None and mix_id in assignment.mix_ids
 
     def _store_local_file(self, mix_id: UUID, data: bytes) -> None:
-        self._local_files[mix_id] = data
-        blob = self._blob_path(mix_id)
-        blob.parent.mkdir(parents=True, exist_ok=True)
-        blob.write_bytes(data)
-        self._mark_view_sections(UIViewSection.CACHE)
-
-    def _store_album_tracks(self, mix: Mix, payloads: list[bytes]) -> None:
-        """Write all Album tracks into one cache directory (all-or-nothing)."""
-        if len(payloads) != len(mix.tracks):
-            raise ValueError("album track count mismatch")
-        cache_dir = self._blob_path(mix.id)
-        # Unique staging dir so a concurrent fill (add_artists request_fill +
-        # explicit fill_caches) cannot rmtree another attempt's partial tree.
-        staging = cache_dir.parent / f".{mix.id}.{new_id()}.partial"
-        staging.mkdir(parents=True, exist_ok=True)
-        try:
-            for index, (track, data) in enumerate(zip(mix.tracks, payloads, strict=True)):
-                (staging / _album_track_filename(index, track)).write_bytes(data)
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir, ignore_errors=True)
-            staging.rename(cache_dir)
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        self._mark_view_sections(UIViewSection.CACHE)
-
-    def _clear_album_cache_dir(self, mix_id: UUID) -> None:
-        """Drop an incomplete Album cache dir; leave complete discs alone."""
-        cache_dir = self._blob_path(mix_id)
-        if not cache_dir.is_dir():
-            return
-        mix = self.catalog.mixes.get(mix_id)
-        if mix is not None and self._album_complete_on_disk(mix):
-            return
-        shutil.rmtree(cache_dir, ignore_errors=True)
-
-    def _album_complete_on_disk(self, mix: Mix) -> bool:
-        if mix.kind is not ReleaseKind.ALBUM or not mix.tracks:
-            return False
-        cache_dir = self._blob_path(mix.id)
-        if not cache_dir.is_dir():
-            return False
-        return all(
-            (cache_dir / _album_track_filename(index, track)).is_file()
-            for index, track in enumerate(mix.tracks)
-        )
+        self._cache.store_mix(mix_id, data)
 
     def _local_file_size(self, mix_id: UUID) -> int | None:
-        mix = self.catalog.mixes.get(mix_id)
-        if mix is not None and mix.kind is ReleaseKind.ALBUM:
-            if not self._album_complete_on_disk(mix):
-                return None
-            cache_dir = self._blob_path(mix_id)
-            return sum(
-                (cache_dir / _album_track_filename(index, track)).stat().st_size
-                for index, track in enumerate(mix.tracks)
-            )
-        blob = self._blob_path(mix_id)
-        if blob.is_file():
-            return blob.stat().st_size
-        data = self._local_files.get(mix_id)
-        if data is not None:
-            return len(data)
-        return None
+        return self._cache.size(mix_id)
 
     def _has_local_file(self, mix_id: UUID) -> bool:
-        mix = self.catalog.mixes.get(mix_id)
-        if mix is not None and mix.kind is ReleaseKind.ALBUM:
-            return self._album_complete_on_disk(mix)
-        return mix_id in self._local_files or self._blob_path(mix_id).is_file()
+        return self._cache.has(mix_id)
 
     def _local_file_ids(self) -> set[UUID]:
-        ids = set(self._local_files)
-        blobs = self.data_dir / "blobs"
-        if blobs.is_dir():
-            for path in blobs.iterdir():
-                try:
-                    mix_id = UUID(path.name)
-                except ValueError:
-                    continue
-                if path.is_file():
-                    ids.add(mix_id)
-                    continue
-                if path.is_dir():
-                    mix = self.catalog.mixes.get(mix_id)
-                    if mix is not None and self._album_complete_on_disk(mix):
-                        ids.add(mix_id)
-        return ids
+        return self._cache.local_ids()
 
     def _ensure_blob_on_disk(self, mix_id: UUID) -> Path:
-        blob = self._blob_path(mix_id)
-        if blob.is_file():
-            return blob
-        mix = self.catalog.mixes.get(mix_id)
-        if mix is not None and mix.kind is ReleaseKind.ALBUM:
-            if self._album_complete_on_disk(mix):
-                return blob
-            raise ValueError("album has no complete local files")
-        data = self._local_files.get(mix_id)
-        if data is None:
-            raise ValueError("mix has no local file")
-        blob.parent.mkdir(parents=True, exist_ok=True)
-        blob.write_bytes(data)
-        return blob
+        return self._cache.ensure_on_disk(mix_id)
 
     def _blob_path(self, mix_id: UUID) -> Path:
-        return self.data_dir / "blobs" / str(mix_id)
+        return self._cache.blob_path(mix_id)
 
     def _refresh_intent_folders(self) -> None:
-        self._remove_orphan_intent_folders()
-        for intent in self.intents():
-            folder = self.intent_folder(intent.id)
-            # Clear previous links/files/album subfolders so folder matches assignment.
-            for existing in folder.iterdir():
-                if existing.is_dir() and not existing.is_symlink():
-                    shutil.rmtree(existing, ignore_errors=True)
-                elif existing.is_file() or existing.is_symlink():
-                    existing.unlink()
-            assignment = self.assignment(intent.id)
+        intent_ids = [intent.id for intent in self.intents()]
+
+        def _assigned(intent_id: UUID) -> Sequence[UUID]:
+            assignment = self.assignment(intent_id)
             if assignment is None:
-                continue
-            for mix_id in assignment.mix_ids:
-                if not self._has_local_file(mix_id):
-                    continue
-                mix = self.catalog.mixes.get(mix_id)
-                if mix is None:
-                    continue
-                if mix.kind is ReleaseKind.ALBUM:
-                    self._link_album_into_intent_folder(folder, mix)
-                else:
-                    self._link_mix_into_intent_folder(folder, mix)
+                return ()
+            return assignment.mix_ids
 
-    def _link_mix_into_intent_folder(self, folder: Path, mix: Mix) -> None:
-        blob = self._ensure_blob_on_disk(mix.id)
-        target = folder / _safe_filename(mix.title, mix.id)
-        if target.exists() or target.is_symlink():
-            target.unlink()
-        try:
-            target.hardlink_to(blob)
-        except OSError:
-            target.write_bytes(blob.read_bytes())
-
-    def _link_album_into_intent_folder(self, folder: Path, mix: Mix) -> None:
-        cache_dir = self._ensure_blob_on_disk(mix.id)
-        album_folder = folder / _safe_album_dirname(mix.title, mix.id)
-        if album_folder.exists():
-            shutil.rmtree(album_folder, ignore_errors=True)
-        album_folder.mkdir(parents=True, exist_ok=True)
-        for index, track in enumerate(mix.tracks):
-            src = cache_dir / _album_track_filename(index, track)
-            target = album_folder / _album_track_filename(index, track)
-            try:
-                target.hardlink_to(src)
-            except OSError:
-                target.write_bytes(src.read_bytes())
-
-    def _remove_orphan_intent_folders(self) -> None:
-        """Drop intent folder trees whose intent no longer exists."""
-        root = self.data_dir / "intents"
-        if not root.is_dir():
-            return
-        live = {str(intent.id) for intent in self.intents()}
-        for path in list(root.iterdir()):
-            if not path.is_dir():
-                continue
-            if path.name in live:
-                continue
-            shutil.rmtree(path, ignore_errors=True)
+        self._cache.refresh_intent_folders(intent_ids, _assigned)
 
     def _remove_intent_folder(self, intent_id: UUID) -> None:
-        folder = self.data_dir / "intents" / str(intent_id)
-        if folder.is_dir():
-            shutil.rmtree(folder, ignore_errors=True)
+        self._cache.remove_intent_folder(intent_id)
 
     def _cleanup_revoked_peer_session(self, device_id: UUID) -> None:
         """Drop Locator hints and in-process meet state after Catalog unpair."""
@@ -3637,40 +3334,22 @@ def _last_heard_threshold(duration_seconds: int) -> float:
     )
 
 
-def _safe_filename(title: str, mix_id: UUID) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in "-_ ." else "_" for ch in title).strip()
-    if not cleaned:
-        cleaned = "mix"
-    return f"{cleaned[:80]}-{mix_id}.bin"
+class _SourceOriginFetch:
+    """OriginFetch adapter over the agent's Source + download progress hook."""
 
+    def __init__(
+        self,
+        source: Source,
+        on_progress: Callable[[int, int | None], None],
+    ) -> None:
+        self._source = source
+        self._on_progress = on_progress
 
-def _safe_album_dirname(title: str, mix_id: UUID) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in "-_ ." else "_" for ch in title).strip()
-    if not cleaned:
-        cleaned = "album"
-    return f"{cleaned[:80]}-{mix_id}"
+    def fetch_mix(self, mix: Mix) -> bytes:
+        return self._source.fetch_bytes(mix.url, on_progress=self._on_progress)
 
-
-def _album_track_filename(index: int, track: AlbumTrack) -> str:
-    """Stable ordered name for a track file inside an Album cache directory."""
-    cleaned = "".join(
-        ch if ch.isalnum() or ch in "-_ ." else "_" for ch in track.title
-    ).strip()
-    if not cleaned:
-        cleaned = "track"
-    return f"{index + 1:02d}-{cleaned[:60]}-{track.platform_id}.bin"
-
-
-def _album_timeline_location(mix: Mix, position_seconds: float) -> tuple[int, float]:
-    """Map Album-timeline seconds to (track_index, offset_within_track)."""
-    if not mix.tracks:
-        return 0, 0.0
-    remaining = max(0.0, float(position_seconds))
-    last_index = len(mix.tracks) - 1
-    for index, track in enumerate(mix.tracks):
-        duration = float(track.duration_seconds)
-        if index == last_index or remaining < duration:
-            offset = min(remaining, duration) if duration > 0 else 0.0
-            return index, offset
-        remaining -= duration
-    return last_index, float(mix.tracks[last_index].duration_seconds)
+    def fetch_album(self, mix: Mix) -> list[bytes]:
+        return [
+            self._source.fetch_bytes(track.url, on_progress=self._on_progress)
+            for track in mix.tracks
+        ]

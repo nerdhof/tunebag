@@ -23,6 +23,8 @@ Canonical vocabulary for the codebase. Align code and docs with these terms.
 - **Assignment** — which device hours cover which prefix of the sequence (independent of whether audio is on disk).
 - **File** — audio bytes present on a device for a Release (local cache state): one blob for a Mix, or an ordered set of track files for an Album. An Album is not present in Cache until every track file is local.
 - **Cache** — the set of files a device currently holds for its assignments.
+- **Release Cache** — device-local module that owns File completeness, staging, blob/intent-folder paths, and `ensure_complete` (peer then optional origin via injected fetch ports). Urgency ordering, metered caps, and preferred-origin policy stay on the DeviceAgent; Mix vs Album layout is internal.
+- **Release layout** — pure helpers for Album timeline → track offset and on-disk Mix/Album filenames (shared by Release Cache and Playback supervision).
 - **Device** — a Tunebag installation with a stable identity (`device_id` + keypair) that authors Event log entries. Identity is not a network address.
 - **Locator** — an ephemeral reachability hint for a Device (HTTP URL, IP:port, USB path, …). Locators change with the network; they are not Identity.
 - **Peer** — another Device that has paired with this one and is reachable over LAN or USB, usable as a file source.
