@@ -103,22 +103,82 @@ function normalizeArtistNeedle(text) {
     .toLowerCase();
 }
 
-/** FNV-1a → stable soft OKLCH border/fill for a tag (same tag ⇒ same color).
- * Hue is in OKLCH so equal hash steps look more evenly distinct than HSL
- * (which overweights greens for human vision). */
-function tagChipColors(tag) {
+/**
+ * Categorical OKLCH swatches for tags (N=64).
+ * Hue is golden-angled; L/C step so neighbors differ on more than one axis.
+ * Slot assignment is a pure function of the current distinct tag set
+ * (hash preferred + alpha-ordered linear probe), so clients agree after sync
+ * without storing color in the Catalog.
+ */
+const TAG_CHIP_PALETTE = (() => {
+  const n = 64;
+  const out = [];
+  for (let i = 0; i < n; i += 1) {
+    const hue = (i * 137.508) % 360;
+    const L = 0.46 + (i % 4) * 0.055; // 0.46 … 0.625
+    const C = 0.12 + ((i * 3) % 5) * 0.016; // ~0.12 … 0.184
+    out.push({ L, C, hue });
+  }
+  return out;
+})();
+
+function tagChipHash(tag) {
   let hash = 2166136261;
   for (let i = 0; i < tag.length; i += 1) {
     hash ^= tag.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
-  hash >>>= 0;
-  // Golden-angle step spreads consecutive/nearby hashes around the wheel.
-  const hue = (hash * 137.508) % 360;
-  const chroma = 0.1 + ((hash >>> 9) % 5) * 0.01; // 0.10–0.14
-  const border = `oklch(0.52 ${chroma} ${hue})`;
-  const fill = `oklch(0.62 ${chroma} ${hue} / 0.2)`;
+  return hash >>> 0;
+}
+
+/**
+ * Unique palette slots for a tag set: preferred = hash % N; conflicts walk
+ * alphabetically and take the smallest k with (hash + k) % N free.
+ * @param {Iterable<string>} allTags
+ * @returns {Map<string, number>}
+ */
+function assignTagChipSlots(allTags) {
+  const n = TAG_CHIP_PALETTE.length;
+  const keys = [
+    ...new Set(
+      [...allTags].map(normalizeTag).filter(Boolean),
+    ),
+  ].sort();
+  /** @type {Map<string, number>} */
+  const slots = new Map();
+  const used = new Set();
+  for (const key of keys) {
+    const preferred = tagChipHash(key) % n;
+    let slot = preferred;
+    if (used.size < n) {
+      let k = 0;
+      while (used.has(slot) && k < n) {
+        k += 1;
+        slot = (preferred + k) % n;
+      }
+      used.add(slot);
+    }
+    slots.set(key, slot);
+  }
+  return slots;
+}
+
+function tagChipSwatchCss(swatch) {
+  const border = `oklch(${swatch.L} ${swatch.C} ${swatch.hue})`;
+  const fill = `oklch(${Math.min(swatch.L + 0.1, 0.78)} ${swatch.C} ${swatch.hue} / 0.2)`;
   return [border, fill];
+}
+
+/**
+ * Soft OKLCH border/fill for a tag given the catalog∪in-view tag set.
+ * @param {string} tag
+ * @param {Iterable<string>} [allTags]
+ */
+function tagChipColors(tag, allTags) {
+  const key = normalizeTag(tag);
+  const slots = assignTagChipSlots(allTags != null ? [...allTags, key] : [key]);
+  const slot = slots.get(key) ?? tagChipHash(key) % TAG_CHIP_PALETTE.length;
+  return tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
 }
 
 /**
@@ -301,12 +361,24 @@ function mountTagEditor(root, options) {
     });
   }
 
+  /** Catalog ∪ editor tags (+ extras) for unique color assignment. */
+  function colorContextTags(extra = []) {
+    return [
+      ...getCatalogTags().map(normalizeTag).filter(Boolean),
+      ...tags,
+      ...extra.map(normalizeTag).filter(Boolean),
+    ];
+  }
+
   function renderSuggestions() {
     if (!suggestList) return;
     const rows = suggestionRows();
     if (highlightIndex >= rows.length) {
       highlightIndex = Math.max(0, rows.length - 1);
     }
+    const slots = assignTagChipSlots(
+      colorContextTags(rows.map((row) => row.tag)),
+    );
     suggestList.replaceChildren();
     rows.forEach((row, index) => {
       const item = document.createElement("button");
@@ -314,7 +386,10 @@ function mountTagEditor(root, options) {
       item.className = "tag-suggest";
       if (index === highlightIndex) item.classList.add("is-active");
       if (row.create) item.classList.add("is-create");
-      const [border, fill] = tagChipColors(row.tag);
+      const key = normalizeTag(row.tag);
+      const slot =
+        slots.get(key) ?? tagChipHash(key) % TAG_CHIP_PALETTE.length;
+      const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
       item.style.setProperty("--tag-chip-border", border);
       item.style.setProperty("--tag-chip-fill", fill);
       const label = document.createElement("span");
@@ -339,9 +414,12 @@ function mountTagEditor(root, options) {
   }
 
   function renderChipNodes() {
+    const slots = assignTagChipSlots(colorContextTags());
     const frag = document.createDocumentFragment();
     for (const tag of tags) {
-      const [border, fill] = tagChipColors(tag);
+      const slot =
+        slots.get(tag) ?? tagChipHash(tag) % TAG_CHIP_PALETTE.length;
+      const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
       const chip = document.createElement("span");
       chip.className = "tag-chip";
       chip.style.setProperty("--tag-chip-border", border);
