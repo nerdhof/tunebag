@@ -333,6 +333,11 @@ form.add-form-open .add-form-fields-inline {
   width: 100%;
 }
 
+/* Keep angled seek titles from expanding page scrollbars (esp. short viewports). */
+#player {
+  overflow: clip;
+}
+
 .player-transport {
   display: flex;
   flex-direction: column;
@@ -398,6 +403,9 @@ form.add-form-open .add-form-fields-inline {
 .player-seek.has-track-labels {
   padding-top: var(--seek-label-headroom, 5.5rem);
   box-sizing: content-box;
+  /* Paint long titles outside the seek box without contributing scrollable overflow. */
+  overflow: clip;
+  overflow-clip-margin: 12rem;
 }
 
 .player-below {
