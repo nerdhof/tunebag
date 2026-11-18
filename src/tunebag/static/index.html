@@ -86,20 +86,22 @@
               aria-label="Rate the current release from 1 to 5"
             ></div>
           </div>
-          <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
-          <button
-            type="button"
-            id="player-undo-reject"
-            hidden
-            aria-label="Undo reject"
-            data-tip="Undo reject"
-          >
-            ↺
-          </button>
-          <div class="inline-field grow player-tags-field" title="Tags for the current release">
-            <span class="player-tags-row">
-              <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
-            </span>
+          <div class="player-reject-tags">
+            <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
+            <button
+              type="button"
+              id="player-undo-reject"
+              hidden
+              aria-label="Undo reject"
+              data-tip="Undo reject"
+            >
+              ↺
+            </button>
+            <div class="player-tags-field" title="Tags for the current release">
+              <span class="player-tags-row">
+                <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
+              </span>
+            </div>
           </div>
         </div>
         <p id="player-reject-status" class="muted" hidden></p>
