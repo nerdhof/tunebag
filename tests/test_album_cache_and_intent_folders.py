@@ -175,6 +175,8 @@ def test_incomplete_album_directory_does_not_count_as_present(tmp_path: Path) ->
     laptop, _phone, _ = _pair(tmp_path, source=source)
     album_id, _intent_id = _add_and_assign_album(laptop, source)
     album = laptop.catalog.mixes[album_id]
+    # Intent upsert may have filled a complete album; reset to a partial disc.
+    laptop.remove_local_file(album_id)
     cache_dir = tmp_path / "laptop" / "blobs" / str(album_id)
     cache_dir.mkdir(parents=True)
     # Only the first track file — incomplete disc.
@@ -190,6 +192,7 @@ def test_fill_cleans_incomplete_album_dir_then_retries(tmp_path: Path) -> None:
     laptop, _phone, _ = _pair(tmp_path, source=source)
     album_id, _intent_id = _add_and_assign_album(laptop, source)
     album = laptop.catalog.mixes[album_id]
+    laptop.remove_local_file(album_id)
     cache_dir = tmp_path / "laptop" / "blobs" / str(album_id)
     cache_dir.mkdir(parents=True)
     first = album.tracks[0]

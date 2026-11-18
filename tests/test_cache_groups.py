@@ -21,6 +21,13 @@ def _agent(tmp_path: Path, source: FakeSource | None = None) -> tuple[DeviceAgen
     return agent, src
 
 
+def _clear_auto_fill(agent: DeviceAgent) -> None:
+    """Wait out intent-upsert maintenance fill and drop Cache for controlled setup."""
+    agent.wait_for_fill()
+    for mix in list(agent.files()):
+        agent.remove_local_file(mix.id)
+
+
 def _add_mix(
     agent: DeviceAgent,
     source: FakeSource,
@@ -57,6 +64,7 @@ def test_cache_groups_partial_fill_cached_vs_pending(tmp_path: Path) -> None:
         seed=1,
         device_hours=[(agent.device_id, 7200)],
     )
+    _clear_auto_fill(agent)
     assignment = agent.assignment(intent.id)
     assert assignment is not None
     assert set(assignment.mix_ids) == set(durations)
@@ -116,6 +124,7 @@ def test_cache_groups_marks_active_download_as_loading(tmp_path: Path) -> None:
         seed=1,
         device_hours=[(agent.device_id, 7200)],
     )
+    _clear_auto_fill(agent)
     assignment = agent.assignment(intent.id)
     assert assignment is not None
     assert a in assignment.mix_ids and b in assignment.mix_ids
@@ -178,6 +187,7 @@ def test_cache_groups_other_for_unassigned_local_files(tmp_path: Path) -> None:
         seed=1,
         device_hours=[(agent.device_id, 1200)],
     )
+    _clear_auto_fill(agent)
     assignment = agent.assignment(intent.id)
     assert assignment is not None
     assert assignment.mix_ids == [assigned]
@@ -209,6 +219,7 @@ def test_fill_caches_prunes_other(tmp_path: Path) -> None:
         seed=1,
         device_hours=[(agent.device_id, 1200)],
     )
+    _clear_auto_fill(agent)
     orphan = _add_mix(agent, source, title="Orphan", duration_seconds=600, platform_id="o")
     agent._store_local_file(orphan, b"audio:o")
     agent._store_local_file(assigned, b"audio:x")

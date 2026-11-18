@@ -156,7 +156,11 @@ def test_phone_gets_shared_mix_as_soon_as_laptop_has_it(tmp_path: Path) -> None:
             (laptop.device_id, 7200),
         ],
     )
-    phone.sync()
+    laptop.wait_for_fill()
+    # Drop the auto-fill so we can simulate a partial laptop cache.
+    for mix in list(laptop.files()):
+        laptop.remove_local_file(mix.id)
+    phone.sync(fill=False)
     assignment = laptop.assignment(intent.id)
     assert assignment is not None
     assert set(assignment.mix_ids) == {first, second}
@@ -233,7 +237,10 @@ def test_phone_origin_fetches_when_laptop_unreachable(tmp_path: Path) -> None:
             (laptop.device_id, 3600),
         ],
     )
-    phone.sync()
+    laptop.wait_for_fill()
+    for mix in list(laptop.files()):
+        laptop.remove_local_file(mix.id)
+    phone.sync(fill=False)
     phone.disconnect(laptop)
     source.fetch_calls.clear()
 
@@ -395,6 +402,7 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
             stars=Stars.FOUR,
         )
 
+    # create_intent starts maintenance fill (blocked on gate until release_fetch).
     intent = laptop.create_intent(
         "Refresh mid fill",
         tags=["refresh-mid"],
@@ -426,7 +434,7 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
         "tunebag.agent.random.randrange", lambda *_a, **_k: alt_seed
     )
 
-    assert laptop.request_fill() is True
+    assert laptop.fill_in_progress is True
     assert fetch_started.wait(timeout=2.0), "fill never started old-assignment fetch"
 
     refreshed = laptop.refresh_intent_sequence(intent.id)
@@ -498,6 +506,9 @@ def test_fill_caches_picks_sooner_intent_before_later_mix(tmp_path: Path) -> Non
         seed=1,
         device_hours=[(laptop.device_id, 3600)],
     )
+    laptop.wait_for_fill()
+    for mix in list(laptop.files()):
+        laptop.remove_local_file(mix.id)
     assignment_a = laptop.assignment(intent_a.id)
     assignment_b = laptop.assignment(intent_b.id)
     assert assignment_a is not None and assignment_b is not None

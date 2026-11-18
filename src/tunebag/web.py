@@ -874,7 +874,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        agent.request_fill()
         return {
             "ok": True,
             "intent": {"id": str(intent.id), "name": intent.name},
@@ -914,7 +913,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        agent.request_fill()
         return {
             "ok": True,
             "intent": {"id": str(intent.id), "name": intent.name},
@@ -946,7 +944,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        agent.request_fill()
         return {
             "ok": True,
             "intent": {
@@ -963,7 +960,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             intent = agent.refresh_intent_sequence(intent_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        agent.request_fill()
         return {
             "ok": True,
             "intent": {

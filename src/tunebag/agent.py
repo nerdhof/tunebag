@@ -88,6 +88,7 @@ from tunebag.projection import (
     _intent_from_payload,
     apply as apply_catalog_event,
 )
+from tunebag.maintenance import BoundMaintenance, CatalogChange, CatalogChangeReason
 from tunebag.reject import RejectBuffer
 from tunebag.release_cache import OriginFetch, ReleaseCache
 from tunebag.release_layout import album_timeline_location
@@ -261,6 +262,16 @@ class DeviceAgent:
             # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
             self._prune_stale_locator_hints()
         self._start_discovery()
+        # Catalog maintenance ports (rebuild / fill / prune) — after methods exist.
+        self._maintenance = BoundMaintenance(
+            rebuild_all_sequences=self._rebuild_all_sequences,
+            rebuild_unfilled_sequences=self._rebuild_unfilled_sequences,
+            rebuild_sequence_for_intent=self._rebuild_sequence_for_intent,
+            fill_caches=self.fill_caches,
+            request_fill=self.request_fill,
+            prune_unassigned_files=self._prune_unassigned_files,
+            delete_retired_file_if_replaced=self._delete_retired_file_if_replaced,
+        )
 
     def seed_default_intents_if_empty(self) -> bool:
         """On first durable boot (empty Event log), create the Explore intent.
@@ -966,9 +977,12 @@ class DeviceAgent:
         if not self.catalog.mixes[target].played:
             with self._view_notice_batch():
                 self._append_and_apply(EventType.PLAYED, {"mix_id": str(target)})
-                self._rebuild_all_sequences()
-                self.fill_caches()
-                self._delete_retired_file_if_replaced(target)
+                self._maintenance.after_catalog_change(
+                    CatalogChange(
+                        CatalogChangeReason.MARK_PLAYED,
+                        mix_id=target,
+                    )
+                )
         return self.catalog.mixes[target]
 
     def mix(self, mix_id: UUID) -> Mix | None:
@@ -1122,7 +1136,20 @@ class DeviceAgent:
 
         Returns the number of mixes with local audio after the pass. Per-mix
         fetch failures are skipped so one bad URL does not abort the fill.
+
+        If a background ``request_fill`` is already running (e.g. after intent
+        create), coalesce a follow-up pass and wait instead of racing.
         """
+        if (
+            self.fill_in_progress
+            and threading.current_thread().name != "tunebag-fill"
+        ):
+            with self._fill_lock:
+                self._fill_pending = True
+                if override_intent_id is not None:
+                    self._fill_pending_override = override_intent_id
+            self.wait_for_fill()
+            return len(self.files())
         if override_intent_id is not None:
             self.note(f"fill caches start (fill-now intent={override_intent_id})")
         else:
@@ -1258,8 +1285,12 @@ class DeviceAgent:
                 f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
             )
         self.note(f"add artists end · {len(added)} mix(es)")
-        if added and self._rebuild_unfilled_sequences():
-            self.request_fill()
+        self._maintenance.after_catalog_change(
+            CatalogChange(
+                CatalogChangeReason.ARTIST_INGEST,
+                mixes_added=bool(added),
+            )
+        )
         return added
 
     def refresh_artists(
@@ -1312,8 +1343,12 @@ class DeviceAgent:
                 f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
             )
         self.note(f"refresh artists end · {len(added)} mix(es)")
-        if added and self._rebuild_unfilled_sequences():
-            self.request_fill()
+        self._maintenance.after_catalog_change(
+            CatalogChange(
+                CatalogChangeReason.ARTIST_INGEST,
+                mixes_added=bool(added),
+            )
+        )
         return added
 
     def _known_platform_keys(self) -> set[tuple[Platform, str]]:
@@ -1992,8 +2027,12 @@ class DeviceAgent:
         if not rebuild:
             return
         mixes_added = len(self.catalog.mixes) > mixes_before
-        if self._rebuild_unfilled_sequences(include_underfilled=mixes_added):
-            self.request_fill()
+        self._maintenance.after_catalog_change(
+            CatalogChange(
+                CatalogChangeReason.PEER_INGEST,
+                mixes_added=mixes_added,
+            )
+        )
 
     def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
         if mix_id not in self.catalog.mixes:
@@ -2045,9 +2084,12 @@ class DeviceAgent:
                     EventType.SKIPPED,
                     {"mix_id": str(pending.mix_id)},
                 )
-                self._rebuild_all_sequences()
-                self.fill_caches()
-                self._delete_retired_file_if_replaced(pending.mix_id)
+                self._maintenance.after_catalog_change(
+                    CatalogChange(
+                        CatalogChangeReason.SKIP_COMMIT,
+                        mix_id=pending.mix_id,
+                    )
+                )
                 committed.append(pending.mix_id)
         return committed
 
@@ -2067,7 +2109,9 @@ class DeviceAgent:
                 EventType.MIX_UNREJECTED,
                 {"mix_id": str(mix_id)},
             )
-            self._rebuild_all_sequences()
+            self._maintenance.after_catalog_change(
+                CatalogChange(CatalogChangeReason.UN_REJECT)
+            )
         return self.catalog.mixes[mix_id]
 
     def pending_rejects(self) -> list[RejectPending]:
@@ -2088,8 +2132,9 @@ class DeviceAgent:
                     EventType.MIX_REJECTED,
                     {"mix_id": str(pending.mix_id)},
                 )
-                self._rebuild_all_sequences()
-                self.fill_caches()
+                self._maintenance.after_catalog_change(
+                    CatalogChange(CatalogChangeReason.REJECT_COMMIT)
+                )
                 committed.append(pending.mix_id)
         return committed
 
@@ -2119,7 +2164,7 @@ class DeviceAgent:
             device_hours=hours,
             seed=seed if seed is not None else random.randrange(1 << 31),
         )
-        self._upsert_intent_and_rebuild(intent)
+        self._upsert_intent_and_rebuild(intent, fill=True)
         return self.catalog.intents[intent.id]
 
     def set_device_hours(
@@ -2151,7 +2196,7 @@ class DeviceAgent:
             )
         )
         updated = intent.model_copy(update={"device_hours": hours})
-        self._upsert_intent_and_rebuild(updated)
+        self._upsert_intent_and_rebuild(updated, fill=True)
         return self.catalog.intents[intent_id]
 
     def delete_artist(self, artist_id: UUID) -> None:
@@ -2161,8 +2206,9 @@ class DeviceAgent:
             EventType.ARTIST_DELETED,
             {"id": str(artist_id)},
         )
-        self._rebuild_all_sequences()
-        self.fill_caches()
+        self._maintenance.after_catalog_change(
+            CatalogChange(CatalogChangeReason.ARTIST_DELETE)
+        )
 
     def delete_intent(self, intent_id: UUID) -> None:
         if intent_id not in self.catalog.intents:
@@ -2171,7 +2217,9 @@ class DeviceAgent:
             EventType.INTENT_DELETED,
             {"id": str(intent_id)},
         )
-        self._prune_unassigned_files()
+        self._maintenance.after_catalog_change(
+            CatalogChange(CatalogChangeReason.INTENT_DELETE)
+        )
 
     def update_intent(
         self,
@@ -2210,7 +2258,11 @@ class DeviceAgent:
         if not updates:
             return intent
         updated = intent.model_copy(update=updates)
-        self._upsert_intent_and_rebuild(updated, cleared_device_ids=cleared_device_ids)
+        self._upsert_intent_and_rebuild(
+            updated,
+            cleared_device_ids=cleared_device_ids,
+            fill=True,
+        )
         return self.catalog.intents[intent_id]
 
     def refresh_intent_sequence(self, intent_id: UUID) -> Intent:
@@ -2219,7 +2271,7 @@ class DeviceAgent:
         if intent is None:
             raise KeyError(f"unknown intent {intent_id}")
         updated = intent.model_copy(update={"seed": random.randrange(1 << 31)})
-        self._upsert_intent_and_rebuild(updated)
+        self._upsert_intent_and_rebuild(updated, fill=True)
         return self.catalog.intents[intent_id]
 
     def apply_expired_hours(self) -> list[tuple[UUID, UUID]]:
@@ -2353,18 +2405,19 @@ class DeviceAgent:
                 self.note(f"sync peer {label} ({url}): {ingested} new event(s)")
         # Peer may have applied our expiry; drop exclusive locals after ingest.
         self.apply_expired_hours()
-        self._prune_unassigned_files()
         # Mixes / merged Explore hours from peers need local sequence+assignment refresh.
         mixes_added = len(self.catalog.mixes) > mixes_before
-        rebuilt = self._rebuild_unfilled_sequences(include_underfilled=mixes_added)
         if fill:
             self.note("sync catalog end · filling caches")
-            # Unmetered standing fill after catalog catches up with peers.
-            self.fill_caches()
         else:
             self.note("sync catalog end")
-            if rebuilt:
-                self.request_fill()
+        self._maintenance.after_catalog_change(
+            CatalogChange(
+                CatalogChangeReason.SYNC,
+                mixes_added=mixes_added,
+                fill=fill,
+            )
+        )
 
     def _ensure_local_file(
         self,
@@ -2775,6 +2828,7 @@ class DeviceAgent:
         intent: Intent,
         *,
         cleared_device_ids: list[UUID] | None = None,
+        fill: bool = False,
     ) -> None:
         with self._defer_auto_sync():
             with self._view_notice_batch():
@@ -2784,9 +2838,17 @@ class DeviceAgent:
                         _intent_payload(intent, cleared_device_ids=cleared_device_ids),
                     )
                     # Catalog may have merged peer device_hours; rebuild from that.
+                    # INTENT_UPSERT rebuild+prune must stay under the event lock so
+                    # export_events never sees a half-written intent; request_fill
+                    # only starts a thread (safe under the lock).
                     merged = self.catalog.intents[intent.id]
-                    self._rebuild_sequence_for_intent(merged)
-                    self._prune_unassigned_files()
+                    self._maintenance.after_catalog_change(
+                        CatalogChange(
+                            CatalogChangeReason.INTENT_UPSERT,
+                            intent=merged,
+                            fill_async=fill,
+                        )
+                    )
 
     def _rebuild_all_sequences(self) -> None:
         with self._defer_auto_sync():

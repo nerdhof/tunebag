@@ -413,6 +413,9 @@ def test_add_artists_leaves_filled_sequence_alone() -> None:
         seed=1,
         device_hours=[(laptop.device_id, 3600)],
     )
+    # Intent upsert may attempt a fill (no bytes configured); settle before asserts.
+    laptop.wait_for_fill()
+    source.fetch_calls.clear()
     before = [e.mix_id for e in laptop.sequence(intent.id).entries]
     assert len(before) == 1
 

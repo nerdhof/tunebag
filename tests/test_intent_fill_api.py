@@ -143,13 +143,14 @@ def test_request_fill_coalesces_while_in_progress(tmp_path: Path) -> None:
         artist_name="DJ Example",
     )
     agent.rate_mix(mix.id, Stars.FIVE)
+    # create_intent kicks Catalog maintenance request_fill (blocked on gate).
     agent.create_intent(
         "Fill",
         seed=1,
         device_hours=[(agent.device_id, 3600)],
     )
 
-    assert agent.request_fill() is True
+    assert agent.fill_in_progress is True
     assert agent.request_fill() is False
     assert agent.fill_in_progress is True
 

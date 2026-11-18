@@ -92,6 +92,11 @@ def _three_hour_plan(
         seed=1,
         device_hours=[(laptop.device_id, 10800)],
     )
+    # Intent upsert kicks background fill; settle and clear so tests control Cache.
+    laptop.wait_for_fill()
+    for mix in list(laptop.files()):
+        laptop.remove_local_file(mix.id)
+    source.fetch_calls.clear()
     assignment = laptop.assignment(intent.id)
     assert assignment is not None
     assert len(assignment.mix_ids) == 3
