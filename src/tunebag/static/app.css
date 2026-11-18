@@ -1251,8 +1251,67 @@ button:disabled {
 }
 
 #play-history-table .history-stars {
-  max-width: 4.5rem;
   width: auto;
+  max-width: none;
+}
+
+.star-rating,
+.stars-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  letter-spacing: -0.12em;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.star-rating {
+  min-height: var(--control-height);
+}
+
+.star-rating.star-rating-readonly {
+  pointer-events: none;
+  min-height: 0;
+}
+
+.star-rating-star.is-filled {
+  color: var(--stat-rating);
+}
+
+.star-rating-star.is-empty {
+  color: var(--muted);
+}
+
+button.star-rating-star {
+  appearance: none;
+  box-sizing: border-box;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+button.star-rating-star:hover:not(:disabled),
+button.star-rating-star:focus-visible:not(:disabled) {
+  color: var(--accent);
+}
+
+button.star-rating-star:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+span.star-rating-star {
+  font-size: 1.05rem;
+  line-height: 1;
 }
 
 #play-history-table .history-tag-editor {

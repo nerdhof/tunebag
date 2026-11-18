@@ -78,17 +78,15 @@
         </div>
         <p id="player-now" class="muted">Nothing playing</p>
         <div class="form-row player-meta" aria-label="Rate and tag">
-          <label class="inline-field" title="Rate the current release from 1 to 5">
+          <div class="inline-field" title="Rate the current release from 1 to 5">
             Rating
-            <select id="player-stars" title="Rate the current release from 1 to 5">
-              <option value="">—</option>
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-            </select>
-          </label>
+            <div
+              id="player-stars"
+              class="star-rating"
+              role="radiogroup"
+              aria-label="Rate the current release from 1 to 5"
+            ></div>
+          </div>
           <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
           <button
             type="button"

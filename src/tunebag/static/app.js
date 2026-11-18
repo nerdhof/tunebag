@@ -30,6 +30,8 @@ let lastPlayerPlaying = false;
 let lastPlayerIntentId = null;
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let playerTagEditor = null;
+/** @type {ReturnType<typeof mountStarRating> | null} */
+let playerStarRating = null;
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let intentTagEditor = null;
 
@@ -1454,6 +1456,86 @@ function formatDuration(seconds) {
   return `${h}:${String(m).padStart(2, "0")}`;
 }
 
+/**
+ * Clickable ★★★☆☆ rating control. Clearing a vote is not supported.
+ * @param {HTMLElement} root
+ * @param {{
+ *   stars?: number|null,
+ *   interactive?: boolean,
+ *   onRate?: (stars: number) => void|Promise<void>,
+ * }} [options]
+ */
+function mountStarRating(root, { stars = null, interactive = true, onRate = null } = {}) {
+  root.classList.add("star-rating");
+  root.classList.toggle("star-rating-readonly", !interactive);
+  if (interactive) {
+    root.setAttribute("role", "radiogroup");
+  } else {
+    root.setAttribute("role", "img");
+  }
+
+  let current = stars != null && stars !== "" ? Number(stars) : null;
+  let busy = false;
+
+  function paint() {
+    const filled = current != null ? current : 0;
+    root.dataset.stars = current != null ? String(current) : "";
+    root.replaceChildren();
+    root.setAttribute(
+      "aria-label",
+      current != null ? `${current} of 5 stars` : "Unrated",
+    );
+    for (let s = 1; s <= 5; s += 1) {
+      const isFilled = s <= filled;
+      if (!interactive) {
+        const mark = document.createElement("span");
+        mark.className = `star-rating-star ${isFilled ? "is-filled" : "is-empty"}`;
+        mark.textContent = isFilled ? "★" : "☆";
+        mark.setAttribute("aria-hidden", "true");
+        root.appendChild(mark);
+        continue;
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `star-rating-star ${isFilled ? "is-filled" : "is-empty"}`;
+      btn.textContent = isFilled ? "★" : "☆";
+      btn.setAttribute("role", "radio");
+      btn.setAttribute("aria-checked", current === s ? "true" : "false");
+      btn.setAttribute("aria-label", `Rate ${s} star${s === 1 ? "" : "s"}`);
+      btn.title = `Rate ${s}★`;
+      btn.disabled = busy;
+      btn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        if (!onRate || busy) return;
+        busy = true;
+        paint();
+        try {
+          await onRate(s);
+          current = s;
+        } finally {
+          busy = false;
+          paint();
+        }
+      });
+      root.appendChild(btn);
+    }
+  }
+
+  paint();
+  return {
+    setStars(value) {
+      current = value != null && value !== "" ? Number(value) : null;
+      paint();
+    },
+    getStars() {
+      return current;
+    },
+    isBusy() {
+      return busy;
+    },
+  };
+}
+
 function formatClock(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   const h = Math.floor(total / 3600);
@@ -1938,7 +2020,10 @@ async function refreshMixes({ force = false } = {}) {
         tr.appendChild(length);
 
         const rating = document.createElement("td");
-        rating.textContent = mix.stars != null ? `${mix.stars}★` : "—";
+        const starsRoot = document.createElement("div");
+        starsRoot.className = "stars-display";
+        mountStarRating(starsRoot, { stars: mix.stars, interactive: false });
+        rating.appendChild(starsRoot);
         tr.appendChild(rating);
 
         const tagsCell = document.createElement("td");
@@ -2082,35 +2167,25 @@ async function refreshPlayHistory(mixes) {
     tr.appendChild(lengthCell);
 
     const ratingCell = document.createElement("td");
-    const starsSelect = document.createElement("select");
-    starsSelect.className = "history-stars";
-    starsSelect.setAttribute("aria-label", "Rate release");
-    const blankOpt = document.createElement("option");
-    blankOpt.value = "";
-    blankOpt.textContent = "—";
-    starsSelect.appendChild(blankOpt);
-    for (let s = 1; s <= 5; s += 1) {
-      const opt = document.createElement("option");
-      opt.value = String(s);
-      opt.textContent = `${s}★`;
-      starsSelect.appendChild(opt);
-    }
-    if (mix.stars != null) starsSelect.value = String(mix.stars);
-    starsSelect.addEventListener("change", async (event) => {
-      event.stopPropagation();
-      const stars = Number(starsSelect.value);
-      if (!stars) return;
-      const rateRes = await fetch(`/api/mixes/${mix.id}/rate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stars }),
-      });
-      if (rateRes.ok) {
+    const starsRoot = document.createElement("div");
+    starsRoot.className = "history-stars";
+    starsRoot.setAttribute("aria-label", "Rate release");
+    mountStarRating(starsRoot, {
+      stars: mix.stars,
+      async onRate(stars) {
+        const rateRes = await fetch(`/api/mixes/${mix.id}/rate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stars }),
+        });
+        if (!rateRes.ok) {
+          throw new Error("Rate failed");
+        }
         await refreshMixes({ force: true });
         await refreshPlayer();
-      }
+      },
     });
-    ratingCell.appendChild(starsSelect);
+    ratingCell.appendChild(starsRoot);
     tr.appendChild(ratingCell);
 
     const tagsCell = document.createElement("td");
@@ -2491,9 +2566,8 @@ async function refreshPlayer() {
     data.size_bytes != null && Number(data.size_bytes) > 0
       ? `${label} (${formatBytes(data.size_bytes)})`
       : label;
-  const ratingEl = document.getElementById("player-stars");
-  if (document.activeElement !== ratingEl) {
-    ratingEl.value = data.stars != null ? String(data.stars) : "";
+  if (playerStarRating && !playerStarRating.isBusy()) {
+    playerStarRating.setStars(data.stars);
   }
   if (playerTagEditor && !playerTagEditor.isBusy()) {
     playerTagEditor.setTags(data.tags || []);
@@ -3937,36 +4011,27 @@ document.getElementById("player-mark").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("player-stars").addEventListener("change", async () => {
+async function rateCurrentPlayerMix(stars) {
   const status = document.getElementById("player-status");
-  const rating = document.getElementById("player-stars").value;
-  if (!rating) {
-    return;
-  }
   const player = await (await fetch("/api/player")).json();
   if (!player.current_mix_id) {
     status.textContent = "Nothing to rate";
-    return;
+    throw new Error("Nothing to rate");
   }
-  try {
-    const res = await fetch(`/api/mixes/${player.current_mix_id}/rate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stars: Number(rating) }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      status.textContent = data.detail || "Rate failed";
-      return;
-    }
-    status.textContent = `Rated ${rating}★`;
-    await refreshMixes();
-    await refreshPlayer();
-  } catch (err) {
-    status.textContent = "Rate request failed";
-    console.error(err);
+  const res = await fetch(`/api/mixes/${player.current_mix_id}/rate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stars: Number(stars) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    status.textContent = data.detail || "Rate failed";
+    throw new Error(data.detail || "Rate failed");
   }
-});
+  status.textContent = `Rated ${stars}★`;
+  await refreshMixes();
+  await refreshPlayer();
+}
 
 document.getElementById("player-reject").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
@@ -4091,6 +4156,24 @@ function connectViewNotices() {
   initSectionNav();
   initActionTips();
   initChanceSelects();
+  const playerStarsRoot = document.getElementById("player-stars");
+  if (playerStarsRoot) {
+    playerStarRating = mountStarRating(playerStarsRoot, {
+      stars: null,
+      async onRate(stars) {
+        try {
+          await rateCurrentPlayerMix(stars);
+        } catch (err) {
+          const status = document.getElementById("player-status");
+          if (status && !status.textContent) {
+            status.textContent = "Rate request failed";
+          }
+          console.error(err);
+          throw err;
+        }
+      },
+    });
+  }
   const playerTagRoot = document.getElementById("player-tag-editor");
   if (playerTagRoot) {
     playerTagEditor = mountTagEditor(playerTagRoot, {

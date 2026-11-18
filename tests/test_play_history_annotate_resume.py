@@ -186,12 +186,14 @@ def test_catalog_ui_contract_rating_remains_display_only() -> None:
     """Catalog mix rows show stars as text; rating edits stay off Catalog."""
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     js = (root / "app.js").read_text()
-    # Catalog rating cell is text (stars★ or —), not a /rate fetch in mix-row builder
-    assert '${mix.stars}★' in js or "${mix.stars}★" in js
+    # Catalog rating cell is display-only stars, not a /rate fetch in mix-row builder
+    assert 'interactive: false' in js or "interactive: false" in js
     # Player and History may rate; Catalog refreshMixes must not POST /rate
     # Isolate the catalog row builder region roughly between mix-row and refreshPlayHistory
     catalog_start = js.index('tr.className = "mix-row"')
     catalog_end = js.index("async function refreshPlayHistory")
     catalog_block = js[catalog_start:catalog_end]
     assert "/rate" not in catalog_block
+    assert "interactive: false" in catalog_block
     assert "player-stars" in js
+    assert "mountStarRating" in js
