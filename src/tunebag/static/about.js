@@ -350,7 +350,7 @@
   const PLANNED_FEATURES = [
     {
       title: "Bandcamp track-level UX",
-      body: "the Artist → Album adapter is in; later: per-track skip/reject, seek-bar marks, and titles while playing.",
+      body: "the Artist → Album adapter is in; seek-bar track marks + hover titles are in; later: per-track skip/reject, and titles while playing.",
     },
     {
       title: "YouTube anonymous auth escape hatch",

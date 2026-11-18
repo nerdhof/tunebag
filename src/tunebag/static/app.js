@@ -1557,6 +1557,8 @@ function formatHms(seconds) {
 
 let playerSeekDragging = false;
 let playerPollTimer = null;
+const SEEK_DEFAULT_TITLE = "Seek within the current release";
+let playerSeekTracks = [];
 
 /** True when focus is on an editable control inside el, or a tag editor is busy. */
 function focusInside(el) {
@@ -1581,6 +1583,87 @@ function setPlayerPolling(playing) {
   }
 }
 
+function trackAtTimelineSeconds(tracks, seconds) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return null;
+  let remaining = Math.max(0, Number(seconds) || 0);
+  const last = tracks.length - 1;
+  for (let i = 0; i < tracks.length; i += 1) {
+    const duration = Math.max(0, Number(tracks[i].duration_seconds) || 0);
+    if (i === last || remaining < duration) {
+      return tracks[i];
+    }
+    remaining -= duration;
+  }
+  return tracks[last];
+}
+
+function renderSeekMarks(tracks, duration) {
+  const marksEl = document.getElementById("player-seek-marks");
+  const seekbar = document.getElementById("player-seekbar");
+  if (!marksEl || !seekbar) return;
+  marksEl.replaceChildren();
+  const list = Array.isArray(tracks) ? tracks : [];
+  const total = Math.max(0, Number(duration) || 0);
+  if (list.length < 2 || total <= 0) {
+    playerSeekTracks = [];
+    seekbar.title = SEEK_DEFAULT_TITLE;
+    return;
+  }
+  playerSeekTracks = list;
+  seekbar.removeAttribute("title");
+  let cumulative = 0;
+  for (let i = 0; i < list.length - 1; i += 1) {
+    cumulative += Math.max(0, Number(list[i].duration_seconds) || 0);
+    if (cumulative <= 0 || cumulative >= total) continue;
+    const mark = document.createElement("span");
+    mark.className = "player-seek-mark";
+    mark.style.left = `${(cumulative / total) * 100}%`;
+    marksEl.appendChild(mark);
+  }
+}
+
+function seekSecondsAtClientX(seekbar, clientX) {
+  const rect = seekbar.getBoundingClientRect();
+  if (rect.width <= 0) return 0;
+  const min = Number(seekbar.min) || 0;
+  const max = Number(seekbar.max) || 0;
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return min + ratio * (max - min);
+}
+
+function showSeekTrackTip(seekbar, clientX) {
+  if (playerSeekTracks.length < 2) return;
+  const track = trackAtTimelineSeconds(
+    playerSeekTracks,
+    seekSecondsAtClientX(seekbar, clientX),
+  );
+  if (!track?.title) {
+    hideActionTip(seekbar);
+    return;
+  }
+  const tip = ensureActionTip();
+  actionTipActive = seekbar;
+  tip.textContent = track.title;
+  tip.hidden = false;
+  const rect = seekbar.getBoundingClientRect();
+  const tipRect = tip.getBoundingClientRect();
+  const pad = 8;
+  let left = clientX;
+  let top = rect.top - 8;
+  left = Math.max(
+    pad + tipRect.width / 2,
+    Math.min(left, window.innerWidth - pad - tipRect.width / 2),
+  );
+  if (top - tipRect.height < pad) {
+    top = rect.bottom + 8;
+    tip.dataset.placement = "below";
+  } else {
+    tip.dataset.placement = "above";
+  }
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
 function updateSeekBar(data) {
   const seekbar = document.getElementById("player-seekbar");
   const currentEl = document.getElementById("player-time-current");
@@ -1597,6 +1680,10 @@ function updateSeekBar(data) {
   totalEl.textContent = formatClock(duration);
   const hasMix = Boolean(data.current_mix_id);
   seekbar.disabled = !hasMix;
+  renderSeekMarks(
+    hasMix && data.kind === "album" ? data.tracks || [] : [],
+    duration,
+  );
 }
 
 function cacheGroupKey(group) {
@@ -3928,6 +4015,7 @@ document.getElementById("player-stop").addEventListener("click", async () => {
 });
 
 const playerSeekbar = document.getElementById("player-seekbar");
+const playerSeekRail = playerSeekbar?.closest(".player-seek-rail");
 if (playerSeekbar) {
   playerSeekbar.addEventListener("pointerdown", () => {
     playerSeekDragging = true;
@@ -3938,13 +4026,32 @@ if (playerSeekbar) {
   playerSeekbar.addEventListener("pointercancel", () => {
     playerSeekDragging = false;
   });
-  playerSeekbar.addEventListener("input", () => {
+  const seekHoverTarget = playerSeekRail || playerSeekbar;
+  seekHoverTarget.addEventListener("pointermove", (event) => {
+    showSeekTrackTip(playerSeekbar, event.clientX);
+  });
+  seekHoverTarget.addEventListener("pointerleave", () => {
+    hideActionTip(playerSeekbar);
+  });
+  playerSeekbar.addEventListener("input", (event) => {
     playerSeekDragging = true;
     const position = Math.round(Number(playerSeekbar.value || 0));
     lastKnownPositionSeconds = position;
     const currentEl = document.getElementById("player-time-current");
     if (currentEl) {
       currentEl.textContent = formatClock(position);
+    }
+    if (event instanceof PointerEvent) {
+      showSeekTrackTip(playerSeekbar, event.clientX);
+    } else {
+      const track = trackAtTimelineSeconds(playerSeekTracks, position);
+      if (track?.title && playerSeekTracks.length >= 2) {
+        const tip = ensureActionTip();
+        actionTipActive = playerSeekbar;
+        tip.textContent = track.title;
+        tip.hidden = false;
+        positionActionTip(playerSeekbar);
+      }
     }
   });
   playerSeekbar.addEventListener("change", async () => {

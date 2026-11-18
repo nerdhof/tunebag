@@ -8,8 +8,8 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
-from tunebag.domain import Platform
-from tunebag.source import ArtistListing, FakeSource, Upload
+from tunebag.domain import Platform, ReleaseKind, Stars
+from tunebag.source import ArtistListing, FakeSource, Track, Upload
 from tunebag.web import create_app
 
 
@@ -72,6 +72,88 @@ def test_player_api_uses_catalog_artist_name(tmp_path: Path) -> None:
     assert body["current_mix_id"] == str(mix.id)
     assert body["artist"] == "DJ Example"
     assert body["title"] == "Set A"
+    assert body["kind"] == "mix"
+    assert body["tracks"] == []
+
+
+def test_player_api_includes_album_track_sections(tmp_path: Path) -> None:
+    """GET /api/player exposes album track titles/durations for seek sections."""
+    source = FakeSource()
+    track_urls = (
+        "https://example.bandcamp.com/track/one",
+        "https://example.bandcamp.com/track/two",
+        "https://example.bandcamp.com/track/three",
+    )
+    source.add_listing(
+        "https://example.bandcamp.com/music",
+        ArtistListing(
+            platform=Platform.BANDCAMP,
+            platform_id="example",
+            name="Example Artist",
+            url="https://example.bandcamp.com/music",
+            uploads=[
+                Upload(
+                    platform=Platform.BANDCAMP,
+                    platform_id="album-1",
+                    title="Example Album",
+                    url="https://example.bandcamp.com/album/example",
+                    duration_seconds=0,
+                    tracks=(
+                        Track(
+                            platform_id="t1",
+                            title="One",
+                            url=track_urls[0],
+                            duration_seconds=600,
+                            size_bytes=1_000_000,
+                        ),
+                        Track(
+                            platform_id="t2",
+                            title="Two",
+                            url=track_urls[1],
+                            duration_seconds=900,
+                            size_bytes=2_000_000,
+                        ),
+                        Track(
+                            platform_id="t3",
+                            title="Three",
+                            url=track_urls[2],
+                            duration_seconds=300,
+                            size_bytes=500_000,
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
+    for url in track_urls:
+        source.bytes_by_url[url] = f"audio:{url}".encode()
+
+    agent = DeviceAgent("laptop", source=source, data_dir=tmp_path / "laptop")
+    added = agent.add_artists(["https://example.bandcamp.com/music"])
+    assert len(added) == 1
+    album = added[0]
+    assert album.kind is ReleaseKind.ALBUM
+    agent.rate_mix(album.id, Stars.FIVE)
+    intent = agent.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(agent.device_id, 3600)],
+    )
+    agent.fill_caches()
+    agent.play(intent.id, album.id)
+
+    client = TestClient(create_app(agent))
+    res = client.get("/api/player")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["current_mix_id"] == str(album.id)
+    assert body["kind"] == "album"
+    assert body["tracks"] == [
+        {"title": "One", "duration_seconds": 600},
+        {"title": "Two", "duration_seconds": 900},
+        {"title": "Three", "duration_seconds": 300},
+    ]
 
 
 def test_delete_artists_api_removes_artist_and_mixes(tmp_path: Path) -> None:

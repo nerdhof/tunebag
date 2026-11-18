@@ -7,7 +7,7 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=53" />
+    <link rel="stylesheet" href="/static/app.css?v=56" />
   </head>
   <body>
     <nav class="section-nav" aria-label="Jump to section">
@@ -64,16 +64,19 @@
           </div>
           <div class="player-seek form-row">
             <span id="player-time-current" class="seek-time">0:00</span>
-            <input
-              id="player-seekbar"
-              type="range"
-              min="0"
-              max="0"
-              step="1"
-              value="0"
-              disabled
-              title="Seek within the current release"
-            />
+            <div class="player-seek-rail">
+              <div id="player-seek-marks" class="player-seek-marks" aria-hidden="true"></div>
+              <input
+                id="player-seekbar"
+                type="range"
+                min="0"
+                max="0"
+                step="1"
+                value="0"
+                disabled
+                title="Seek within the current release"
+              />
+            </div>
             <span id="player-time-total" class="seek-time">0:00</span>
           </div>
         </div>
@@ -578,6 +581,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=48"></script>
+    <script src="/static/app.js?v=49"></script>
   </body>
 </html>

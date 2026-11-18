@@ -382,9 +382,36 @@ form.add-form-open .add-form-fields-inline {
   min-width: 0;
 }
 
+.player-seek-rail {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.player-seek-marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.player-seek-mark {
+  position: absolute;
+  top: 12%;
+  bottom: 12%;
+  width: 2px;
+  margin-left: -1px;
+  background: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+
 .player-seek input[type="range"] {
   appearance: auto;
+  position: relative;
+  z-index: 1;
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   margin: 0;
   height: auto;

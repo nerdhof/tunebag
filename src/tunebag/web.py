@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from tunebag import __version__
 from tunebag.agent import DeviceAgent, DeviceHoursSpec
-from tunebag.domain import Platform, StarDistribution, Stars
+from tunebag.domain import Platform, ReleaseKind, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 from tunebag.ui_notices import UIViewNotice
@@ -635,6 +635,15 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             )
             if pending is not None:
                 pending_until = pending.undo_until.isoformat()
+        tracks: list[dict] = []
+        if mix is not None and mix.kind is ReleaseKind.ALBUM and mix.tracks:
+            tracks = [
+                {
+                    "title": track.title,
+                    "duration_seconds": int(track.duration_seconds),
+                }
+                for track in mix.tracks
+            ]
         return {
             "playing": agent.is_playing(),
             "intent_id": (
@@ -645,6 +654,8 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "current_mix_id": str(current) if current is not None else None,
             "artist": artist_name,
             "title": mix.title if mix is not None else None,
+            "kind": mix.kind.value if mix is not None else None,
+            "tracks": tracks,
             "duration_seconds": mix.duration_seconds if mix is not None else None,
             "size_bytes": (
                 int(mix.size_bytes)
