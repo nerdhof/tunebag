@@ -114,7 +114,7 @@ def test_composite_rejects_unknown_host() -> None:
 
 
 def test_soundcloud_upload_reads_optional_size_bytes() -> None:
-    from tunebag.source import _soundcloud_upload
+    from tunebag.source.soundcloud import _soundcloud_upload
 
     upload = _soundcloud_upload(
         {

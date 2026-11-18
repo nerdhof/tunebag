@@ -36,7 +36,6 @@ from tunebag.discovery import (
     NullLanDiscovery,
 )
 from tunebag.domain import (
-    AlbumTrack,
     Artist,
     Assignment,
     Device,
@@ -97,9 +96,9 @@ from tunebag.skip import SkipBuffer
 from tunebag.source import (
     DEFAULT_MIN_DURATION_SECONDS,
     Source,
-    Upload,
     bandcamp_normalize_artist_url,
     default_source,
+    release_from_upload,
     youtube_normalize_artist_url,
 )
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
@@ -1244,7 +1243,7 @@ class DeviceAgent:
                     )
                 kept = 0
                 for upload in listing.uploads:
-                    mix = _mix_from_upload(artist.id, upload, min_duration_seconds)
+                    mix = release_from_upload(artist.id, upload, min_duration_seconds)
                     if mix is None:
                         continue
                     key = (mix.platform, mix.platform_id)
@@ -1298,7 +1297,7 @@ class DeviceAgent:
             with self._view_notice_batch():
                 kept = 0
                 for upload in listing.uploads:
-                    mix = _mix_from_upload(artist.id, upload, min_duration_seconds)
+                    mix = release_from_upload(artist.id, upload, min_duration_seconds)
                     if mix is None:
                         continue
                     key = (mix.platform, mix.platform_id)
@@ -3088,54 +3087,6 @@ def _device_hours_from_spec(entries: list[DeviceHoursSpec]) -> list[DeviceHours]
                 "or (device_id, budget, expires_at)"
             )
     return hours
-
-
-def _mix_from_upload(
-    artist_id: UUID,
-    upload: Upload,
-    min_duration_seconds: int,
-) -> Mix | None:
-    """Build a Catalog Release from a source upload, or None if filtered out."""
-    if upload.tracks:
-        if len(upload.tracks) < 2:
-            return None
-        duration_seconds = sum(t.duration_seconds for t in upload.tracks)
-        if duration_seconds < min_duration_seconds:
-            return None
-        sizes = [t.size_bytes for t in upload.tracks]
-        size_bytes = sum(sizes) if all(s is not None for s in sizes) else None
-        return Mix(
-            artist_id=artist_id,
-            platform=upload.platform,
-            platform_id=upload.platform_id,
-            title=upload.title,
-            url=upload.url,
-            duration_seconds=duration_seconds,
-            size_bytes=size_bytes,
-            kind=ReleaseKind.ALBUM,
-            tracks=[
-                AlbumTrack(
-                    platform_id=t.platform_id,
-                    title=t.title,
-                    url=t.url,
-                    duration_seconds=t.duration_seconds,
-                    size_bytes=t.size_bytes,
-                )
-                for t in upload.tracks
-            ],
-        )
-    if upload.duration_seconds < min_duration_seconds:
-        return None
-    return Mix(
-        artist_id=artist_id,
-        platform=upload.platform,
-        platform_id=upload.platform_id,
-        title=upload.title,
-        url=upload.url,
-        duration_seconds=upload.duration_seconds,
-        size_bytes=upload.size_bytes,
-        kind=ReleaseKind.MIX,
-    )
 
 
 def _mix_added_payload(mix: Mix) -> dict[str, Any]:
