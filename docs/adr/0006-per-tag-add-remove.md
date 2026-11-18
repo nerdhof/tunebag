@@ -1,0 +1,3 @@
+# Per-tag add/remove replaces full-list tag LWW
+
+Full-list `MIX_TAGGED` last-write-wins meant two peers tagging different mixes at the same time could drop each other’s tags: the later event replaced the entire list, not just the tags that author touched. Concurrent catalog edits need independent tag keys, so new writers emit `MIX_TAG_ADDED` and `MIX_TAG_REMOVED` with LWW merge on `(mix_id, tag)` (same author-time / `(device_id, seq, event.id)` tie-break as other fields). Legacy `MIX_TAGGED` events still replay: each event last-write-wins on `(mix_id)` as a batch, then expands onto per-tag keys so old logs converge.

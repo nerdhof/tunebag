@@ -133,6 +133,8 @@ _VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
     EventType.ARTIST_DELETED: _MIXES,
     EventType.MIX_ADDED: _MIXES,
     EventType.MIX_TAGGED: _MIXES_AND_HISTORY,
+    EventType.MIX_TAG_ADDED: _MIXES_AND_HISTORY,
+    EventType.MIX_TAG_REMOVED: _MIXES_AND_HISTORY,
     EventType.MIX_RATED: _MIXES_AND_HISTORY,
     EventType.MIX_REJECTED: _MIXES_AND_HISTORY,
     EventType.MIX_UNREJECTED: _MIXES_AND_HISTORY,
@@ -991,8 +993,8 @@ class DeviceAgent:
     def playhead(self, mix_id: UUID) -> Playhead | None:
         return self.catalog.playheads.get(mix_id)
 
-    def suggest_tags(self, prefix: str = "", limit: int = 10) -> list[str]:
-        """Tags already in the catalog that match the prefix."""
+    def suggest_tags(self, prefix: str = "", limit: int = 6) -> list[str]:
+        """Tags already in the catalog that match the prefix (popularity order)."""
         return self.catalog.suggest_tags(prefix, limit=limit)
 
     def later_features(self) -> list[str]:
@@ -2034,14 +2036,54 @@ class DeviceAgent:
             )
         )
 
-    def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
+    def add_mix_tag(self, mix_id: UUID, tag: str) -> Mix:
         if mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
+        cleaned = tag.strip().lower()
+        if not cleaned:
+            return self.catalog.mixes[mix_id]
+        if cleaned in self.catalog.mixes[mix_id].tags:
+            return self.catalog.mixes[mix_id]
         with self._view_notice_batch():
             self._append_and_apply(
-                EventType.MIX_TAGGED,
-                {"mix_id": str(mix_id), "tags": list(tags)},
+                EventType.MIX_TAG_ADDED,
+                {"mix_id": str(mix_id), "tag": cleaned},
             )
+        return self.catalog.mixes[mix_id]
+
+    def remove_mix_tag(self, mix_id: UUID, tag: str) -> Mix:
+        if mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        cleaned = tag.strip().lower()
+        if not cleaned:
+            return self.catalog.mixes[mix_id]
+        if cleaned not in self.catalog.mixes[mix_id].tags:
+            return self.catalog.mixes[mix_id]
+        with self._view_notice_batch():
+            self._append_and_apply(
+                EventType.MIX_TAG_REMOVED,
+                {"mix_id": str(mix_id), "tag": cleaned},
+            )
+        return self.catalog.mixes[mix_id]
+
+    def tag_mix(self, mix_id: UUID, tags: list[str]) -> Mix:
+        """Diff helper: emit ADD/REMOVE so the mix ends with exactly ``tags``."""
+        if mix_id not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {mix_id}")
+        desired = Mix.normalize_tags(list(tags))
+        current = set(self.catalog.mixes[mix_id].tags)
+        desired_set = set(desired)
+        with self._view_notice_batch():
+            for tag in sorted(desired_set - current):
+                self._append_and_apply(
+                    EventType.MIX_TAG_ADDED,
+                    {"mix_id": str(mix_id), "tag": tag},
+                )
+            for tag in sorted(current - desired_set):
+                self._append_and_apply(
+                    EventType.MIX_TAG_REMOVED,
+                    {"mix_id": str(mix_id), "tag": tag},
+                )
         return self.catalog.mixes[mix_id]
 
     def rate_mix(self, mix_id: UUID, stars: Stars) -> Mix:

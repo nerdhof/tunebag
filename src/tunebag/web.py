@@ -150,7 +150,7 @@ class RateBody(BaseModel):
 
 
 class TagBody(BaseModel):
-    tags: list[str] = Field(default_factory=list)
+    tag: str = ""
 
 
 def create_app(agent: DeviceAgent) -> FastAPI:
@@ -604,9 +604,17 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         }
 
     @app.post("/api/mixes/{mix_id}/tags")
-    def tag_mix(mix_id: UUID, body: TagBody) -> dict:
+    def add_mix_tag(mix_id: UUID, body: TagBody) -> dict:
         try:
-            mix = agent.tag_mix(mix_id, body.tags)
+            mix = agent.add_mix_tag(mix_id, body.tag)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True, "mix": {"id": str(mix.id), "tags": mix.tags}}
+
+    @app.delete("/api/mixes/{mix_id}/tags/{tag}")
+    def remove_mix_tag(mix_id: UUID, tag: str) -> dict:
+        try:
+            mix = agent.remove_mix_tag(mix_id, tag)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"ok": True, "mix": {"id": str(mix.id), "tags": mix.tags}}
@@ -837,7 +845,9 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     def list_tags(q: str = "") -> dict:
         if q:
             return {"tags": agent.suggest_tags(q)}
-        return {"tags": agent.catalog.all_tags()}
+        # Full catalog in popularity order (client caches for chip picker).
+        counts = agent.catalog.tag_counts()
+        return {"tags": agent.suggest_tags("", limit=max(len(counts), 1))}
 
     @app.get("/api/intents")
     def intents() -> dict:

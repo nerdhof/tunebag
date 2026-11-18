@@ -17,6 +17,8 @@ class EventType(str, Enum):
     ARTIST_DELETED = "artist_deleted"
     MIX_ADDED = "mix_added"
     MIX_TAGGED = "mix_tagged"
+    MIX_TAG_ADDED = "mix_tag_added"
+    MIX_TAG_REMOVED = "mix_tag_removed"
     MIX_RATED = "mix_rated"
     MIX_REJECTED = "mix_rejected"
     MIX_UNREJECTED = "mix_unrejected"

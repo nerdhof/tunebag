@@ -236,8 +236,8 @@ def test_tags_and_stars_last_writer_wins_by_author_time() -> None:
     apply(
         state,
         _event(
-            EventType.MIX_TAGGED,
-            {"mix_id": str(mix_id), "tags": ["laptop"]},
+            EventType.MIX_TAG_ADDED,
+            {"mix_id": str(mix_id), "tag": "laptop"},
             device_id=local,
             created_at=t0 + timedelta(seconds=1),
             seq=4,
@@ -260,8 +260,8 @@ def test_tags_and_stars_last_writer_wins_by_author_time() -> None:
     apply(
         state,
         _event(
-            EventType.MIX_TAGGED,
-            {"mix_id": str(mix_id), "tags": ["phone"]},
+            EventType.MIX_TAG_ADDED,
+            {"mix_id": str(mix_id), "tag": "phone"},
             device_id=peer,
             created_at=t0 + timedelta(seconds=2),
             seq=2,
@@ -272,7 +272,103 @@ def test_tags_and_stars_last_writer_wins_by_author_time() -> None:
 
     mix = state.mixes[mix_id]
     assert mix.stars == Stars.TWO
-    assert mix.tags == ["phone"]
+    assert mix.tags == ["laptop", "phone"]
+
+
+def test_mix_tag_remove_beats_older_add() -> None:
+    local = uuid4()
+    state = CatalogState()
+    _, mix_id = _seed_mix(state, local_device_id=local)
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+
+    apply(
+        state,
+        _event(
+            EventType.MIX_TAG_ADDED,
+            {"mix_id": str(mix_id), "tag": "laptop"},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=1),
+            seq=3,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    apply(
+        state,
+        _event(
+            EventType.MIX_TAG_REMOVED,
+            {"mix_id": str(mix_id), "tag": "laptop"},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=4,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+
+    assert state.mixes[mix_id].tags == []
+
+
+def test_concurrent_mix_tag_adds_survive_under_replay() -> None:
+    local = uuid4()
+    peer = uuid4()
+    artist_id = new_id()
+    mix_id = new_id()
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    events = [
+        _event(
+            EventType.ARTIST_ADDED,
+            {
+                "id": str(artist_id),
+                "platform": Platform.SOUNDCLOUD.value,
+                "platform_id": "artist-1",
+                "name": "DJ Example",
+                "url": "https://example.com/artist",
+            },
+            device_id=local,
+            created_at=t0,
+            seq=1,
+        ),
+        _event(
+            EventType.MIX_ADDED,
+            {
+                "id": str(mix_id),
+                "artist_id": str(artist_id),
+                "platform": Platform.SOUNDCLOUD.value,
+                "platform_id": "mix-1",
+                "title": "Shared",
+                "url": "https://example.com/mix",
+                "duration_seconds": 3600,
+            },
+            device_id=local,
+            created_at=t0 + timedelta(seconds=1),
+            seq=2,
+        ),
+        _event(
+            EventType.MIX_TAG_ADDED,
+            {"mix_id": str(mix_id), "tag": "laptop"},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=3,
+        ),
+        _event(
+            EventType.MIX_TAG_ADDED,
+            {"mix_id": str(mix_id), "tag": "phone"},
+            device_id=peer,
+            created_at=t0 + timedelta(seconds=2),
+            seq=1,
+        ),
+    ]
+
+    forward = CatalogState()
+    reverse = CatalogState()
+    replay(forward, events, local_device_id=local, now=t0)
+    replay(reverse, list(reversed(events)), local_device_id=local, now=t0)
+
+    assert sorted(forward.mixes[mix_id].tags) == sorted(reverse.mixes[mix_id].tags) == [
+        "laptop",
+        "phone",
+    ]
 
 
 def test_played_is_sticky_and_reject_beats_older_unreject() -> None:

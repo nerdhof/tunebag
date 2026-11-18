@@ -66,7 +66,7 @@ class CatalogState:
         self.rejected_mix_ids: set[UUID] = set()
         self.played_mix_ids: set[UUID] = set()
         self.skipped_mix_ids: set[UUID] = set()
-        self.pending_tags: dict[UUID, list[str]] = {}
+        self.pending_tag_presence: dict[UUID, dict[str, bool]] = {}
         self.pending_stars: dict[UUID, Stars] = {}
         self.pending_last_heard: dict[UUID, datetime] = {}
         self.pending_sequences: dict[UUID, Sequence] = {}
@@ -129,15 +129,22 @@ class CatalogState:
         self.playheads[playhead.mix_id] = playhead
         return playhead
 
-    def all_tags(self) -> list[str]:
-        tags: set[str] = set()
+    def tag_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
         for mix in self.mixes.values():
-            tags.update(mix.tags)
-        return sorted(tags)
+            for tag in mix.tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        return counts
 
-    def suggest_tags(self, prefix: str, limit: int = 10) -> list[str]:
+    def all_tags(self) -> list[str]:
+        return sorted(self.tag_counts())
+
+    def suggest_tags(self, prefix: str, limit: int = 6) -> list[str]:
         needle = prefix.strip().lower()
-        return [tag for tag in self.all_tags() if tag.startswith(needle)][:limit]
+        counts = self.tag_counts()
+        matches = [name for name in counts if name.startswith(needle)]
+        matches.sort(key=lambda name: (-counts[name], name))
+        return matches[:limit]
 
     def mixes_list(self) -> list[Mix]:
         return list(self.mixes.values())
@@ -183,15 +190,25 @@ def apply(
     if event.type is EventType.MIX_ADDED:
         _apply_mix_added(state, payload)
         return state, effects
+    if event.type is EventType.MIX_TAG_ADDED:
+        mix_id = UUID(payload["mix_id"])
+        tag = _normalize_tag(str(payload["tag"]))
+        _set_mix_tag_presence(state, mix_id, tag, True, event)
+        return state, effects
+    if event.type is EventType.MIX_TAG_REMOVED:
+        mix_id = UUID(payload["mix_id"])
+        tag = _normalize_tag(str(payload["tag"]))
+        _set_mix_tag_presence(state, mix_id, tag, False, event)
+        return state, effects
     if event.type is EventType.MIX_TAGGED:
         mix_id = UUID(payload["mix_id"])
-        if not _merge_beats(state, ("tags", str(mix_id)), event):
+        if not _merge_beats(state, ("mix_tagged", str(mix_id)), event):
             return state, effects
-        tags = list(payload["tags"])
-        state.pending_tags[mix_id] = tags
-        mix = state.mixes.get(mix_id)
-        if mix is not None:
-            state.add_mix(mix.model_copy(update={"tags": tags}))
+        desired = Mix.normalize_tags(list(payload["tags"]))
+        desired_set = set(desired)
+        universe = _known_tags_for_mix(state, mix_id) | desired_set
+        for tag in sorted(universe):
+            _set_mix_tag_presence(state, mix_id, tag, tag in desired_set, event)
         return state, effects
     if event.type is EventType.MIX_RATED:
         mix_id = UUID(payload["mix_id"])
@@ -345,6 +362,46 @@ def replay(
     return state, combined
 
 
+def _normalize_tag(tag: str) -> str:
+    return tag.strip().lower()
+
+
+def _known_tags_for_mix(state: CatalogState, mix_id: UUID) -> set[str]:
+    known: set[str] = set()
+    mix = state.mixes.get(mix_id)
+    if mix is not None:
+        known.update(mix.tags)
+    pending = state.pending_tag_presence.get(mix_id)
+    if pending is not None:
+        known.update(pending.keys())
+    return known
+
+
+def _set_mix_tag_presence(
+    state: CatalogState,
+    mix_id: UUID,
+    tag: str,
+    present: bool,
+    event: Event,
+) -> None:
+    if not tag:
+        return
+    if not _merge_beats(state, ("mix_tag", str(mix_id), tag), event):
+        return
+    bucket = state.pending_tag_presence.setdefault(mix_id, {})
+    bucket[tag] = present
+    mix = state.mixes.get(mix_id)
+    if mix is None:
+        return
+    tag_set = set(mix.tags)
+    if present:
+        tag_set.add(tag)
+    else:
+        tag_set.discard(tag)
+    # Sorted for deterministic Catalog regardless of Event apply order.
+    state.add_mix(mix.model_copy(update={"tags": Mix.normalize_tags(sorted(tag_set))}))
+
+
 def _merge_win_for(event: Event) -> MergeWin:
     return (event.created_at, event.device_id, int(event.seq), event.id)
 
@@ -468,8 +525,9 @@ def _apply_mix_added(state: CatalogState, payload: dict[str, Any]) -> None:
     existing = state.mixes.get(mix_id)
     tags = list(existing.tags) if existing is not None else []
     stars = existing.stars if existing is not None else None
-    if mix_id in state.pending_tags:
-        tags = list(state.pending_tags[mix_id])
+    if mix_id in state.pending_tag_presence:
+        pending = state.pending_tag_presence[mix_id]
+        tags = Mix.normalize_tags(sorted(t for t, present in pending.items() if present))
     if mix_id in state.pending_stars:
         stars = state.pending_stars[mix_id]
     kind_raw = payload.get("kind", ReleaseKind.MIX.value)

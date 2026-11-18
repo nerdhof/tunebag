@@ -99,19 +99,11 @@
           >
             ↺
           </button>
-          <label class="inline-field grow player-tags-field" title="Comma-separated tags for the current release">
+          <label class="inline-field grow player-tags-field" title="Tags for the current release">
             Tags
             <span class="player-tags-row">
-              <input
-                id="player-tags"
-                type="text"
-                list="tag-suggestions"
-                placeholder="tribal, deep"
-                title="Comma-separated tags for the current release"
-              />
-              <button type="button" id="player-tag" aria-label="Save tags" data-tip="Save tags">✓</button>
+              <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
             </span>
-            <datalist id="tag-suggestions"></datalist>
           </label>
         </div>
         <p id="player-reject-status" class="muted" hidden></p>
@@ -193,13 +185,12 @@
                 title="Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged."
               >
                 Tags
-                <input
-                  id="intent-tags"
-                  type="text"
-                  placeholder="deep, house"
-                  autocomplete="off"
+                <div
+                  id="intent-tag-editor"
+                  class="tag-editor"
+                  aria-label="Intent filter tags"
                   title="Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged."
-                />
+                ></div>
               </label>
             </div>
             <div class="form-row">

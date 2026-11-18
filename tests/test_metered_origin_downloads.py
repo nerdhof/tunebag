@@ -244,4 +244,4 @@ def test_catalog_sync_still_happens_on_metered_link(tmp_path: Path) -> None:
     phone.sync()
 
     synced = phone.catalog.mixes[mix_id]
-    assert synced.tags == ["techno", "peak"]
+    assert synced.tags == ["peak", "techno"]

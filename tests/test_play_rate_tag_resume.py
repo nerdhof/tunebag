@@ -424,9 +424,21 @@ def test_suggest_tags_returns_existing_catalog_tags(tmp_path: Path) -> None:
         tags=["techno"],
     )
 
+    # Equal counts → alphabetical among matches.
     assert laptop.suggest_tags("t") == ["techno", "tribal"]
     assert laptop.suggest_tags("deep") == ["deep"]
     assert laptop.suggest_tags("zzz") == []
+
+    _add_mix(
+        laptop,
+        source,
+        title="Tribal C",
+        duration_seconds=3600,
+        platform_id="c",
+        tags=["tribal"],
+    )
+    # Higher frequency wins over alpha.
+    assert laptop.suggest_tags("t") == ["tribal", "techno"]
 
 
 def test_playhead_syncs_and_peer_resumes_mid_mix(tmp_path: Path) -> None:

@@ -28,6 +28,10 @@ let playheadPlayedNotifiedForMix = null;
 /** Last player poll: used so intent-list play buttons stay in sync. */
 let lastPlayerPlaying = false;
 let lastPlayerIntentId = null;
+/** @type {ReturnType<typeof mountTagEditor> | null} */
+let playerTagEditor = null;
+/** @type {ReturnType<typeof mountTagEditor> | null} */
+let intentTagEditor = null;
 
 /** Compact action glyphs; always set aria-label + data-tip (hover name). */
 const BTN = {
@@ -55,6 +59,444 @@ function setSymbolButton(btn, symbol, label) {
   btn.removeAttribute("title");
   btn.setAttribute("aria-label", label);
   btn.dataset.tip = label;
+}
+
+/** @type {string[]} */
+let catalogTagsCache = [];
+
+function normalizeTag(tag) {
+  return String(tag || "")
+    .trim()
+    .toLowerCase();
+}
+
+/** FNV-1a → stable soft HSL border/fill for a tag (same tag ⇒ same color). */
+function tagChipColors(tag) {
+  let hash = 2166136261;
+  for (let i = 0; i < tag.length; i += 1) {
+    hash ^= tag.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  hash >>>= 0;
+  const hue = hash % 360;
+  const sat = 48 + ((hash >>> 9) % 22); // 48–69%
+  const border = `hsl(${hue} ${sat}% 42%)`;
+  const fill = `hsl(${hue} ${sat}% 52% / 0.18)`;
+  return [border, fill];
+}
+
+/**
+ * Chip tag editor: thin colored chips, confirm-to-remove, + picker.
+ * @param {HTMLElement} root
+ * @param {{
+ *   tags?: string[],
+ *   onAdd: (tag: string) => Promise<void> | void,
+ *   onRemove: (tag: string) => Promise<void> | void,
+ *   getCatalogTags?: () => string[],
+ * }} options
+ */
+function mountTagEditor(root, options) {
+  const getCatalogTags = options.getCatalogTags || (() => catalogTagsCache);
+  let tags = (options.tags || []).map(normalizeTag).filter(Boolean);
+  let confirming = null;
+  let picking = false;
+  let filterText = "";
+  let highlightIndex = 0;
+  let saving = false;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let confirmTimer = null;
+  /** @type {HTMLInputElement | null} */
+  let filterInput = null;
+
+  function isBusy() {
+    return picking || confirming != null || saving;
+  }
+
+  function syncBusyClass() {
+    root.classList.toggle("is-busy", isBusy());
+  }
+
+  function clearConfirm() {
+    confirming = null;
+    if (confirmTimer != null) {
+      clearTimeout(confirmTimer);
+      confirmTimer = null;
+    }
+  }
+
+  function armConfirm(tag) {
+    clearConfirm();
+    confirming = tag;
+    picking = false;
+    confirmTimer = setTimeout(() => {
+      clearConfirm();
+      syncBusyClass();
+      render();
+    }, 4000);
+    syncBusyClass();
+    render();
+  }
+
+  function suggestionRows() {
+    const owned = new Set(tags);
+    const needle = normalizeTag(filterText);
+    const catalog = getCatalogTags().map(normalizeTag).filter(Boolean);
+    const catalogSet = new Set(catalog);
+    const matches = catalog.filter(
+      (tag) => !owned.has(tag) && (!needle || tag.includes(needle)),
+    );
+    // Prefer prefix matches, then shorter names, keep popularity order otherwise.
+    matches.sort((a, b) => {
+      const ap = needle && a.startsWith(needle) ? 0 : 1;
+      const bp = needle && b.startsWith(needle) ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return 0;
+    });
+    const rows = matches.slice(0, 6).map((tag) => ({ tag, create: false }));
+    if (needle && !owned.has(needle)) {
+      if (!rows.some((row) => row.tag === needle)) {
+        const create = !catalogSet.has(needle);
+        if (rows.length < 6) rows.push({ tag: needle, create });
+        else rows[rows.length - 1] = { tag: needle, create };
+      }
+    }
+    return rows;
+  }
+
+  async function addTag(tag) {
+    const cleaned = normalizeTag(tag);
+    if (!cleaned || tags.includes(cleaned) || saving) return;
+    const prev = [...tags];
+    tags = [...tags, cleaned];
+    picking = false;
+    filterText = "";
+    clearConfirm();
+    saving = true;
+    syncBusyClass();
+    render();
+    try {
+      await options.onAdd(cleaned);
+    } catch (err) {
+      tags = prev;
+      console.error(err);
+    } finally {
+      saving = false;
+      syncBusyClass();
+      render();
+    }
+  }
+
+  async function removeTag(tag) {
+    const cleaned = normalizeTag(tag);
+    if (!cleaned || !tags.includes(cleaned) || saving) return;
+    const prev = [...tags];
+    tags = tags.filter((t) => t !== cleaned);
+    clearConfirm();
+    saving = true;
+    syncBusyClass();
+    render();
+    try {
+      await options.onRemove(cleaned);
+    } catch (err) {
+      tags = prev;
+      console.error(err);
+    } finally {
+      saving = false;
+      syncBusyClass();
+      render();
+    }
+  }
+
+  function detachDocListeners() {
+    document.removeEventListener("pointerdown", onDocPointer, true);
+    document.removeEventListener("keydown", onDocKey, true);
+  }
+
+  function onDocPointer(event) {
+    if (!root.isConnected) {
+      detachDocListeners();
+      return;
+    }
+    if (!root.contains(event.target)) {
+      let changed = false;
+      if (confirming != null) {
+        clearConfirm();
+        changed = true;
+      }
+      if (picking) {
+        closePicker();
+        changed = true;
+      }
+      if (changed) {
+        syncBusyClass();
+        render();
+      }
+    }
+  }
+
+  function onDocKey(event) {
+    if (!root.isConnected) {
+      detachDocListeners();
+      return;
+    }
+    if (event.key !== "Escape") return;
+    if (!isBusy()) return;
+    clearConfirm();
+    if (picking) closePicker();
+    syncBusyClass();
+    render();
+  }
+
+  document.addEventListener("pointerdown", onDocPointer, true);
+  document.addEventListener("keydown", onDocKey, true);
+
+  root.classList.add("tag-editor");
+  const chipsEl = document.createElement("div");
+  chipsEl.className = "tag-chips";
+  root.replaceChildren(chipsEl);
+
+  /** @type {HTMLElement | null} */
+  let suggestList = null;
+
+  function paintHighlight() {
+    if (!suggestList) return;
+    suggestList.querySelectorAll(".tag-suggest").forEach((el, i) => {
+      el.classList.toggle("is-active", i === highlightIndex);
+    });
+  }
+
+  function renderSuggestions() {
+    if (!suggestList) return;
+    const rows = suggestionRows();
+    if (highlightIndex >= rows.length) {
+      highlightIndex = Math.max(0, rows.length - 1);
+    }
+    suggestList.replaceChildren();
+    rows.forEach((row, index) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "tag-suggest";
+      if (index === highlightIndex) item.classList.add("is-active");
+      if (row.create) item.classList.add("is-create");
+      const [border, fill] = tagChipColors(row.tag);
+      item.style.setProperty("--tag-chip-border", border);
+      item.style.setProperty("--tag-chip-fill", fill);
+      const label = document.createElement("span");
+      label.textContent = row.tag;
+      item.appendChild(label);
+      if (row.create) {
+        const plus = document.createElement("span");
+        plus.className = "tag-suggest-plus";
+        plus.textContent = "+";
+        item.appendChild(plus);
+      }
+      item.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void addTag(row.tag);
+      });
+      item.addEventListener("pointerenter", () => {
+        highlightIndex = index;
+        paintHighlight();
+      });
+      suggestList.appendChild(item);
+    });
+  }
+
+  function renderChipNodes() {
+    const frag = document.createDocumentFragment();
+    for (const tag of tags) {
+      const [border, fill] = tagChipColors(tag);
+      const chip = document.createElement("span");
+      chip.className = "tag-chip";
+      chip.style.setProperty("--tag-chip-border", border);
+      chip.style.setProperty("--tag-chip-fill", fill);
+      chip.dataset.tag = tag;
+      const label = document.createElement("span");
+      label.className = "tag-chip-label";
+      label.textContent = tag;
+      chip.appendChild(label);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "tag-chip-x";
+      // pointerdown (not click): player poll remounts chips between mousedown and
+      // click, which can deliver the click to a different tag's ×.
+      if (confirming === tag) {
+        remove.classList.add("confirm-pending", "is-armed");
+        remove.textContent = BTN.confirmDelete;
+        remove.setAttribute("aria-label", `Really remove “${tag}”?`);
+        remove.dataset.tip = `really remove “${tag}”?`;
+        remove.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void removeTag(tag);
+        });
+      } else {
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `Remove “${tag}”`);
+        remove.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          armConfirm(tag);
+        });
+      }
+      chip.appendChild(remove);
+      frag.appendChild(chip);
+    }
+    return frag;
+  }
+
+  function closePicker() {
+    picking = false;
+    filterText = "";
+    highlightIndex = 0;
+    filterInput = null;
+    suggestList = null;
+  }
+
+  function openPicker() {
+    clearConfirm();
+    picking = true;
+    filterText = "";
+    highlightIndex = 0;
+    syncBusyClass();
+
+    const pickerWrap = document.createElement("div");
+    pickerWrap.className = "tag-picker-wrap";
+    filterInput = document.createElement("input");
+    filterInput.type = "text";
+    filterInput.className = "tag-picker-input";
+    filterInput.placeholder = "tag";
+    filterInput.autocomplete = "off";
+    filterInput.spellcheck = false;
+    filterInput.addEventListener("click", (event) => event.stopPropagation());
+    filterInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+    filterInput.addEventListener("input", () => {
+      filterText = filterInput?.value || "";
+      highlightIndex = 0;
+      renderSuggestions();
+    });
+    filterInput.addEventListener("keydown", (event) => {
+      const currentRows = suggestionRows();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const row = currentRows[highlightIndex] || currentRows[0];
+        if (row) void addTag(row.tag);
+        else if (normalizeTag(filterText)) void addTag(filterText);
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        highlightIndex = Math.min(
+          highlightIndex + 1,
+          Math.max(0, currentRows.length - 1),
+        );
+        paintHighlight();
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        highlightIndex = Math.max(highlightIndex - 1, 0);
+        paintHighlight();
+      }
+    });
+    suggestList = document.createElement("div");
+    suggestList.className = "tag-suggest-list";
+    pickerWrap.appendChild(filterInput);
+    pickerWrap.appendChild(suggestList);
+
+    const addBtn = chipsEl.querySelector(".tag-chip-add");
+    if (addBtn) addBtn.replaceWith(pickerWrap);
+    else chipsEl.appendChild(pickerWrap);
+
+    filterInput.focus();
+    renderSuggestions();
+  }
+
+  function render() {
+    syncBusyClass();
+    if (picking) {
+      // Rebuild chips only; keep the live picker/input mounted.
+      const picker = chipsEl.querySelector(".tag-picker-wrap");
+      const chipFrag = renderChipNodes();
+      chipsEl.replaceChildren(chipFrag);
+      if (picker) {
+        chipsEl.appendChild(picker);
+        renderSuggestions();
+      } else {
+        openPicker();
+      }
+      return;
+    }
+    filterInput = null;
+    suggestList = null;
+    const frag = renderChipNodes();
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "tag-chip-add";
+    addBtn.textContent = "+";
+    addBtn.setAttribute("aria-label", "Add tag");
+    addBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openPicker();
+    });
+    frag.appendChild(addBtn);
+    chipsEl.replaceChildren(frag);
+  }
+
+  render();
+
+  return {
+    setTags(next) {
+      if (isBusy()) return;
+      const normalized = (next || []).map(normalizeTag).filter(Boolean);
+      if (
+        normalized.length === tags.length &&
+        normalized.every((tag, i) => tag === tags[i])
+      ) {
+        return;
+      }
+      tags = normalized;
+      render();
+    },
+    getTags() {
+      return [...tags];
+    },
+    isBusy,
+    destroy() {
+      clearConfirm();
+      detachDocListeners();
+      root.replaceChildren();
+      root.classList.remove("tag-editor", "is-busy");
+    },
+  };
+}
+
+function mixTagHandlers(mixId) {
+  return {
+    async onAdd(tag) {
+      const res = await fetch(`/api/mixes/${mixId}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Add tag failed");
+      }
+      await refreshTagSuggestions();
+    },
+    async onRemove(tag) {
+      const res = await fetch(`/api/mixes/${mixId}/tags/${encodeURIComponent(tag)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Remove tag failed");
+      }
+      await refreshTagSuggestions();
+    },
+  };
 }
 
 /**
@@ -198,6 +640,10 @@ let actionTipActive = null;
 
 function actionTipLabel(el) {
   if (!(el instanceof Element)) return "";
+  // Tag chip × / + keep aria-label for a11y but only tip when armed (data-tip set).
+  if (el.classList.contains("tag-chip-x") || el.classList.contains("tag-chip-add")) {
+    return el.dataset.tip || "";
+  }
   return (
     el.dataset.tip ||
     el.getAttribute("aria-label") ||
@@ -645,7 +1091,7 @@ async function refreshIntentArtistOptions() {
 function clearIntentFormFields() {
   document.getElementById("intent-edit-id").value = "";
   document.getElementById("intent-name").value = "";
-  document.getElementById("intent-tags").value = "";
+  intentTagEditor?.setTags([]);
   clearIntentArtistSelection();
   resetIntentPlatformSelection();
   writeChances({ ...CHANCE_DEFAULTS });
@@ -668,7 +1114,7 @@ function hoursUntilExpiry(iso) {
 function beginEditIntent(intent) {
   document.getElementById("intent-edit-id").value = intent.id;
   document.getElementById("intent-name").value = intent.name;
-  document.getElementById("intent-tags").value = intent.tags.join(", ");
+  intentTagEditor?.setTags(intent.tags || []);
   setIntentArtistSelection(intent.artist_ids || []);
   setIntentPlatformSelection(intent.platforms || DEFAULT_INTENT_PLATFORMS);
   setChancesFromDist(intent.distribution);
@@ -1030,10 +1476,12 @@ function formatHms(seconds) {
 let playerSeekDragging = false;
 let playerPollTimer = null;
 
-/** True when focus is on an editable control inside el (not buttons). */
+/** True when focus is on an editable control inside el, or a tag editor is busy. */
 function focusInside(el) {
+  if (!el) return false;
+  if (el.querySelector(".tag-editor.is-busy")) return true;
   const active = document.activeElement;
-  if (!el || !active || !el.contains(active)) return false;
+  if (!active || !el.contains(active)) return false;
   const tag = active.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
@@ -1496,34 +1944,6 @@ async function refreshMixes({ force = false } = {}) {
         const tagsCell = document.createElement("td");
         const tagRow = document.createElement("div");
         tagRow.className = "tag-cell";
-        const tagInput = document.createElement("input");
-        tagInput.type = "text";
-        tagInput.setAttribute("list", "tag-suggestions");
-        tagInput.placeholder = "tags";
-        tagInput.value = (mix.tags || []).join(", ");
-        tagInput.addEventListener("click", (event) => event.stopPropagation());
-        tagRow.appendChild(tagInput);
-        const saveBtn = document.createElement("button");
-        saveBtn.type = "button";
-        setSymbolButton(saveBtn, BTN.save, "Save tags");
-        saveBtn.addEventListener("click", async (event) => {
-          event.stopPropagation();
-          const tags = tagInput.value
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean);
-          const saveRes = await fetch(`/api/mixes/${mix.id}/tags`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tags }),
-          });
-          if (saveRes.ok) {
-            const saved = await saveRes.json();
-            tagInput.value = (saved.mix?.tags || tags).join(", ");
-            await refreshTagSuggestions();
-          }
-        });
-        tagRow.appendChild(saveBtn);
 
         const rejectBtn = document.createElement("button");
         rejectBtn.type = "button";
@@ -1589,6 +2009,15 @@ async function refreshMixes({ force = false } = {}) {
         tagRow.appendChild(rejectBtn);
         tagRow.appendChild(undoBtn);
         tagRow.appendChild(unRejectBtn);
+
+        const tagEditorRoot = document.createElement("div");
+        tagEditorRoot.className = "tag-editor catalog-tag-editor";
+        tagEditorRoot.addEventListener("click", (event) => event.stopPropagation());
+        mountTagEditor(tagEditorRoot, {
+          tags: mix.tags || [],
+          ...mixTagHandlers(mix.id),
+        });
+        tagRow.appendChild(tagEditorRoot);
         tagsCell.appendChild(tagRow);
         tr.appendChild(tagsCell);
         body.appendChild(tr);
@@ -1687,38 +2116,6 @@ async function refreshPlayHistory(mixes) {
     const tagsCell = document.createElement("td");
     const tagRow = document.createElement("div");
     tagRow.className = "tag-cell history-tag-cell";
-    const tagInput = document.createElement("input");
-    tagInput.type = "text";
-    tagInput.className = "history-tags";
-    tagInput.setAttribute("list", "tag-suggestions");
-    tagInput.placeholder = "tags";
-    tagInput.value = (mix.tags || []).join(", ");
-    tagInput.addEventListener("click", (event) => event.stopPropagation());
-    tagRow.appendChild(tagInput);
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "history-tag";
-    setSymbolButton(saveBtn, BTN.save, "Save tags");
-    saveBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const tags = tagInput.value
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-      const saveRes = await fetch(`/api/mixes/${mix.id}/tags`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tags }),
-      });
-      if (saveRes.ok) {
-        const saved = await saveRes.json();
-        tagInput.value = (saved.mix?.tags || tags).join(", ");
-        await refreshTagSuggestions();
-        await refreshMixes({ force: true });
-        await refreshPlayer();
-      }
-    });
-    tagRow.appendChild(saveBtn);
 
     const rejectBtn = document.createElement("button");
     rejectBtn.type = "button";
@@ -1784,6 +2181,25 @@ async function refreshPlayHistory(mixes) {
     tagRow.appendChild(rejectBtn);
     tagRow.appendChild(undoBtn);
     tagRow.appendChild(unRejectBtn);
+
+    const tagEditorRoot = document.createElement("div");
+    tagEditorRoot.className = "tag-editor history-tag-editor";
+    tagEditorRoot.addEventListener("click", (event) => event.stopPropagation());
+    mountTagEditor(tagEditorRoot, {
+      tags: mix.tags || [],
+      ...mixTagHandlers(mix.id),
+      async onAdd(tag) {
+        await mixTagHandlers(mix.id).onAdd(tag);
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+      },
+      async onRemove(tag) {
+        await mixTagHandlers(mix.id).onRemove(tag);
+        await refreshMixes({ force: true });
+        await refreshPlayer();
+      },
+    });
+    tagRow.appendChild(tagEditorRoot);
     tagsCell.appendChild(tagRow);
     tr.appendChild(tagsCell);
 
@@ -1831,15 +2247,8 @@ async function refreshPlayHistory(mixes) {
 
 async function refreshTagSuggestions() {
   const res = await fetch("/api/tags");
-  const data = await res.json();
-  const datalist = document.getElementById("tag-suggestions");
-  if (!datalist) return;
-  datalist.innerHTML = "";
-  for (const tag of data.tags || []) {
-    const option = document.createElement("option");
-    option.value = tag;
-    datalist.appendChild(option);
-  }
+  const data = await res.json().catch(() => ({ tags: [] }));
+  catalogTagsCache = data.tags || [];
 }
 
 async function refreshPlayerIntents() {
@@ -2055,11 +2464,15 @@ async function refreshPlayer() {
   const data = await res.json();
   const now = document.getElementById("player-now");
   if (!now) return;
+  currentMixId = data.current_mix_id || null;
   if (!data.current_mix_id) {
     now.textContent = "Nothing playing";
     lastKnownPositionSeconds = 0;
     lastPlayheadCommitAt = 0;
     playheadPlayedNotifiedForMix = null;
+    if (playerTagEditor && !playerTagEditor.isBusy()) {
+      playerTagEditor.setTags([]);
+    }
     updateSeekBar({});
     setPlayerPolling(false);
     updateRejectControls({});
@@ -2079,12 +2492,11 @@ async function refreshPlayer() {
       ? `${label} (${formatBytes(data.size_bytes)})`
       : label;
   const ratingEl = document.getElementById("player-stars");
-  const tagsEl = document.getElementById("player-tags");
   if (document.activeElement !== ratingEl) {
     ratingEl.value = data.stars != null ? String(data.stars) : "";
   }
-  if (document.activeElement !== tagsEl) {
-    tagsEl.value = (data.tags || []).join(", ");
+  if (playerTagEditor && !playerTagEditor.isBusy()) {
+    playerTagEditor.setTags(data.tags || []);
   }
   updateSeekBar(data);
   setPlayerPolling(Boolean(data.playing));
@@ -3256,11 +3668,7 @@ document.getElementById("intent-form").addEventListener("submit", async (event) 
   const status = document.getElementById("intent-status");
   const editId = document.getElementById("intent-edit-id").value.trim();
   const name = document.getElementById("intent-name").value.trim();
-  const tags = document
-    .getElementById("intent-tags")
-    .value.split(/[,]+/)
-    .map((tag) => tag.trim())
-    .filter(Boolean);
+  const tags = intentTagEditor?.getTags() || [];
   const chances = readChances();
   const total = sumChances(chances);
   if (total !== 100) {
@@ -3385,21 +3793,6 @@ document.getElementById("fill-btn").addEventListener("click", async () => {
   } catch (err) {
     status.textContent = "Fill request failed";
     console.error(err);
-  }
-});
-
-document.getElementById("player-tags").addEventListener("input", async (event) => {
-  const value = event.target.value;
-  const last = value.split(",").pop()?.trim() || "";
-  const res = await fetch(`/api/tags?q=${encodeURIComponent(last)}`);
-  const data = await res.json().catch(() => ({ tags: [] }));
-  const datalist = document.getElementById("tag-suggestions");
-  if (!datalist) return;
-  datalist.innerHTML = "";
-  for (const tag of data.tags || []) {
-    const option = document.createElement("option");
-    option.value = tag;
-    datalist.appendChild(option);
   }
 });
 
@@ -3625,39 +4018,6 @@ document.getElementById("player-undo-reject").addEventListener("click", async ()
   }
 });
 
-document.getElementById("player-tag").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
-  const player = await (await fetch("/api/player")).json();
-  if (!player.current_mix_id) {
-    status.textContent = "Nothing to tag";
-    return;
-  }
-  const tags = document
-    .getElementById("player-tags")
-    .value.split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-  try {
-    const res = await fetch(`/api/mixes/${player.current_mix_id}/tags`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tags }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      status.textContent = data.detail || "Tag failed";
-      return;
-    }
-    status.textContent = tags.length ? `Tags: ${tags.join(", ")}` : "Tags cleared";
-    await refreshMixes();
-    await refreshTagSuggestions();
-    await refreshPlayer();
-  } catch (err) {
-    status.textContent = "Tag request failed";
-    console.error(err);
-  }
-});
-
 document.getElementById("catalog-show-rejected")?.addEventListener("change", async (event) => {
   showRejectedCatalog = Boolean(event.target.checked);
   await refreshMixes({ force: true });
@@ -3731,6 +4091,28 @@ function connectViewNotices() {
   initSectionNav();
   initActionTips();
   initChanceSelects();
+  const playerTagRoot = document.getElementById("player-tag-editor");
+  if (playerTagRoot) {
+    playerTagEditor = mountTagEditor(playerTagRoot, {
+      tags: [],
+      async onAdd(tag) {
+        if (!currentMixId) throw new Error("Nothing to tag");
+        await mixTagHandlers(currentMixId).onAdd(tag);
+      },
+      async onRemove(tag) {
+        if (!currentMixId) throw new Error("Nothing to tag");
+        await mixTagHandlers(currentMixId).onRemove(tag);
+      },
+    });
+  }
+  const intentTagRoot = document.getElementById("intent-tag-editor");
+  if (intentTagRoot) {
+    intentTagEditor = mountTagEditor(intentTagRoot, {
+      tags: [],
+      async onAdd() {},
+      async onRemove() {},
+    });
+  }
   const rejectedFilter = document.getElementById("catalog-show-rejected");
   if (rejectedFilter) {
     rejectedFilter.checked = false;

@@ -170,8 +170,8 @@ def test_play_history_ui_contract_rate_tag_and_resume() -> None:
     js = (root / "app.js").read_text()
     assert "history-rate" in js or "history-stars" in js
     assert "/api/mixes/${mix.id}/rate" in js
-    assert "history-tag" in js or "history-tags" in js
-    assert "/api/mixes/${mix.id}/tags" in js
+    assert "history-tag-editor" in js
+    assert "/api/mixes/${mixId}/tags" in js or "/api/mixes/${mix.id}/tags" in js
     assert "history-resume" in js
     assert 'mix_id:' in js or '"mix_id"' in js
     # Resume posts play with mix_id
