@@ -1681,6 +1681,14 @@ function seekMarksLayoutKey(tracks, duration, artist) {
   });
 }
 
+function syncSeekProgress(seekbar) {
+  if (!seekbar) return;
+  const max = Number(seekbar.max) || 0;
+  const value = Number(seekbar.value) || 0;
+  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  seekbar.style.setProperty("--seek-progress", `${pct}%`);
+}
+
 async function seekToPlayerPosition(positionSeconds) {
   const status = document.getElementById("player-status");
   const seekbar = document.getElementById("player-seekbar");
@@ -1689,6 +1697,7 @@ async function seekToPlayerPosition(positionSeconds) {
   lastPlayheadCommitAt = Date.now();
   if (seekbar) {
     seekbar.value = String(position);
+    syncSeekProgress(seekbar);
   }
   const currentEl = document.getElementById("player-time-current");
   if (currentEl) {
@@ -1878,6 +1887,7 @@ function updateSeekBar(data) {
   if (!playerSeekDragging) {
     seekbar.value = String(pos);
   }
+  syncSeekProgress(seekbar);
   const displayPos = playerSeekDragging ? Number(seekbar.value) : pos;
   currentEl.textContent = formatClock(displayPos);
   totalEl.textContent = formatClock(duration);
@@ -2482,8 +2492,8 @@ async function refreshMixes({ force = false } = {}) {
 
 function formatLastHeard(ts) {
   if (!ts) return "";
-  const match = String(ts).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
-  if (match) return `${match[1]} ${match[2]}`;
+  const match = String(ts).match(/^(\d{2})(\d{2}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
+  if (match) return `${match[2]} ${match[3]}`;
   return String(ts);
 }
 
@@ -4336,6 +4346,7 @@ if (playerSeekbar) {
     playerSeekDragging = true;
     const position = Math.round(Number(playerSeekbar.value || 0));
     lastKnownPositionSeconds = position;
+    syncSeekProgress(playerSeekbar);
     const currentEl = document.getElementById("player-time-current");
     if (currentEl) {
       currentEl.textContent = formatClock(position);
