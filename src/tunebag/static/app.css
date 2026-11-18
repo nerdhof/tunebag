@@ -403,7 +403,7 @@ form.add-form-open .add-form-fields-inline {
 .tag-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.15rem;
+  gap: 0.05rem;
   align-items: center;
   position: relative;
 }
@@ -415,7 +415,7 @@ form.add-form-open .add-form-fields-inline {
   display: inline-flex;
   align-items: center;
   gap: 0.15rem;
-  margin: 0.25rem 0.35rem 0.05rem 0;
+  margin: 0.2rem 0.12rem 0.05rem 0;
   padding: 0.18rem 0.65rem;
   border: 1px solid var(--tag-chip-border, color-mix(in srgb, var(--muted) 55%, transparent));
   border-radius: 999px;
@@ -610,7 +610,7 @@ button.tag-chip-x {
   top: -0.45rem;
   right: -0.4rem;
   z-index: 1;
-  display: inline-flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: 0.9rem;
@@ -627,6 +627,11 @@ button.tag-chip-x {
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
+}
+
+.tag-chip:hover > .tag-chip-x,
+button.tag-chip-x.is-armed {
+  display: inline-flex;
 }
 
 button.tag-chip-x:hover {
