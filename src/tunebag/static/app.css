@@ -343,6 +343,8 @@ form.add-form-open .add-form-fields-inline {
 
 #player-now {
   margin: 0 0 0.75rem;
+  color: var(--fg);
+  font-weight: 700;
 }
 
 .player-transport .form-row {
@@ -384,6 +386,29 @@ form.add-form-open .add-form-fields-inline {
 
 .player-meta .inline-field.grow {
   flex: 1 1 12rem;
+}
+
+#player-reject,
+#play-history-table .history-reject,
+#catalog-table .catalog-reject {
+  height: 1.65rem;
+  min-height: 1.65rem;
+  padding: 0 0.5rem;
+  border-color: color-mix(in srgb, var(--muted) 65%, transparent);
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: calc(1.65rem - 2px);
+}
+
+#player-reject:hover:not(:disabled),
+#player-reject:focus-visible:not(:disabled),
+#play-history-table .history-reject:hover:not(:disabled),
+#play-history-table .history-reject:focus-visible:not(:disabled),
+#catalog-table .catalog-reject:hover:not(:disabled),
+#catalog-table .catalog-reject:focus-visible:not(:disabled) {
+  border-color: color-mix(in srgb, var(--stat-reject) 75%, transparent);
+  background: color-mix(in srgb, var(--stat-reject) 18%, var(--card));
+  color: var(--stat-reject);
 }
 
 .player-tags-row {
@@ -1348,7 +1373,8 @@ span.star-rating-star {
 
 /* Keep reject visually separate from the tag chips. */
 #catalog-table .tag-cell > .tag-editor,
-#play-history-table .tag-cell > .tag-editor {
+#play-history-table .tag-cell > .tag-editor,
+.player-meta .player-tags-field {
   padding-left: 0.35rem;
   border-left: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
 }
