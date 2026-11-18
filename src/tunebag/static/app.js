@@ -646,6 +646,10 @@ function actionTipLabel(el) {
   if (el.classList.contains("tag-chip-x") || el.classList.contains("tag-chip-add")) {
     return el.dataset.tip || "";
   }
+  // Seek section buttons keep aria-label for a11y; no hover tip.
+  if (el.classList.contains("player-seek-section")) {
+    return "";
+  }
   return (
     el.dataset.tip ||
     el.getAttribute("aria-label") ||
@@ -1557,8 +1561,25 @@ function formatHms(seconds) {
 
 let playerSeekDragging = false;
 let playerPollTimer = null;
-const SEEK_DEFAULT_TITLE = "Seek within the current release";
 let playerSeekTracks = [];
+let playerSeekArtist = "";
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Seek labels show the track name only; strip a leading "Artist - " if present. */
+function displayTrackTitle(rawTitle, artist) {
+  const title = String(rawTitle || "").trim();
+  if (!title) return "";
+  const name = String(artist || "").trim();
+  if (!name) return title;
+  const stripped = title.replace(
+    new RegExp(`^${escapeRegExp(name)}\\s*[-–—:]\\s*`, "i"),
+    "",
+  ).trim();
+  return stripped || title;
+}
 
 /** True when focus is on an editable control inside el, or a tag editor is busy. */
 function focusInside(el) {
@@ -1583,42 +1604,191 @@ function setPlayerPolling(playing) {
   }
 }
 
-function trackAtTimelineSeconds(tracks, seconds) {
-  if (!Array.isArray(tracks) || tracks.length === 0) return null;
+function trackIndexAtTimelineSeconds(tracks, seconds) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return -1;
   let remaining = Math.max(0, Number(seconds) || 0);
   const last = tracks.length - 1;
   for (let i = 0; i < tracks.length; i += 1) {
     const duration = Math.max(0, Number(tracks[i].duration_seconds) || 0);
     if (i === last || remaining < duration) {
-      return tracks[i];
+      return i;
     }
     remaining -= duration;
   }
-  return tracks[last];
+  return last;
 }
 
-function renderSeekMarks(tracks, duration) {
+function trackAtTimelineSeconds(tracks, seconds) {
+  const index = trackIndexAtTimelineSeconds(tracks, seconds);
+  return index < 0 ? null : tracks[index];
+}
+
+function trackStartSeconds(tracks, index) {
+  let start = 0;
+  for (let i = 0; i < index; i += 1) {
+    start += Math.max(0, Number(tracks[i]?.duration_seconds) || 0);
+  }
+  return start;
+}
+
+function setSeekTrackHighlight(index) {
+  const marksEl = document.getElementById("player-seek-marks");
+  if (!marksEl) return;
+  for (const el of marksEl.querySelectorAll(
+    ".player-seek-section, .player-seek-section-fill, .player-seek-label",
+  )) {
+    const hot = Number(el.dataset.trackIndex) === index;
+    el.classList.toggle("is-hot", hot);
+  }
+}
+
+function clearSeekTrackHighlight() {
+  const marksEl = document.getElementById("player-seek-marks");
+  if (!marksEl) return;
+  for (const el of marksEl.querySelectorAll(
+    ".player-seek-section.is-hot, .player-seek-section-fill.is-hot, .player-seek-label.is-hot",
+  )) {
+    el.classList.remove("is-hot");
+  }
+}
+
+async function seekToPlayerPosition(positionSeconds) {
+  const status = document.getElementById("player-status");
+  const seekbar = document.getElementById("player-seekbar");
+  const position = Math.max(0, Math.round(Number(positionSeconds) || 0));
+  lastKnownPositionSeconds = position;
+  lastPlayheadCommitAt = Date.now();
+  if (seekbar) {
+    seekbar.value = String(position);
+  }
+  const currentEl = document.getElementById("player-time-current");
+  if (currentEl) {
+    currentEl.textContent = formatClock(position);
+  }
+  try {
+    const res = await fetch("/api/player/seek", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position_seconds: position }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (status) status.textContent = data.detail || "Seek failed";
+      await refreshPlayer();
+      return false;
+    }
+    if (status) {
+      status.textContent = data.played
+        ? `Seeked to ${formatClock(position)} · marked played`
+        : `Seeked to ${formatClock(position)}`;
+    }
+    if (data.played && data.mix_id) {
+      playheadPlayedNotifiedForMix = data.mix_id;
+    }
+    await refreshPlayer();
+    await refreshMixes();
+    await refreshFiles();
+    await refreshIntents();
+    return true;
+  } catch (err) {
+    if (status) status.textContent = "Seek request failed";
+    console.error(err);
+    await refreshPlayer();
+    return false;
+  }
+}
+
+async function seekToTrackStart(index) {
+  if (index < 0 || index >= playerSeekTracks.length) return false;
+  const position = trackStartSeconds(playerSeekTracks, index);
+  return seekToPlayerPosition(position);
+}
+
+function seekLabelHeadroomRem(tracks, artist) {
+  let maxChars = 0;
+  for (const track of tracks) {
+    const text = displayTrackTitle(track.title, artist) || "";
+    if (text.length > maxChars) maxChars = text.length;
+  }
+  // 0.7rem labels at −60°: vertical rise ≈ chars * charWidth * sin(60°) + gap.
+  return Math.min(14, Math.max(3.5, maxChars * 0.28 + 0.7));
+}
+
+function setSeekLabelHeadroom(seekRow, tracks, artist) {
+  if (!seekRow) return;
+  if (!tracks || tracks.length < 2) {
+    seekRow.classList.remove("has-track-labels");
+    seekRow.style.removeProperty("--seek-label-headroom");
+    return;
+  }
+  seekRow.classList.add("has-track-labels");
+  seekRow.style.setProperty(
+    "--seek-label-headroom",
+    `${seekLabelHeadroomRem(tracks, artist)}rem`,
+  );
+}
+
+function renderSeekMarks(tracks, duration, artist) {
   const marksEl = document.getElementById("player-seek-marks");
   const seekbar = document.getElementById("player-seekbar");
+  const rail = seekbar?.closest(".player-seek-rail");
+  const seekRow = seekbar?.closest(".player-seek");
   if (!marksEl || !seekbar) return;
   marksEl.replaceChildren();
   const list = Array.isArray(tracks) ? tracks : [];
   const total = Math.max(0, Number(duration) || 0);
   if (list.length < 2 || total <= 0) {
     playerSeekTracks = [];
-    seekbar.title = SEEK_DEFAULT_TITLE;
+    playerSeekArtist = "";
+    seekbar.removeAttribute("title");
+    rail?.classList.remove("has-track-labels");
+    setSeekLabelHeadroom(seekRow, [], "");
     return;
   }
   playerSeekTracks = list;
+  playerSeekArtist = String(artist || "");
   seekbar.removeAttribute("title");
+  rail?.classList.add("has-track-labels");
+  setSeekLabelHeadroom(seekRow, list, playerSeekArtist);
   let cumulative = 0;
-  for (let i = 0; i < list.length - 1; i += 1) {
-    cumulative += Math.max(0, Number(list[i].duration_seconds) || 0);
-    if (cumulative <= 0 || cumulative >= total) continue;
-    const mark = document.createElement("span");
-    mark.className = "player-seek-mark";
-    mark.style.left = `${(cumulative / total) * 100}%`;
-    marksEl.appendChild(mark);
+  for (let i = 0; i < list.length; i += 1) {
+    const trackDuration = Math.max(0, Number(list[i].duration_seconds) || 0);
+    const startPct = (cumulative / total) * 100;
+    const widthPct = (trackDuration / total) * 100;
+    const midPct = startPct + widthPct / 2;
+    const title =
+      displayTrackTitle(list[i].title, playerSeekArtist) || `Track ${i + 1}`;
+
+    const fill = document.createElement("span");
+    fill.className = "player-seek-section-fill";
+    fill.dataset.trackIndex = String(i);
+    fill.style.left = `${startPct}%`;
+    fill.style.width = `${Math.max(0, widthPct)}%`;
+    marksEl.appendChild(fill);
+
+    const section = document.createElement("button");
+    section.type = "button";
+    section.className = "player-seek-section";
+    section.dataset.trackIndex = String(i);
+    section.setAttribute("aria-label", `Seek to ${title}`);
+    section.style.left = `${startPct}%`;
+    section.style.width = `${Math.max(0, widthPct)}%`;
+    marksEl.appendChild(section);
+
+    const label = document.createElement("span");
+    label.className = "player-seek-label";
+    label.dataset.trackIndex = String(i);
+    label.textContent = title;
+    label.style.left = `${Math.max(0, Math.min(100, midPct))}%`;
+    marksEl.appendChild(label);
+
+    cumulative += trackDuration;
+    if (i < list.length - 1 && cumulative > 0 && cumulative < total) {
+      const mark = document.createElement("span");
+      mark.className = "player-seek-mark";
+      mark.style.left = `${(cumulative / total) * 100}%`;
+      marksEl.appendChild(mark);
+    }
   }
 }
 
@@ -1631,37 +1801,20 @@ function seekSecondsAtClientX(seekbar, clientX) {
   return min + ratio * (max - min);
 }
 
-function showSeekTrackTip(seekbar, clientX) {
-  if (playerSeekTracks.length < 2) return;
-  const track = trackAtTimelineSeconds(
+function highlightSeekTrackAtClientX(seekbar, clientX) {
+  if (playerSeekTracks.length < 2) {
+    clearSeekTrackHighlight();
+    return;
+  }
+  const index = trackIndexAtTimelineSeconds(
     playerSeekTracks,
     seekSecondsAtClientX(seekbar, clientX),
   );
-  if (!track?.title) {
-    hideActionTip(seekbar);
+  if (index < 0) {
+    clearSeekTrackHighlight();
     return;
   }
-  const tip = ensureActionTip();
-  actionTipActive = seekbar;
-  tip.textContent = track.title;
-  tip.hidden = false;
-  const rect = seekbar.getBoundingClientRect();
-  const tipRect = tip.getBoundingClientRect();
-  const pad = 8;
-  let left = clientX;
-  let top = rect.top - 8;
-  left = Math.max(
-    pad + tipRect.width / 2,
-    Math.min(left, window.innerWidth - pad - tipRect.width / 2),
-  );
-  if (top - tipRect.height < pad) {
-    top = rect.bottom + 8;
-    tip.dataset.placement = "below";
-  } else {
-    tip.dataset.placement = "above";
-  }
-  tip.style.left = `${Math.round(left)}px`;
-  tip.style.top = `${Math.round(top)}px`;
+  setSeekTrackHighlight(index);
 }
 
 function updateSeekBar(data) {
@@ -1683,6 +1836,7 @@ function updateSeekBar(data) {
   renderSeekMarks(
     hasMix && data.kind === "album" ? data.tracks || [] : [],
     duration,
+    hasMix ? data.artist || "" : "",
   );
 }
 
@@ -4028,10 +4182,26 @@ if (playerSeekbar) {
   });
   const seekHoverTarget = playerSeekRail || playerSeekbar;
   seekHoverTarget.addEventListener("pointermove", (event) => {
-    showSeekTrackTip(playerSeekbar, event.clientX);
+    const hit = event.target instanceof Element
+      ? event.target.closest(".player-seek-section")
+      : null;
+    if (hit && playerSeekRail?.contains(hit)) {
+      setSeekTrackHighlight(Number(hit.dataset.trackIndex));
+      return;
+    }
+    highlightSeekTrackAtClientX(playerSeekbar, event.clientX);
   });
   seekHoverTarget.addEventListener("pointerleave", () => {
-    hideActionTip(playerSeekbar);
+    clearSeekTrackHighlight();
+  });
+  seekHoverTarget.addEventListener("click", (event) => {
+    const hit = event.target instanceof Element
+      ? event.target.closest(".player-seek-section")
+      : null;
+    if (!hit || !playerSeekRail?.contains(hit)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void seekToTrackStart(Number(hit.dataset.trackIndex));
   });
   playerSeekbar.addEventListener("input", (event) => {
     playerSeekDragging = true;
@@ -4042,51 +4212,18 @@ if (playerSeekbar) {
       currentEl.textContent = formatClock(position);
     }
     if (event instanceof PointerEvent) {
-      showSeekTrackTip(playerSeekbar, event.clientX);
+      highlightSeekTrackAtClientX(playerSeekbar, event.clientX);
     } else {
-      const track = trackAtTimelineSeconds(playerSeekTracks, position);
-      if (track?.title && playerSeekTracks.length >= 2) {
-        const tip = ensureActionTip();
-        actionTipActive = playerSeekbar;
-        tip.textContent = track.title;
-        tip.hidden = false;
-        positionActionTip(playerSeekbar);
+      const index = trackIndexAtTimelineSeconds(playerSeekTracks, position);
+      if (index >= 0) {
+        setSeekTrackHighlight(index);
       }
     }
   });
   playerSeekbar.addEventListener("change", async () => {
     playerSeekDragging = false;
-    const status = document.getElementById("player-status");
     const position = Math.round(Number(playerSeekbar.value || 0));
-    lastKnownPositionSeconds = position;
-    lastPlayheadCommitAt = Date.now();
-    try {
-      const res = await fetch("/api/player/seek", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ position_seconds: position }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        status.textContent = data.detail || "Seek failed";
-        await refreshPlayer();
-        return;
-      }
-      status.textContent = data.played
-        ? `Seeked to ${formatClock(position)} · marked played`
-        : `Seeked to ${formatClock(position)}`;
-      if (data.played && data.mix_id) {
-        playheadPlayedNotifiedForMix = data.mix_id;
-      }
-      await refreshPlayer();
-      await refreshMixes();
-      await refreshFiles();
-      await refreshIntents();
-    } catch (err) {
-      status.textContent = "Seek request failed";
-      console.error(err);
-      await refreshPlayer();
-    }
+    await seekToPlayerPosition(position);
   });
 }
 

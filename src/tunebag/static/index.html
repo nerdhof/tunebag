@@ -7,7 +7,7 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=56" />
+    <link rel="stylesheet" href="/static/app.css?v=69" />
   </head>
   <body>
     <nav class="section-nav" aria-label="Jump to section">
@@ -51,16 +51,18 @@
           </span>
         </h2>
         <div class="player-transport" aria-label="Player controls">
-          <select
-            id="player-intent"
-            title="Which intent sequence to play"
-            aria-label="Intent"
-          ></select>
-          <div class="player-symbols form-row">
-            <button type="button" id="player-play" aria-label="Play" data-tip="Play">▶</button>
-            <button type="button" id="player-skip" aria-label="Skip" data-tip="Skip">⏭</button>
-            <button type="button" id="player-stop" aria-label="Stop" data-tip="Stop">⏹</button>
-            <button type="button" id="player-mark" aria-label="Mark played" data-tip="Mark played">✓</button>
+          <div class="player-top form-row">
+            <select
+              id="player-intent"
+              title="Which intent sequence to play"
+              aria-label="Intent"
+            ></select>
+            <div class="player-symbols form-row">
+              <button type="button" id="player-play" aria-label="Play" data-tip="Play">▶</button>
+              <button type="button" id="player-skip" aria-label="Skip" data-tip="Skip">⏭</button>
+              <button type="button" id="player-stop" aria-label="Stop" data-tip="Stop">⏹</button>
+              <button type="button" id="player-mark" aria-label="Mark played" data-tip="Mark played">✓</button>
+            </div>
           </div>
           <div class="player-seek form-row">
             <span id="player-time-current" class="seek-time">0:00</span>
@@ -74,37 +76,39 @@
                 step="1"
                 value="0"
                 disabled
-                title="Seek within the current release"
+                aria-label="Seek within the current release"
               />
             </div>
             <span id="player-time-total" class="seek-time">0:00</span>
           </div>
         </div>
-        <p id="player-now">Nothing playing</p>
-        <div class="form-row player-meta" aria-label="Rate and tag">
-          <div class="inline-field" title="Rate the current release from 1 to 5">
-            <div
-              id="player-stars"
-              class="star-rating"
-              role="radiogroup"
-              aria-label="Rate the current release from 1 to 5"
-            ></div>
-          </div>
-          <div class="player-reject-tags">
-            <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
-            <button
-              type="button"
-              id="player-undo-reject"
-              hidden
-              aria-label="Undo reject"
-              data-tip="Undo reject"
-            >
-              ↺
-            </button>
-            <div class="player-tags-field" title="Tags for the current release">
-              <span class="player-tags-row">
-                <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
-              </span>
+        <div class="player-below">
+          <p id="player-now">Nothing playing</p>
+          <div class="form-row player-meta" aria-label="Rate and tag">
+            <div class="inline-field" title="Rate the current release from 1 to 5">
+              <div
+                id="player-stars"
+                class="star-rating"
+                role="radiogroup"
+                aria-label="Rate the current release from 1 to 5"
+              ></div>
+            </div>
+            <div class="player-reject-tags">
+              <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
+              <button
+                type="button"
+                id="player-undo-reject"
+                hidden
+                aria-label="Undo reject"
+                data-tip="Undo reject"
+              >
+                ↺
+              </button>
+              <div class="player-tags-field" title="Tags for the current release">
+                <span class="player-tags-row">
+                  <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -581,6 +585,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=49"></script>
+    <script src="/static/app.js?v=60"></script>
   </body>
 </html>

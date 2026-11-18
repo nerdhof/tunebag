@@ -334,19 +334,79 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-transport {
-  display: grid;
-  grid-template-columns: max-content minmax(12rem, 1fr);
-  grid-template-areas:
-    "intent ."
-    "symbols seek";
-  column-gap: 0.75rem;
-  row-gap: 0.5rem;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  align-items: stretch;
   margin: 0.75rem 0 0;
+  overflow: visible;
+}
+
+.player-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.75rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.player-top #player-intent {
+  flex: 1 1 10rem;
+  width: auto;
+  min-width: 8rem;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+}
+
+.player-symbols {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  width: max-content;
+  margin: 0;
+}
+
+.player-seek {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "rail rail"
+    "current total";
+  column-gap: 0.3rem;
+  row-gap: 0.15rem;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow: visible;
+}
+
+#player-time-current {
+  grid-area: current;
+  justify-self: start;
+}
+
+#player-time-total {
+  grid-area: total;
+  justify-self: end;
+  text-align: right;
+}
+
+/* Grow only the seek row for angled titles; top controls stay put. */
+.player-seek.has-track-labels {
+  padding-top: var(--seek-label-headroom, 5.5rem);
+  box-sizing: content-box;
+}
+
+.player-below {
+  margin-top: 0.55rem;
+  min-width: 0;
 }
 
 #player-now {
-  margin: 0.7rem 0 0.2rem;
+  margin: 0 0 0.35rem;
   color: var(--fg);
   font-weight: 700;
 }
@@ -359,51 +419,108 @@ form.add-form-open .add-form-fields-inline {
   margin: 0;
 }
 
-#player-intent {
-  grid-area: intent;
-  /* Match button-row width without widening the column. */
-  width: 0;
-  min-width: 100%;
-  box-sizing: border-box;
-  margin: 0;
-}
-
-.player-symbols {
-  grid-area: symbols;
-  flex-wrap: nowrap;
-  align-items: center;
-  width: max-content;
-}
-
-.player-seek {
-  grid-area: seek;
-  flex-wrap: nowrap;
-  align-items: center;
-  min-width: 0;
-}
-
 .player-seek-rail {
+  grid-area: rail;
   position: relative;
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   display: flex;
   align-items: center;
+  overflow: visible;
 }
 
 .player-seek-marks {
+  /* Include headroom so section hit-targets above the bar receive events. */
   position: absolute;
-  inset: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: calc(-1 * var(--seek-label-headroom, 5.5rem));
+  overflow: visible;
   pointer-events: none;
   z-index: 2;
 }
 
 .player-seek-mark {
+  /* Anchor to the bar band at the bottom of the expanded marks layer. */
   position: absolute;
-  top: 12%;
-  bottom: 12%;
+  top: auto;
+  bottom: 0.15rem;
+  height: 0.85rem;
   width: 2px;
   margin-left: -1px;
-  background: color-mix(in srgb, var(--fg) 70%, transparent);
+  background: color-mix(in srgb, var(--fg) 75%, transparent);
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* Bar-band tint (range stays on top for scrubbing). */
+.player-seek-section-fill {
+  position: absolute;
+  left: 0;
+  top: auto;
+  bottom: 0;
+  height: 1.1rem;
+  border-radius: 2px;
+  background: transparent;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.player-seek-section-fill.is-hot {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* Full headroom column: hover/click target + light tint. */
+.player-seek-section {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: var(--seek-label-headroom, 5.5rem);
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  appearance: none;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 3;
+}
+
+.player-seek-section:hover,
+.player-seek-section.is-hot {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.player-seek-label {
+  position: absolute;
+  /* Sit just above the bar inside the headroom column. */
+  top: auto;
+  bottom: calc(100% - var(--seek-label-headroom, 5.5rem) + 0.25rem);
+  max-width: none;
+  padding: 0;
+  overflow: visible;
+  color: color-mix(in srgb, var(--fg) 78%, transparent);
+  font-size: 0.7rem;
+  line-height: 1.1;
+  white-space: nowrap;
+  transform: rotate(-60deg);
+  transform-origin: left bottom;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.player-seek-label.is-hot {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .player-seek input[type="range"] {
@@ -423,16 +540,8 @@ form.add-form-open .add-form-fields-inline {
 }
 
 @media (max-width: 40rem) {
-  .player-transport {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "intent"
-      "symbols"
-      "seek";
-  }
-
-  #player-intent {
-    width: 100%;
+  .player-top #player-intent {
+    flex: 1 1 100%;
     min-width: 0;
   }
 
