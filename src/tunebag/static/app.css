@@ -334,9 +334,13 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-transport {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 0.75rem;
+  display: grid;
+  grid-template-columns: max-content minmax(12rem, 1fr);
+  grid-template-areas:
+    "intent ."
+    "symbols seek";
+  column-gap: 0.75rem;
+  row-gap: 0.5rem;
   align-items: center;
   margin: 0.75rem 0 0;
 }
@@ -355,16 +359,26 @@ form.add-form-open .add-form-fields-inline {
   margin: 0;
 }
 
+#player-intent {
+  grid-area: intent;
+  /* Match button-row width without widening the column. */
+  width: 0;
+  min-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+}
+
 .player-symbols {
+  grid-area: symbols;
   flex-wrap: nowrap;
   align-items: center;
-  flex: 0 0 auto;
+  width: max-content;
 }
 
 .player-seek {
+  grid-area: seek;
   flex-wrap: nowrap;
   align-items: center;
-  flex: 1 1 12rem;
   min-width: 0;
 }
 
@@ -382,9 +396,21 @@ form.add-form-open .add-form-fields-inline {
 }
 
 @media (max-width: 40rem) {
-  .player-symbols,
-  .player-seek {
-    flex: 1 1 100%;
+  .player-transport {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "intent"
+      "symbols"
+      "seek";
+  }
+
+  #player-intent {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .player-symbols {
+    width: auto;
   }
 }
 
@@ -593,18 +619,6 @@ button.tag-suggest.is-active {
   color: var(--bg);
   font-size: 0.65rem;
   line-height: 1;
-}
-
-#player > label {
-  display: block;
-  margin: 0.5rem 0;
-}
-
-#player > label select {
-  display: block;
-  margin-top: 0.35rem;
-  min-width: 12rem;
-  width: auto;
 }
 
 .seek-time {
