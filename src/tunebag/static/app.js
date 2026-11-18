@@ -57,10 +57,29 @@ const BTN = {
 };
 
 function setSymbolButton(btn, symbol, label) {
+  btn.classList.add("symbol-btn");
   btn.textContent = symbol;
   btn.removeAttribute("title");
   btn.setAttribute("aria-label", label);
   btn.dataset.tip = label;
+}
+
+/** Mark static single-glyph action buttons as compact squares. */
+function markStaticSymbolButtons() {
+  for (const btn of document.querySelectorAll("button[data-tip]")) {
+    if (
+      btn.classList.contains("section-info-btn") ||
+      btn.classList.contains("tag-chip-add") ||
+      btn.classList.contains("tag-chip-x") ||
+      btn.classList.contains("star-rating-star")
+    ) {
+      continue;
+    }
+    const text = btn.textContent.replace(/\s+/g, "");
+    if ([...text].length <= 2) {
+      btn.classList.add("symbol-btn");
+    }
+  }
 }
 
 /** @type {string[]} */
@@ -1551,14 +1570,6 @@ function formatClock(seconds) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function formatHms(seconds) {
-  const total = Math.max(0, Math.floor(Number(seconds) || 0));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
 let playerSeekDragging = false;
 let playerPollTimer = null;
 let playerSeekTracks = [];
@@ -1883,23 +1894,66 @@ function cacheGroupKey(group) {
   return group.id == null ? "other" : String(group.id);
 }
 
-function formatCacheOverview(overview) {
-  const parts = ["cached", "loading", "pending"].map((status) => {
-    const bucket = overview?.[status] || {
+function buildCacheOverviewEl(overview) {
+  const wrap = document.createElement("span");
+  wrap.className = "cache-intent-overview";
+  const statuses = [
+    { key: "cached", className: "cache-stat-cached", showSize: true },
+    { key: "loading", className: "cache-stat-loading", showSize: false },
+    { key: "pending", className: "cache-stat-pending", showSize: false },
+  ];
+  for (const status of statuses) {
+    const bucket = overview?.[status.key] || {
       count: 0,
       duration_seconds: 0,
       size_bytes: 0,
     };
-    const detail =
-      Number(bucket.size_bytes) > 0
-        ? `${formatHms(bucket.duration_seconds)}, ${formatBytes(bucket.size_bytes)}`
-        : formatHms(bucket.duration_seconds);
-    return `${status}: ${bucket.count} (${detail})`;
-  });
-  return parts.join(", ");
+    const count = Number(bucket.count) || 0;
+    const el = document.createElement("span");
+    el.className = `cache-stat ${status.className}`;
+    if (count <= 0) el.classList.add("is-empty");
+
+    const countEl = document.createElement("span");
+    countEl.className = "cache-stat-count";
+    countEl.textContent = String(count);
+    el.appendChild(countEl);
+
+    const pipe1 = document.createElement("span");
+    pipe1.className = "cache-stat-pipe";
+    pipe1.textContent = "|";
+    el.appendChild(pipe1);
+
+    const durationEl = document.createElement("span");
+    durationEl.className = "cache-stat-duration";
+    durationEl.textContent = formatDuration(bucket.duration_seconds);
+    el.appendChild(durationEl);
+
+    if (status.showSize) {
+      const pipe2 = document.createElement("span");
+      pipe2.className = "cache-stat-pipe";
+      pipe2.textContent = "|";
+      el.appendChild(pipe2);
+
+      const sizeEl = document.createElement("span");
+      sizeEl.className = "cache-stat-size";
+      const parts = formatBytesParts(bucket.size_bytes);
+      const valueEl = document.createElement("span");
+      valueEl.className = "cache-stat-size-value";
+      valueEl.textContent = parts.value;
+      sizeEl.appendChild(valueEl);
+      const unitEl = document.createElement("span");
+      unitEl.className = "cache-stat-size-unit";
+      unitEl.textContent = parts.unit;
+      sizeEl.appendChild(unitEl);
+      el.appendChild(sizeEl);
+    }
+
+    wrap.appendChild(el);
+  }
+  return wrap;
 }
 
-function formatBytes(bytes) {
+function formatBytesParts(bytes) {
   const n = Math.max(0, Number(bytes) || 0);
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = n;
@@ -1909,9 +1963,14 @@ function formatBytes(bytes) {
     unit += 1;
   }
   if (unit === 0) {
-    return `${Math.round(value)} ${units[unit]}`;
+    return { value: String(Math.round(value)), unit: units[unit] };
   }
-  return `${value.toFixed(1)} ${units[unit]}`;
+  return { value: value.toFixed(1), unit: units[unit] };
+}
+
+function formatBytes(bytes) {
+  const parts = formatBytesParts(bytes);
+  return `${parts.value}${parts.unit}`;
 }
 
 function formatMb(bytes) {
@@ -2935,19 +2994,22 @@ async function refreshFiles({ force = false } = {}) {
 
     const intentCell = document.createElement("td");
     intentCell.colSpan = 7;
+    const foldMain = document.createElement("div");
+    foldMain.className = "cache-intent-fold-main";
+    const intentLabel = document.createElement("span");
+    intentLabel.className = "cache-intent-label";
     const toggle = document.createElement("span");
     toggle.className = "cache-intent-toggle";
     toggle.setAttribute("aria-hidden", "true");
     toggle.textContent = expanded ? "▼" : "▶";
-    intentCell.appendChild(toggle);
+    intentLabel.appendChild(toggle);
     const heading = document.createElement("span");
     heading.className = "cache-intent-name";
     heading.textContent = group.name || "Intent";
-    intentCell.appendChild(heading);
-    const overview = document.createElement("span");
-    overview.className = "cache-intent-overview muted";
-    overview.textContent = formatCacheOverview(group.overview);
-    intentCell.appendChild(overview);
+    intentLabel.appendChild(heading);
+    foldMain.appendChild(intentLabel);
+    foldMain.appendChild(buildCacheOverviewEl(group.overview));
+    intentCell.appendChild(foldMain);
     header.appendChild(intentCell);
 
     const toggleGroup = () => {
@@ -4463,6 +4525,7 @@ function connectViewNotices() {
 }
 
 (async () => {
+  markStaticSymbolButtons();
   initSectionInfo();
   initSectionNav();
   initActionTips();
