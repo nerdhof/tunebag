@@ -500,6 +500,7 @@ form.add-form-open .add-form-fields-inline {
 
 .player-seek-section:hover,
 .player-seek-section.is-hot {
+  z-index: 5;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
@@ -508,17 +509,17 @@ form.add-form-open .add-form-fields-inline {
   top: 0.15rem;
   left: 50%;
   transform: translateX(-50%);
-  max-width: calc(100% - 0.2rem);
-  overflow: hidden;
+  max-width: none;
+  overflow: visible;
   color: color-mix(in srgb, var(--accent) 90%, var(--fg));
   font-size: 0.65rem;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
-  text-overflow: ellipsis;
   opacity: 0;
   pointer-events: none;
+  z-index: 6;
 }
 
 .player-seek-section:hover .player-seek-duration,
@@ -545,6 +546,7 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-seek-label.is-hot {
+  z-index: 6;
   color: var(--accent);
   font-weight: 600;
 }
