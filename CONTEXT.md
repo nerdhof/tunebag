@@ -25,6 +25,7 @@ Canonical vocabulary for the codebase. Align code and docs with these terms.
 - **Cache** — the set of files a device currently holds for its assignments.
 - **Release Cache** — device-local module that owns File completeness, staging, blob/intent-folder paths, and `ensure_complete` (peer then optional origin via injected fetch ports). Urgency ordering, metered caps, and preferred-origin policy stay on the DeviceAgent; Mix vs Album layout is internal.
 - **Release layout** — pure helpers for Album timeline → track offset and on-disk Mix/Album filenames (shared by Release Cache and Playback supervision).
+- **Playback supervision** — device-local module that owns the AudioPlayer, timeline anchors, Album track advance, auto-continue choice, and Played / Last heard thresholds. Emits structured intents (`ReportPlayhead`, `EmitLastHeard`, `MarkPlayed`, `ContinueTo`); DeviceAgent appends Events and resolves Cache paths. Playing state is not an Event.
 - **Device** — a Tunebag installation with a stable identity (`device_id` + keypair) that authors Event log entries. Identity is not a network address.
 - **Locator** — an ephemeral reachability hint for a Device (HTTP URL, IP:port, USB path, …). Locators change with the network; they are not Identity.
 - **Peer** — another Device that has paired with this one and is reachable over LAN or USB, usable as a file source.

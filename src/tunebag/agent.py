@@ -74,6 +74,15 @@ from tunebag.pairing import (
     save_locator_hints,
 )
 from tunebag.player import AudioPlayer, default_player
+from tunebag.playback import (
+    ContinueTo,
+    EmitLastHeard,
+    MarkPlayed,
+    PlaybackIntent,
+    PlaybackSupervisor,
+    ReportPlayhead,
+    clamp_seek_position,
+)
 from tunebag.projection import (
     CatalogState,
     LocalEffects,
@@ -96,10 +105,6 @@ from tunebag.source import (
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 
 _HTTP_TIMEOUT = 5.0
-PLAYED_THRESHOLD = 0.75
-# Meaningful listen: position reaches min(10s, 2% of duration); rising edge only.
-LAST_HEARD_CAP_SECONDS = 10.0
-LAST_HEARD_DURATION_FRACTION = 0.02
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
@@ -227,16 +232,11 @@ class DeviceAgent:
         self._skips = SkipBuffer()
         # Local player supervision (browser is remote control; closing it does not stop).
         self._player: AudioPlayer = player if player is not None else default_player()
-        self._playing = False
-        self._playing_intent_id: UUID | None = None
-        self._playback_position: float = 0.0
-        self._play_anchor_position: float = 0.0
-        self._play_anchor_at: datetime | None = None
-        # Album local supervision: which Catalog track file the player is on.
-        self._album_play_index: int | None = None
-        # Next local assignment id after the release started by play() (no wrap).
-        # Stashed at play time so mid-release mark_played rebuilds do not lose it.
-        self._continue_next_id: UUID | None = None
+        self._playback = PlaybackSupervisor(
+            self._player,
+            self._clock,
+            locate_audio=self._locate_audio,
+        )
         # Background fill: single-flight with coalesce so HTTP can return immediately.
         self._fill_lock = threading.Lock()
         self._fill_in_progress = False
@@ -469,17 +469,26 @@ class DeviceAgent:
                 offset += float(mix.duration_seconds)
         return offset
 
+    @property
+    def _playback_position(self) -> float:
+        """Compat for tests / urgency: local frozen or idle position."""
+        return self._playback.position
+
+    @_playback_position.setter
+    def _playback_position(self, value: float) -> None:
+        self._playback.position = float(value)
+
     def _current_mix_position_seconds(self) -> float:
         """Live position when playing the current mix; else catalog playhead."""
         current = self._current_mix_id
         if current is None:
             return 0.0
-        if self._playing:
+        if self._playback.playing:
             return float(self.playback_position())
         head = self.catalog.playheads.get(current)
         if head is not None:
             return float(head.position_seconds)
-        return float(self._playback_position)
+        return float(self._playback.position)
 
     def _sequence_progress(self, assignment: Assignment) -> float:
         """Seconds already consumed in this assignment's listen timeline.
@@ -689,7 +698,7 @@ class DeviceAgent:
 
     def is_playing(self) -> bool:
         self._supervise_playback()
-        return self._playing
+        return self._playback.playing
 
     def play(self, intent_id: UUID, mix_id: UUID | None = None) -> Mix:
         """Supervise local playback of an assigned Release that has Files on this device.
@@ -723,27 +732,22 @@ class DeviceAgent:
         existing = self.catalog.playheads.get(target)
         start = float(existing.position_seconds) if existing is not None else 0.0
         self._ensure_blob_on_disk(target)
-        self._start_release_audio(mix, start)
-        self._playing = True
-        self._playing_intent_id = intent_id
-        self.set_current_mix(target)
-        self._set_play_anchor(start)
         # Capture successor before any mid-release mark_played rebuilds reshuffle.
-        self._continue_next_id = self._next_local_assigned(
-            intent_id, target, wrap=False
+        continue_next = self._next_local_assigned(intent_id, target, wrap=False)
+        self._playback.start(
+            mix,
+            start,
+            intent_id=intent_id,
+            continue_next_id=continue_next,
         )
+        self.set_current_mix(target)
         # Last play wins: ask reachable Peers to pause so only one Device is audible.
         self._request_peers_yield()
         return mix
 
     def stop(self) -> None:
         """Stop local playback without marking the mix played."""
-        self._freeze_playback_position()
-        self._player.stop()
-        self._playing = False
-        self._playing_intent_id = None
-        self._album_play_index = None
-        self._continue_next_id = None
+        self._playback.stop()
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
 
@@ -764,19 +768,16 @@ class DeviceAgent:
         Always commits the playhead (optional explicit position, else frozen clock).
         """
         if self.is_playing():
-            self._freeze_playback_position()
+            self._playback.freeze()
         pos = (
             float(position_seconds)
             if position_seconds is not None
-            else self._playback_position
+            else self._playback.position
         )
         if self._current_mix_id is not None:
             self.report_playhead(pos)
         if self.is_playing():
-            self._player.stop()
-            self._playing = False
-            self._album_play_index = None
-            self._clear_play_anchor()
+            self._playback.pause_audio()
 
     def skip(self, intent_id: UUID | None = None) -> Mix:
         """Advance to the next local assigned mix without marking the current played.
@@ -786,7 +787,7 @@ class DeviceAgent:
         pool) without setting played.
         """
         self.commit_pending_skips()
-        resolved = intent_id if intent_id is not None else self._playing_intent_id
+        resolved = intent_id if intent_id is not None else self._playback.intent_id
         if resolved is None:
             raise ValueError("no intent to skip within")
         if resolved not in self.catalog.intents:
@@ -802,7 +803,7 @@ class DeviceAgent:
             mix = self.catalog.mixes[current]
             if not mix.played and not mix.skipped:
                 self._skips.start(current, self.device.id, now=self._clock())
-        self._freeze_playback_position()
+        self._playback.freeze()
         return self.play(resolved, next_id)
 
     def _next_local_assigned(
@@ -833,12 +834,15 @@ class DeviceAgent:
     def playback_position(self) -> float:
         """Current local playback position (including a mid-mix resume point)."""
         self._supervise_playback()
-        if self._playing and self._play_anchor_at is not None:
-            return self._computed_playback_position()
-        return self._playback_position
+        mix = (
+            self.catalog.mixes.get(self._current_mix_id)
+            if self._current_mix_id is not None
+            else None
+        )
+        return self._playback.live_position(mix)
 
     def playing_intent_id(self) -> UUID | None:
-        return self._playing_intent_id
+        return self._playback.intent_id
 
     def report_playhead(self, position_seconds: float) -> Playhead:
         """Update the playhead for the current mix; mark played at or past 75%.
@@ -852,36 +856,17 @@ class DeviceAgent:
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
             raise KeyError(f"unknown mix {mix_id}")
-        pos = float(position_seconds)
         previous = 0.0
         existing_head = self.catalog.playheads.get(mix_id)
         if existing_head is not None:
             previous = float(existing_head.position_seconds)
-        self._playback_position = pos
-        if self._playing and self._play_anchor_at is not None:
-            self._play_anchor_position = pos
-            self._play_anchor_at = self._clock()
         with self._view_notice_batch():
-            self._append_and_apply(
-                EventType.PLAYHEAD,
-                {
-                    "mix_id": str(mix_id),
-                    "position_seconds": pos,
-                },
+            intents = self._playback.note_position(
+                mix,
+                float(position_seconds),
+                previous_position=previous,
             )
-            threshold = _last_heard_threshold(mix.duration_seconds)
-            if previous < threshold <= pos:
-                self._append_and_apply(
-                    EventType.LAST_HEARD,
-                    {"mix_id": str(mix_id)},
-                )
-            mix = self.catalog.mixes[mix_id]
-            if (
-                not mix.played
-                and mix.duration_seconds > 0
-                and pos >= PLAYED_THRESHOLD * mix.duration_seconds
-            ):
-                self.mark_played(mix_id)
+            self._apply_playback_intents(intents)
         return self.catalog.playheads[mix_id]
 
     def seek(self, position_seconds: float) -> Playhead:
@@ -892,131 +877,78 @@ class DeviceAgent:
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
             raise KeyError(f"unknown mix {mix_id}")
-        duration = float(mix.duration_seconds)
-        pos = max(0.0, float(position_seconds))
-        if duration > 0:
-            pos = min(duration, pos)
+        pos = clamp_seek_position(position_seconds, float(mix.duration_seconds))
         was_playing = self.is_playing()
-        intent_id = self._playing_intent_id
         head = self.report_playhead(pos)
-        if was_playing and self.is_playing() and intent_id is not None:
-            self._ensure_blob_on_disk(mix_id)
-            self._start_release_audio(mix, pos)
-            self._playing = True
-            self._playing_intent_id = intent_id
-            self._set_play_anchor(pos)
-        else:
-            self._playback_position = pos
-            self._album_play_index = None
-            self._clear_play_anchor()
+        self._playback.seek(
+            mix,
+            pos,
+            was_playing=was_playing,
+            keep_playing=self.is_playing(),
+        )
         return head
 
-    def _album_track_path(self, mix: Mix, index: int) -> Path:
-        return self._cache.album_track_path(mix, index)
-
-    def _start_release_audio(self, mix: Mix, timeline_seconds: float) -> None:
-        """Start local AudioPlayer for a Mix blob or the mapped Album track file."""
+    def _locate_audio(self, mix: Mix, timeline_seconds: float) -> tuple[Path, float]:
+        """Resolve Cache path + within-file offset for a Release timeline position."""
         if mix.kind is ReleaseKind.ALBUM:
             if not mix.tracks:
                 raise ValueError("album has no tracks")
             index, offset = album_timeline_location(mix, timeline_seconds)
-            track_path = self._album_track_path(mix, index)
+            track_path = self._cache.album_track_path(mix, index)
             if not track_path.is_file():
                 raise FileNotFoundError(f"album track missing: {track_path}")
-            self._player.play(track_path, start_seconds=offset)
-            self._album_play_index = index
-            return
+            return track_path, offset
         blob = self._ensure_blob_on_disk(mix.id)
-        self._player.play(blob, start_seconds=timeline_seconds)
-        self._album_play_index = None
+        return blob, float(timeline_seconds)
+
+    def _apply_playback_intents(self, intents: list[PlaybackIntent]) -> None:
+        """Translate supervisor intents into Events / auto-continue play()."""
+        for intent in intents:
+            if isinstance(intent, ReportPlayhead):
+                self._append_and_apply(
+                    EventType.PLAYHEAD,
+                    {
+                        "mix_id": str(intent.mix_id),
+                        "position_seconds": intent.position_seconds,
+                    },
+                )
+            elif isinstance(intent, EmitLastHeard):
+                self._append_and_apply(
+                    EventType.LAST_HEARD,
+                    {"mix_id": str(intent.mix_id)},
+                )
+            elif isinstance(intent, MarkPlayed):
+                self.mark_played(intent.mix_id)
+            elif isinstance(intent, ContinueTo):
+                try:
+                    self.play(intent.intent_id, intent.mix_id)
+                except (ValueError, KeyError, FileNotFoundError):
+                    # Assignment/cache may have changed after mark_played rebuild.
+                    pass
 
     def _supervise_playback(self) -> None:
-        """Advance Album tracks; on release end, continue to the next local assignment.
-
-        Start the next track (or clear playing) before ``report_playhead`` so a
-        nested ``is_playing`` from prune/auto-sync cannot re-enter mid-advance.
-        Natural Mix/Album completion finalizes playhead then auto-plays the next
-        later local release in the playing intent (no wrap, no skip delay).
-        """
-        if not self._playing or self._player.is_alive():
+        """Advance Album tracks; on release end, continue to the next local assignment."""
+        if not self._playback.playing or self._player.is_alive():
             return
         mix_id = self._current_mix_id
         mix = self.catalog.mixes.get(mix_id) if mix_id is not None else None
-        if (
-            mix is not None
-            and mix.kind is ReleaseKind.ALBUM
-            and self._album_play_index is not None
-        ):
-            next_index = self._album_play_index + 1
-            if next_index < len(mix.tracks):
-                timeline = float(
-                    sum(t.duration_seconds for t in mix.tracks[:next_index])
-                )
-                track_path = self._album_track_path(mix, next_index)
-                if not track_path.is_file():
-                    raise FileNotFoundError(f"album track missing: {track_path}")
-                self._player.play(track_path, start_seconds=0.0)
-                self._album_play_index = next_index
-                self._set_play_anchor(timeline)
-                self.report_playhead(timeline)
-                return
-            self._continue_after_release_end(mix)
-            return
-        if mix is not None:
-            self._continue_after_release_end(mix)
-            return
-        # Unknown current release; keep catalog current_mix for metered/resume.
-        self._freeze_playback_position()
-        self._playing = False
-        self._album_play_index = None
-
-    def _continue_after_release_end(self, mix: Mix) -> None:
-        """Finalize playhead at duration and auto-continue to the next local release."""
-        intent_id = self._playing_intent_id
-        # Prefer the successor stashed at play(); live lookup is a fallback when
-        # mark_played has not yet moved this release within the assignment.
-        next_id = self._continue_next_id
-        if next_id is None and intent_id is not None:
-            next_id = self._next_local_assigned(intent_id, mix.id, wrap=False)
-        self._continue_next_id = None
-        end = float(mix.duration_seconds)
-        self._playback_position = end
-        self._playing = False
-        self._album_play_index = None
-        self._clear_play_anchor()
-        self.report_playhead(end)
-        if next_id is None or intent_id is None:
-            return
-        try:
-            self.play(intent_id, next_id)
-        except (ValueError, KeyError, FileNotFoundError):
-            # Assignment/cache may have changed after mark_played rebuild.
-            return
-
-    def _set_play_anchor(self, position: float) -> None:
-        self._playback_position = float(position)
-        self._play_anchor_position = float(position)
-        self._play_anchor_at = self._clock()
-
-    def _clear_play_anchor(self) -> None:
-        self._play_anchor_at = None
-
-    def _computed_playback_position(self) -> float:
-        if self._play_anchor_at is None:
-            return self._playback_position
-        elapsed = (self._clock() - self._play_anchor_at).total_seconds()
-        pos = self._play_anchor_position + max(0.0, elapsed)
-        mix_id = self._current_mix_id
+        previous = 0.0
         if mix_id is not None:
-            mix = self.catalog.mixes.get(mix_id)
-            if mix is not None and mix.duration_seconds > 0:
-                pos = min(float(mix.duration_seconds), pos)
-        return round(pos, 3)
-
-    def _freeze_playback_position(self) -> None:
-        if self._play_anchor_at is not None:
-            self._playback_position = self._computed_playback_position()
-            self._clear_play_anchor()
+            existing_head = self.catalog.playheads.get(mix_id)
+            if existing_head is not None:
+                previous = float(existing_head.position_seconds)
+        fallback_next: UUID | None = None
+        if mix is not None and self._playback.intent_id is not None:
+            fallback_next = self._next_local_assigned(
+                self._playback.intent_id, mix.id, wrap=False
+            )
+        with self._view_notice_batch():
+            intents = self._playback.supervise(
+                mix,
+                previous_position=previous,
+                fallback_next_id=fallback_next,
+            )
+            self._apply_playback_intents(intents)
 
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
         """Mark a mix played (explicit control or auto at 75%).
@@ -3324,14 +3256,6 @@ def _load_later_features() -> list[str]:
         if in_planned and line.startswith("- "):
             features.append(line[2:].strip())
     return features
-
-
-def _last_heard_threshold(duration_seconds: int) -> float:
-    """Meaningful-listen threshold: min(10s, 2% of duration)."""
-    return min(
-        LAST_HEARD_CAP_SECONDS,
-        LAST_HEARD_DURATION_FRACTION * float(duration_seconds),
-    )
 
 
 class _SourceOriginFetch:
