@@ -179,147 +179,16 @@
         <ul id="intent-list"></ul>
         <hr class="intent-list-rule" />
         <form id="intent-form">
-          <input id="intent-edit-id" type="hidden" value="" />
-          <div class="add-form-fields" hidden>
-            <div class="form-row">
-              <label class="inline-field grow">
-                Name
-                <input id="intent-name" type="text" required placeholder="Deep house commute" />
-              </label>
-              <label
-                class="inline-field grow"
-                title="Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged."
-              >
-                Tags
-                <div
-                  id="intent-tag-editor"
-                  class="tag-editor"
-                  aria-label="Intent filter tags"
-                  title="Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged."
-                ></div>
-              </label>
-            </div>
-            <div class="form-row">
-              <label
-                class="inline-field grow"
-                title="Optional. Leave empty for no artist filter. Selected artists match by OR."
-              >
-                Artists
-                <select
-                  id="intent-artists"
-                  multiple
-                  size="4"
-                  title="Optional. Leave empty for no artist filter. Selected artists match by OR."
-                ></select>
-              </label>
-            </div>
-            <div class="form-row">
-              <div
-                class="inline-field grow"
-                title="Sources start on. Grey one out to exclude it. At least one must stay active."
-              >
-                Sources
-                <div
-                  id="intent-platforms"
-                  class="source-toggles"
-                  role="group"
-                  aria-label="Sources"
-                >
-                  <button
-                    type="button"
-                    class="source-toggle"
-                    data-platform="soundcloud"
-                    aria-pressed="true"
-                    title="SoundCloud"
-                    aria-label="SoundCloud"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path
-                        fill="currentColor"
-                        d="M1.75 12.85c0 .46.37.84.84.84h.42c.46 0 .84-.38.84-.84V9.6c0-.46-.38-.84-.84-.84h-.42c-.47 0-.84.38-.84.84v3.25zm3.36 2.1c0 .46.38.84.84.84h.42c.46 0 .84-.38.84-.84V7.5c0-.46-.38-.84-.84-.84h-.42c-.46 0-.84.38-.84.84v7.45zm3.37.42c0 .46.37.84.84.84h.42c.46 0 .84-.38.84-.84V6.2c0-.46-.38-.84-.84-.84h-.42c-.47 0-.84.38-.84.84v9.17zm3.36.21V5.36c0-.7.57-1.26 1.26-1.26.7 0 1.26.56 1.26 1.26v10.22h2.94c2.52 0 4.56-2.04 4.56-4.56 0-2.4-1.86-4.36-4.21-4.54a3.78 3.78 0 0 0-7.07 1.84v7.96c0 .46.38.84.84.84h.42c.01 0 .01 0 0 0z"
-                      />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    class="source-toggle"
-                    data-platform="hearthisat"
-                    aria-pressed="true"
-                    title="hearthis.at"
-                    aria-label="hearthis.at"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path
-                        fill="currentColor"
-                        d="M12 2a7 7 0 0 0-7 7v3.2A3.8 3.8 0 0 0 8.8 16H10v4h4v-4h1.2A3.8 3.8 0 0 0 19 12.2V9a7 7 0 0 0-7-7zm-2.5 8.5a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm5 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z"
-                      />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    class="source-toggle"
-                    data-platform="bandcamp"
-                    aria-pressed="true"
-                    title="Bandcamp"
-                    aria-label="Bandcamp"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path fill="currentColor" d="M0 18.75l7.06-13.5H24l-7.06 13.5H0z" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    class="source-toggle"
-                    data-platform="youtube"
-                    aria-pressed="true"
-                    title="YouTube"
-                    aria-label="YouTube"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path
-                        fill="currentColor"
-                        d="M23.5 7.2a3 3 0 0 0-2.1-2.1C19.5 4.6 12 4.6 12 4.6s-7.5 0-9.4.5A3 3 0 0 0 .5 7.2 31.5 31.5 0 0 0 0 12a31.5 31.5 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.5 31.5 0 0 0 24 12a31.5 31.5 0 0 0-.5-4.8zM9.75 15.02V8.98L15.5 12l-5.75 3.02z"
-                      />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-            <details id="intent-chances">
-              <summary class="has-tip" data-tip="30 | 20 | 10 | 10 | 0 | 30">
-                Rating chances: ▃▂▁▁⠀▃
-              </summary>
-              <div class="chance-grid">
-                <label title="Share of the sequence for 5★ releases">
-                  5★
-                  <select id="chance-five" title="Share of the sequence for 5★ releases"></select>
-                </label>
-                <label title="Share of the sequence for 4★ releases">
-                  4★
-                  <select id="chance-four" title="Share of the sequence for 4★ releases"></select>
-                </label>
-                <label title="Share of the sequence for 3★ releases">
-                  3★
-                  <select id="chance-three" title="Share of the sequence for 3★ releases"></select>
-                </label>
-                <label title="Share of the sequence for 2★ releases">
-                  2★
-                  <select id="chance-two" title="Share of the sequence for 2★ releases"></select>
-                </label>
-                <label title="Share of the sequence for 1★ releases">
-                  1★
-                  <select id="chance-one" title="Share of the sequence for 1★ releases"></select>
-                </label>
-                <label title="Share of the sequence for unrated releases">
-                  —
-                  <select id="chance-unrated" title="Share of the sequence for unrated releases"></select>
-                </label>
-              </div>
-            </details>
-          </div>
+          <div id="intent-create-composer" class="add-form-fields intent-composer" hidden></div>
           <div class="form-row add-form-actions">
-            <button type="submit" id="intent-submit" aria-label="Create intent" data-tip="Create intent">✚</button>
-            <button type="button" id="intent-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
+            <button
+              type="button"
+              id="intent-expand"
+              aria-label="Create intent"
+              data-tip="Create intent"
+            >
+              ✚
+            </button>
           </div>
         </form>
         <p id="intent-status" class="muted" role="status"></p>

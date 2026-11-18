@@ -32,8 +32,12 @@ let lastPlayerIntentId = null;
 let playerTagEditor = null;
 /** @type {ReturnType<typeof mountStarRating> | null} */
 let playerStarRating = null;
-/** @type {ReturnType<typeof mountTagEditor> | null} */
-let intentTagEditor = null;
+/** @type {ReturnType<typeof mountIntentComposer> | null} */
+let createComposer = null;
+/** @type {ReturnType<typeof mountIntentComposer> | null} */
+let editComposer = null;
+/** @type {string | null} */
+let editingIntentId = null;
 
 /** Compact action glyphs; always set aria-label + data-tip (hover name). */
 const BTN = {
@@ -84,6 +88,8 @@ function markStaticSymbolButtons() {
 
 /** @type {string[]} */
 let catalogTagsCache = [];
+/** @type {{id: string, name: string}[]} */
+let catalogArtistsCache = [];
 
 function normalizeTag(tag) {
   return String(tag || "")
@@ -91,7 +97,15 @@ function normalizeTag(tag) {
     .toLowerCase();
 }
 
-/** FNV-1a → stable soft HSL border/fill for a tag (same tag ⇒ same color). */
+function normalizeArtistNeedle(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase();
+}
+
+/** FNV-1a → stable soft OKLCH border/fill for a tag (same tag ⇒ same color).
+ * Hue is in OKLCH so equal hash steps look more evenly distinct than HSL
+ * (which overweights greens for human vision). */
 function tagChipColors(tag) {
   let hash = 2166136261;
   for (let i = 0; i < tag.length; i += 1) {
@@ -99,10 +113,11 @@ function tagChipColors(tag) {
     hash = Math.imul(hash, 16777619);
   }
   hash >>>= 0;
-  const hue = hash % 360;
-  const sat = 48 + ((hash >>> 9) % 22); // 48–69%
-  const border = `hsl(${hue} ${sat}% 42%)`;
-  const fill = `hsl(${hue} ${sat}% 52% / 0.18)`;
+  // Golden-angle step spreads consecutive/nearby hashes around the wheel.
+  const hue = (hash * 137.508) % 360;
+  const chroma = 0.1 + ((hash >>> 9) % 5) * 0.01; // 0.10–0.14
+  const border = `oklch(0.52 ${chroma} ${hue})`;
+  const fill = `oklch(0.62 ${chroma} ${hue} / 0.2)`;
   return [border, fill];
 }
 
@@ -493,6 +508,384 @@ function mountTagEditor(root, options) {
   };
 }
 
+/**
+ * Chip artist picker: plain chips, confirm-to-remove, + search (catalog only).
+ * @param {HTMLElement} root
+ * @param {{
+ *   artists?: {id: string, name: string}[],
+ *   onAdd: (artist: {id: string, name: string}) => Promise<void> | void,
+ *   onRemove: (artist: {id: string, name: string}) => Promise<void> | void,
+ *   getCatalogArtists?: () => {id: string, name: string}[],
+ * }} options
+ */
+function mountArtistEditor(root, options) {
+  const getCatalogArtists =
+    options.getCatalogArtists || (() => catalogArtistsCache);
+  /** @type {{id: string, name: string}[]} */
+  let artists = [...(options.artists || [])];
+  let confirming = null;
+  let picking = false;
+  let filterText = "";
+  let highlightIndex = 0;
+  let saving = false;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let confirmTimer = null;
+  /** @type {HTMLInputElement | null} */
+  let filterInput = null;
+
+  function isBusy() {
+    return picking || confirming != null || saving;
+  }
+
+  function syncBusyClass() {
+    root.classList.toggle("is-busy", isBusy());
+  }
+
+  function clearConfirm() {
+    confirming = null;
+    if (confirmTimer != null) {
+      clearTimeout(confirmTimer);
+      confirmTimer = null;
+    }
+  }
+
+  function armConfirm(artistId) {
+    clearConfirm();
+    confirming = artistId;
+    picking = false;
+    confirmTimer = setTimeout(() => {
+      clearConfirm();
+      syncBusyClass();
+      render();
+    }, 4000);
+    syncBusyClass();
+    render();
+  }
+
+  function suggestionRows() {
+    const owned = new Set(artists.map((a) => a.id));
+    const needle = normalizeArtistNeedle(filterText);
+    const catalog = getCatalogArtists().filter((a) => a && a.id && a.name);
+    const matches = catalog.filter((artist) => {
+      if (owned.has(artist.id)) return false;
+      if (!needle) return true;
+      return normalizeArtistNeedle(artist.name).includes(needle);
+    });
+    matches.sort((a, b) => {
+      const an = normalizeArtistNeedle(a.name);
+      const bn = normalizeArtistNeedle(b.name);
+      const ap = needle && an.startsWith(needle) ? 0 : 1;
+      const bp = needle && bn.startsWith(needle) ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return an.localeCompare(bn);
+    });
+    return matches.slice(0, 6);
+  }
+
+  async function addArtist(artist) {
+    if (!artist?.id || artists.some((a) => a.id === artist.id) || saving) return;
+    const prev = [...artists];
+    artists = [...artists, { id: artist.id, name: artist.name }];
+    picking = false;
+    filterText = "";
+    clearConfirm();
+    saving = true;
+    syncBusyClass();
+    render();
+    try {
+      await options.onAdd(artist);
+    } catch (err) {
+      artists = prev;
+      console.error(err);
+    } finally {
+      saving = false;
+      syncBusyClass();
+      render();
+    }
+  }
+
+  async function removeArtist(artistId) {
+    if (!artistId || !artists.some((a) => a.id === artistId) || saving) return;
+    const prev = [...artists];
+    const removed = artists.find((a) => a.id === artistId);
+    artists = artists.filter((a) => a.id !== artistId);
+    clearConfirm();
+    saving = true;
+    syncBusyClass();
+    render();
+    try {
+      if (removed) await options.onRemove(removed);
+    } catch (err) {
+      artists = prev;
+      console.error(err);
+    } finally {
+      saving = false;
+      syncBusyClass();
+      render();
+    }
+  }
+
+  function detachDocListeners() {
+    document.removeEventListener("pointerdown", onDocPointer, true);
+    document.removeEventListener("keydown", onDocKey, true);
+  }
+
+  function onDocPointer(event) {
+    if (!root.isConnected) {
+      detachDocListeners();
+      return;
+    }
+    if (!root.contains(event.target)) {
+      let changed = false;
+      if (confirming != null) {
+        clearConfirm();
+        changed = true;
+      }
+      if (picking) {
+        closePicker();
+        changed = true;
+      }
+      if (changed) {
+        syncBusyClass();
+        render();
+      }
+    }
+  }
+
+  function onDocKey(event) {
+    if (!root.isConnected) {
+      detachDocListeners();
+      return;
+    }
+    if (event.key !== "Escape") return;
+    if (!isBusy()) return;
+    clearConfirm();
+    if (picking) closePicker();
+    syncBusyClass();
+    render();
+  }
+
+  document.addEventListener("pointerdown", onDocPointer, true);
+  document.addEventListener("keydown", onDocKey, true);
+
+  root.classList.add("tag-editor");
+  const chipsEl = document.createElement("div");
+  chipsEl.className = "tag-chips";
+  root.replaceChildren(chipsEl);
+
+  /** @type {HTMLElement | null} */
+  let suggestList = null;
+
+  function paintHighlight() {
+    if (!suggestList) return;
+    suggestList.querySelectorAll(".artist-suggest").forEach((el, i) => {
+      el.classList.toggle("is-active", i === highlightIndex);
+    });
+  }
+
+  function renderSuggestions() {
+    if (!suggestList) return;
+    const rows = suggestionRows();
+    if (highlightIndex >= rows.length) {
+      highlightIndex = Math.max(0, rows.length - 1);
+    }
+    suggestList.replaceChildren();
+    rows.forEach((row, index) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "artist-suggest";
+      if (index === highlightIndex) item.classList.add("is-active");
+      item.textContent = row.name;
+      item.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void addArtist(row);
+      });
+      item.addEventListener("pointerenter", () => {
+        highlightIndex = index;
+        paintHighlight();
+      });
+      suggestList.appendChild(item);
+    });
+  }
+
+  function renderChipNodes() {
+    const frag = document.createDocumentFragment();
+    artists.forEach((artist, index) => {
+      if (index > 0) {
+        const sep = document.createElement("span");
+        sep.className = "artist-chip-sep";
+        sep.textContent = ", ";
+        frag.appendChild(sep);
+      }
+      const chip = document.createElement("span");
+      chip.className = "artist-chip";
+      chip.dataset.artistId = artist.id;
+      const label = document.createElement("span");
+      label.className = "artist-chip-label";
+      label.textContent = artist.name;
+      chip.appendChild(label);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "tag-chip-x";
+      if (confirming === artist.id) {
+        remove.classList.add("confirm-pending", "is-armed");
+        remove.textContent = BTN.confirmDelete;
+        remove.setAttribute("aria-label", `Really remove “${artist.name}”?`);
+        remove.dataset.tip = `really remove “${artist.name}”?`;
+        remove.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void removeArtist(artist.id);
+        });
+      } else {
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `Remove “${artist.name}”`);
+        remove.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          armConfirm(artist.id);
+        });
+      }
+      chip.appendChild(remove);
+      frag.appendChild(chip);
+    });
+    return frag;
+  }
+
+  function closePicker() {
+    picking = false;
+    filterText = "";
+    highlightIndex = 0;
+    filterInput = null;
+    suggestList = null;
+  }
+
+  function openPicker() {
+    clearConfirm();
+    picking = true;
+    filterText = "";
+    highlightIndex = 0;
+    syncBusyClass();
+
+    const pickerWrap = document.createElement("div");
+    pickerWrap.className = "tag-picker-wrap";
+    filterInput = document.createElement("input");
+    filterInput.type = "text";
+    filterInput.className = "tag-picker-input";
+    filterInput.placeholder = "artist";
+    filterInput.autocomplete = "off";
+    filterInput.spellcheck = false;
+    filterInput.addEventListener("click", (event) => event.stopPropagation());
+    filterInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+    filterInput.addEventListener("input", () => {
+      filterText = filterInput?.value || "";
+      highlightIndex = 0;
+      renderSuggestions();
+    });
+    filterInput.addEventListener("keydown", (event) => {
+      const currentRows = suggestionRows();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const row = currentRows[highlightIndex] || currentRows[0];
+        if (row) void addArtist(row);
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        highlightIndex = Math.min(
+          highlightIndex + 1,
+          Math.max(0, currentRows.length - 1),
+        );
+        paintHighlight();
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        highlightIndex = Math.max(highlightIndex - 1, 0);
+        paintHighlight();
+      }
+    });
+    suggestList = document.createElement("div");
+    suggestList.className = "artist-suggest-list";
+    pickerWrap.appendChild(filterInput);
+    pickerWrap.appendChild(suggestList);
+
+    const addBtn = chipsEl.querySelector(".tag-chip-add");
+    if (addBtn) addBtn.replaceWith(pickerWrap);
+    else chipsEl.appendChild(pickerWrap);
+
+    filterInput.focus();
+    renderSuggestions();
+  }
+
+  function render() {
+    syncBusyClass();
+    if (picking) {
+      const picker = chipsEl.querySelector(".tag-picker-wrap");
+      const chipFrag = renderChipNodes();
+      chipsEl.replaceChildren(chipFrag);
+      if (picker) {
+        chipsEl.appendChild(picker);
+        renderSuggestions();
+      } else {
+        openPicker();
+      }
+      return;
+    }
+    filterInput = null;
+    suggestList = null;
+    const frag = renderChipNodes();
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "tag-chip-add";
+    addBtn.textContent = "+";
+    addBtn.setAttribute("aria-label", "Add artist");
+    addBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openPicker();
+    });
+    frag.appendChild(addBtn);
+    chipsEl.replaceChildren(frag);
+  }
+
+  root.classList.add("artist-editor");
+  render();
+
+  return {
+    setIds(nextIds) {
+      if (isBusy()) return;
+      const wanted = Array.from(new Set((nextIds || []).map(String).filter(Boolean)));
+      const byId = new Map(getCatalogArtists().map((a) => [a.id, a.name]));
+      for (const artist of artists) {
+        if (!byId.has(artist.id)) byId.set(artist.id, artist.name);
+      }
+      const next = wanted.map((id) => ({
+        id,
+        name: byId.get(id) || artistNameById.get(id) || id,
+      }));
+      if (
+        next.length === artists.length &&
+        next.every((artist, i) => artist.id === artists[i].id)
+      ) {
+        return;
+      }
+      artists = next;
+      render();
+    },
+    getIds() {
+      return artists.map((a) => a.id);
+    },
+    isBusy,
+    destroy() {
+      clearConfirm();
+      detachDocListeners();
+      root.replaceChildren();
+      root.classList.remove("tag-editor", "artist-editor", "is-busy");
+    },
+  };
+}
+
 function mixTagHandlers(mixId) {
   return {
     async onAdd(tag) {
@@ -616,8 +1009,6 @@ function bindCollapsibleAdd(form, {
   return { expand, collapse, isExpanded };
 }
 
-/** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
-let intentCollapsible = null;
 /** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
 let artistsCollapsible = null;
 /** @type {Map<string, string>} */
@@ -878,34 +1269,9 @@ function formatChancePercents(dist) {
   return formatChancePercentsFromPct(distToChancePcts(dist));
 }
 
-function updateChanceSummary() {
-  const summary = document.querySelector("#intent-chances > summary");
-  if (!summary) return;
-  const chances = readChances();
-  summary.textContent = `Rating chances: ${formatChanceBlocksFromPct(chances)}`;
-  summary.removeAttribute("title");
-  summary.classList.add("has-tip");
-  summary.dataset.tip = formatChancePercentsFromPct(chances);
-}
-
 function snapChancePct(n) {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n / 10) * 10));
-}
-
-function readChances() {
-  const chances = {};
-  for (const id of CHANCE_IDS) {
-    chances[id] = Number(document.getElementById(id).value);
-  }
-  return chances;
-}
-
-function writeChances(chances) {
-  for (const id of CHANCE_IDS) {
-    document.getElementById(id).value = String(chances[id]);
-  }
-  updateChanceSummary();
 }
 
 function sumChances(chances, ids = CHANCE_IDS) {
@@ -933,47 +1299,6 @@ function reduceLowestPositive(chances, ids, need) {
   return remaining;
 }
 
-function rebalanceChances(changedId) {
-  const chances = readChances();
-  let total = sumChances(chances);
-  if (total === 100) {
-    updateChanceSummary();
-    return;
-  }
-
-  if (changedId !== "chance-unrated") {
-    const ratingsSum = sumChances(chances, CHANCE_RATING_IDS);
-    const rest = 100 - ratingsSum;
-    if (rest >= 0) {
-      chances["chance-unrated"] = rest;
-    } else {
-      chances["chance-unrated"] = 0;
-      const others = CHANCE_RATING_IDS.filter((id) => id !== changedId);
-      reduceLowestPositive(chances, others, -rest);
-      total = sumChances(chances);
-      if (total > 100) {
-        reduceLowestPositive(chances, CHANCE_RATING_IDS, total - 100);
-      }
-    }
-  } else if (total < 100) {
-    chances["chance-five"] = Math.min(100, chances["chance-five"] + (100 - total));
-    total = sumChances(chances);
-    if (total < 100) {
-      // five was capped; put leftover on next ratings high→low
-      for (const id of CHANCE_RATING_IDS) {
-        if (total >= 100) break;
-        const room = 100 - chances[id];
-        const add = Math.min(room, 100 - total);
-        chances[id] += add;
-        total += add;
-      }
-    }
-  } else {
-    reduceLowestPositive(chances, CHANCE_RATING_IDS, total - 100);
-  }
-  writeChances(chances);
-}
-
 function fillChanceSelect(select, selected) {
   select.innerHTML = "";
   for (let pct = 0; pct <= 100; pct += 10) {
@@ -985,16 +1310,7 @@ function fillChanceSelect(select, selected) {
   }
 }
 
-function initChanceSelects() {
-  for (const id of CHANCE_IDS) {
-    const select = document.getElementById(id);
-    fillChanceSelect(select, CHANCE_DEFAULTS[id]);
-    select.addEventListener("change", () => rebalanceChances(id));
-  }
-  updateChanceSummary();
-}
-
-function setChancesFromDist(dist) {
+function chancesFromDist(dist) {
   const chances = {
     "chance-five": snapChancePct(dist.five * 100),
     "chance-four": snapChancePct(dist.four * 100),
@@ -1014,7 +1330,53 @@ function setChancesFromDist(dist) {
       reduceLowestPositive(chances, CHANCE_RATING_IDS, -rest);
     }
   }
-  writeChances(chances);
+  return chances;
+}
+
+function rebalanceChanceMap(chances, changedId) {
+  let total = sumChances(chances);
+  if (total === 100) return chances;
+  if (changedId !== "chance-unrated") {
+    const ratingsSum = sumChances(chances, CHANCE_RATING_IDS);
+    const rest = 100 - ratingsSum;
+    if (rest >= 0) {
+      chances["chance-unrated"] = rest;
+    } else {
+      chances["chance-unrated"] = 0;
+      const others = CHANCE_RATING_IDS.filter((id) => id !== changedId);
+      reduceLowestPositive(chances, others, -rest);
+      total = sumChances(chances);
+      if (total > 100) {
+        reduceLowestPositive(chances, CHANCE_RATING_IDS, total - 100);
+      }
+    }
+  } else if (total < 100) {
+    chances["chance-five"] = Math.min(100, chances["chance-five"] + (100 - total));
+    total = sumChances(chances);
+    if (total < 100) {
+      for (const id of CHANCE_RATING_IDS) {
+        if (total >= 100) break;
+        const room = 100 - chances[id];
+        const add = Math.min(room, 100 - total);
+        chances[id] += add;
+        total += add;
+      }
+    }
+  } else {
+    reduceLowestPositive(chances, CHANCE_RATING_IDS, total - 100);
+  }
+  return chances;
+}
+
+function chancesToDistribution(chances) {
+  return {
+    five: chances["chance-five"] / 100,
+    four: chances["chance-four"] / 100,
+    three: chances["chance-three"] / 100,
+    two: chances["chance-two"] / 100,
+    one: chances["chance-one"] / 100,
+    unrated: chances["chance-unrated"] / 100,
+  };
 }
 
 const DEFAULT_INTENT_PLATFORMS = ["soundcloud", "hearthisat", "bandcamp", "youtube"];
@@ -1024,108 +1386,426 @@ const PLATFORM_LABELS = {
   bandcamp: "Bandcamp",
   youtube: "YouTube",
 };
+const PLATFORM_SVG = {
+  soundcloud:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M1.75 12.85c0 .46.37.84.84.84h.42c.46 0 .84-.38.84-.84V9.6c0-.46-.38-.84-.84-.84h-.42c-.47 0-.84.38-.84.84v3.25zm3.36 2.1c0 .46.38.84.84.84h.42c.46 0 .84-.38.84-.84V7.5c0-.46-.38-.84-.84-.84h-.42c-.46 0-.84.38-.84.84v7.45zm3.37.42c0 .46.37.84.84.84h.42c.46 0 .84-.38.84-.84V6.2c0-.46-.38-.84-.84-.84h-.42c-.47 0-.84.38-.84.84v9.17zm3.36.21V5.36c0-.7.57-1.26 1.26-1.26.7 0 1.26.56 1.26 1.26v10.22h2.94c2.52 0 4.56-2.04 4.56-4.56 0-2.4-1.86-4.36-4.21-4.54a3.78 3.78 0 0 0-7.07 1.84v7.96c0 .46.38.84.84.84h.42c.01 0 .01 0 0 0z"/></svg>',
+  hearthisat:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 0-7 7v3.2A3.8 3.8 0 0 0 8.8 16H10v4h4v-4h1.2A3.8 3.8 0 0 0 19 12.2V9a7 7 0 0 0-7-7zm-2.5 8.5a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm5 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z"/></svg>',
+  bandcamp:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M0 18.75l7.06-13.5H24l-7.06 13.5H0z"/></svg>',
+  youtube:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M23.5 7.2a3 3 0 0 0-2.1-2.1C19.5 4.6 12 4.6 12 4.6s-7.5 0-9.4.5A3 3 0 0 0 .5 7.2 31.5 31.5 0 0 0 0 12a31.5 31.5 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.5 31.5 0 0 0 24 12a31.5 31.5 0 0 0-.5-4.8zM9.75 15.02V8.98L15.5 12l-5.75 3.02z"/></svg>',
+};
 
-function clearIntentArtistSelection() {
-  const select = document.getElementById("intent-artists");
-  if (!select) return;
-  for (const option of select.options) {
-    option.selected = false;
+const CHANCE_FIELD_META = [
+  { id: "chance-five", label: "5★", title: "Share of the sequence for 5★ releases" },
+  { id: "chance-four", label: "4★", title: "Share of the sequence for 4★ releases" },
+  { id: "chance-three", label: "3★", title: "Share of the sequence for 3★ releases" },
+  { id: "chance-two", label: "2★", title: "Share of the sequence for 2★ releases" },
+  { id: "chance-one", label: "1★", title: "Share of the sequence for 1★ releases" },
+  { id: "chance-unrated", label: "—", title: "Share of the sequence for unrated releases" },
+];
+
+/**
+ * Shared create/edit intent composer: short name + ✓×, then Tags/Artists/Sources/chances.
+ * @param {HTMLElement} root
+ * @param {{
+ *   values?: {
+ *     name?: string,
+ *     tags?: string[],
+ *     artist_ids?: string[],
+ *     platforms?: string[],
+ *     distribution?: {five:number,four:number,three:number,two:number,one:number,unrated:number},
+ *   },
+ *   saveLabel?: string,
+ *   onSave: (values: {
+ *     name: string,
+ *     tags: string[],
+ *     artist_ids: string[],
+ *     platforms: string[],
+ *     distribution: {five:number,four:number,three:number,two:number,one:number,unrated:number},
+ *   }) => Promise<void> | void,
+ *   onCancel: () => void,
+ * }} options
+ */
+function mountIntentComposer(root, options) {
+  const initial = options.values || {};
+  root.classList.add("intent-composer");
+  root.replaceChildren();
+
+  const nameRow = document.createElement("div");
+  nameRow.className = "intent-form-name-row";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "intent-form-name";
+  nameInput.required = true;
+  nameInput.placeholder = "Name";
+  nameInput.setAttribute("aria-label", "Name");
+  nameInput.value = initial.name || "";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  setSymbolButton(saveBtn, BTN.save, options.saveLabel || "Save");
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  setSymbolButton(cancelBtn, BTN.cancel, "Cancel");
+  nameRow.appendChild(nameInput);
+  nameRow.appendChild(saveBtn);
+  nameRow.appendChild(cancelBtn);
+
+  const meta = document.createElement("div");
+  meta.className = "intent-form-meta";
+
+  const tagsRow = document.createElement("div");
+  tagsRow.className = "intent-form-meta-row";
+  tagsRow.title =
+    "Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged.";
+  const tagsLabel = document.createElement("span");
+  tagsLabel.className = "intent-form-meta-label";
+  tagsLabel.textContent = "Tags:";
+  const tagsMount = document.createElement("div");
+  tagsMount.className = "tag-editor";
+  tagsMount.setAttribute("aria-label", "Intent filter tags");
+  tagsRow.appendChild(tagsLabel);
+  tagsRow.appendChild(tagsMount);
+
+  const artistsRow = document.createElement("div");
+  artistsRow.className = "intent-form-meta-row";
+  artistsRow.title = "Optional. Leave empty for no artist filter. Selected artists match by OR.";
+  const artistsLabel = document.createElement("span");
+  artistsLabel.className = "intent-form-meta-label";
+  artistsLabel.textContent = "Artists:";
+  const artistsMount = document.createElement("div");
+  artistsMount.className = "tag-editor";
+  artistsMount.setAttribute("aria-label", "Intent artist filter");
+  artistsRow.appendChild(artistsLabel);
+  artistsRow.appendChild(artistsMount);
+
+  const sourcesRow = document.createElement("div");
+  sourcesRow.className = "intent-form-meta-row";
+  sourcesRow.title =
+    "Sources start on. Grey one out to exclude it. At least one must stay active.";
+  const sourcesLabel = document.createElement("span");
+  sourcesLabel.className = "intent-form-meta-label";
+  sourcesLabel.textContent = "Sources:";
+  const platformsRoot = document.createElement("div");
+  platformsRoot.className = "source-toggles";
+  platformsRoot.setAttribute("role", "group");
+  platformsRoot.setAttribute("aria-label", "Sources");
+  for (const platform of DEFAULT_INTENT_PLATFORMS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "source-toggle";
+    btn.dataset.platform = platform;
+    btn.setAttribute("aria-pressed", "true");
+    btn.title = PLATFORM_LABELS[platform] || platform;
+    btn.setAttribute("aria-label", PLATFORM_LABELS[platform] || platform);
+    btn.innerHTML = PLATFORM_SVG[platform] || "";
+    platformsRoot.appendChild(btn);
   }
-}
+  sourcesRow.appendChild(sourcesLabel);
+  sourcesRow.appendChild(platformsRoot);
 
-function selectedIntentArtistIds() {
-  const select = document.getElementById("intent-artists");
-  if (!select) return [];
-  return Array.from(select.selectedOptions).map((option) => option.value);
-}
-
-function setIntentArtistSelection(artistIds) {
-  const select = document.getElementById("intent-artists");
-  if (!select) return;
-  const wanted = new Set(artistIds || []);
-  for (const option of select.options) {
-    option.selected = wanted.has(option.value);
+  const chancesDetails = document.createElement("details");
+  chancesDetails.className = "intent-chances";
+  const chancesSummary = document.createElement("summary");
+  chancesSummary.className = "has-tip";
+  const chanceGrid = document.createElement("div");
+  chanceGrid.className = "chance-grid";
+  /** @type {Map<string, HTMLSelectElement>} */
+  const chanceSelects = new Map();
+  for (const field of CHANCE_FIELD_META) {
+    const label = document.createElement("label");
+    label.title = field.title;
+    label.appendChild(document.createTextNode(field.label));
+    const select = document.createElement("select");
+    select.dataset.chance = field.id;
+    select.title = field.title;
+    fillChanceSelect(select, CHANCE_DEFAULTS[field.id]);
+    chanceSelects.set(field.id, select);
+    label.appendChild(select);
+    chanceGrid.appendChild(label);
   }
-}
+  chancesDetails.appendChild(chancesSummary);
+  chancesDetails.appendChild(chanceGrid);
 
-function intentPlatformButtons() {
-  return Array.from(document.querySelectorAll("#intent-platforms .source-toggle"));
-}
+  meta.appendChild(tagsRow);
+  meta.appendChild(artistsRow);
+  meta.appendChild(sourcesRow);
+  meta.appendChild(chancesDetails);
+  root.appendChild(nameRow);
+  root.appendChild(meta);
 
-function selectedIntentPlatforms() {
-  return intentPlatformButtons()
-    .filter((btn) => btn.getAttribute("aria-pressed") === "true")
-    .map((btn) => btn.dataset.platform)
-    .filter(Boolean);
-}
+  const tagEditor = mountTagEditor(tagsMount, {
+    tags: initial.tags || [],
+    async onAdd() {},
+    async onRemove() {},
+  });
+  const artistEditor = mountArtistEditor(artistsMount, {
+    artists: [],
+    async onAdd() {},
+    async onRemove() {},
+  });
 
-function setIntentPlatformSelection(platforms) {
-  const wanted = new Set(
-    platforms && platforms.length ? platforms : DEFAULT_INTENT_PLATFORMS,
-  );
-  for (const btn of intentPlatformButtons()) {
-    const on = wanted.has(btn.dataset.platform);
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  function platformButtons() {
+    return Array.from(platformsRoot.querySelectorAll(".source-toggle"));
   }
-}
 
-function resetIntentPlatformSelection() {
-  setIntentPlatformSelection(DEFAULT_INTENT_PLATFORMS);
-}
+  function readPlatforms() {
+    return platformButtons()
+      .filter((btn) => btn.getAttribute("aria-pressed") === "true")
+      .map((btn) => btn.dataset.platform)
+      .filter(Boolean);
+  }
 
-function bindIntentPlatformToggles() {
-  const root = document.getElementById("intent-platforms");
-  if (!root || root.dataset.bound === "1") return;
-  root.dataset.bound = "1";
-  root.addEventListener("click", (event) => {
+  function writePlatforms(platforms) {
+    const wanted = new Set(
+      platforms && platforms.length ? platforms : DEFAULT_INTENT_PLATFORMS,
+    );
+    for (const btn of platformButtons()) {
+      btn.setAttribute(
+        "aria-pressed",
+        wanted.has(btn.dataset.platform) ? "true" : "false",
+      );
+    }
+  }
+
+  function readChances() {
+    const chances = {};
+    for (const id of CHANCE_IDS) {
+      chances[id] = Number(chanceSelects.get(id)?.value || 0);
+    }
+    return chances;
+  }
+
+  function writeChances(chances) {
+    for (const id of CHANCE_IDS) {
+      const select = chanceSelects.get(id);
+      if (select) select.value = String(chances[id]);
+    }
+    updateChanceSummary();
+  }
+
+  function updateChanceSummary() {
+    const chances = readChances();
+    chancesSummary.textContent = `Rating chances: ${formatChanceBlocksFromPct(chances)}`;
+    chancesSummary.removeAttribute("title");
+    chancesSummary.classList.add("has-tip");
+    chancesSummary.dataset.tip = formatChancePercentsFromPct(chances);
+  }
+
+  function rebalanceChances(changedId) {
+    writeChances(rebalanceChanceMap(readChances(), changedId));
+  }
+
+  for (const [id, select] of chanceSelects) {
+    select.addEventListener("change", () => rebalanceChances(id));
+  }
+
+  platformsRoot.addEventListener("click", (event) => {
     const btn = event.target.closest(".source-toggle");
-    if (!btn || !root.contains(btn)) return;
+    if (!btn || !platformsRoot.contains(btn)) return;
     const pressed = btn.getAttribute("aria-pressed") === "true";
     if (pressed) {
-      const activeCount = selectedIntentPlatforms().length;
-      if (activeCount <= 1) return;
+      if (readPlatforms().length <= 1) return;
       btn.setAttribute("aria-pressed", "false");
       return;
     }
     btn.setAttribute("aria-pressed", "true");
   });
+
+  function getValues() {
+    const chances = readChances();
+    return {
+      name: nameInput.value.trim(),
+      tags: tagEditor.getTags(),
+      artist_ids: artistEditor.getIds(),
+      platforms: readPlatforms(),
+      distribution: chancesToDistribution(chances),
+      chancePcts: chances,
+    };
+  }
+
+  function setValues(next) {
+    nameInput.value = next.name || "";
+    tagEditor.setTags(next.tags || []);
+    artistEditor.setIds(next.artist_ids || []);
+    writePlatforms(next.platforms || DEFAULT_INTENT_PLATFORMS);
+    if (next.distribution) writeChances(chancesFromDist(next.distribution));
+    else writeChances({ ...CHANCE_DEFAULTS });
+    chancesDetails.open = false;
+  }
+
+  setValues(initial);
+  updateChanceSummary();
+
+  let saving = false;
+  saveBtn.addEventListener("click", async () => {
+    if (saving) return;
+    const values = getValues();
+    if (!values.name) {
+      nameInput.focus();
+      return;
+    }
+    if (sumChances(values.chancePcts) !== 100) {
+      const status = document.getElementById("intent-status");
+      if (status) {
+        status.textContent = `Rating chances must sum to 100% (got ${sumChances(values.chancePcts)})`;
+      }
+      return;
+    }
+    if (!values.platforms.length) {
+      const status = document.getElementById("intent-status");
+      if (status) status.textContent = "Keep at least one source active";
+      return;
+    }
+    saving = true;
+    saveBtn.disabled = true;
+    try {
+      await options.onSave({
+        name: values.name,
+        tags: values.tags,
+        artist_ids: values.artist_ids,
+        platforms: values.platforms,
+        distribution: values.distribution,
+      });
+    } finally {
+      saving = false;
+      saveBtn.disabled = false;
+    }
+  });
+  cancelBtn.addEventListener("click", () => options.onCancel());
+
+  return {
+    getValues,
+    setValues,
+    focusName() {
+      nameInput.focus();
+      nameInput.select?.();
+    },
+    isBusy() {
+      return saving || tagEditor.isBusy() || artistEditor.isBusy();
+    },
+    syncArtists(selectedIds) {
+      if (!artistEditor.isBusy()) artistEditor.setIds(selectedIds);
+    },
+    getArtistIds() {
+      return artistEditor.getIds();
+    },
+    destroy() {
+      tagEditor.destroy();
+      artistEditor.destroy();
+      root.replaceChildren();
+      root.classList.remove("intent-composer");
+    },
+  };
 }
 
 async function refreshIntentArtistOptions() {
-  const select = document.getElementById("intent-artists");
-  if (!select) return;
-  const previouslySelected = new Set(selectedIntentArtistIds());
+  const createIds = createComposer?.getArtistIds() || [];
+  const editIds = editComposer?.getArtistIds() || [];
   try {
     const res = await fetch("/api/artists");
     const data = await res.json();
-    const artists = data.artists || [];
+    const artists = (data.artists || []).map((artist) => ({
+      id: artist.id,
+      name: artist.name,
+    }));
+    catalogArtistsCache = artists;
     artistNameById = new Map(artists.map((artist) => [artist.id, artist.name]));
-    select.innerHTML = "";
-    for (const artist of artists) {
-      const option = document.createElement("option");
-      option.value = artist.id;
-      option.textContent = artist.name;
-      option.selected = previouslySelected.has(artist.id);
-      select.appendChild(option);
-    }
+    createComposer?.syncArtists(createIds);
+    editComposer?.syncArtists(editIds);
   } catch (err) {
     console.error(err);
   }
 }
 
-function clearIntentFormFields() {
-  document.getElementById("intent-edit-id").value = "";
-  document.getElementById("intent-name").value = "";
-  intentTagEditor?.setTags([]);
-  clearIntentArtistSelection();
-  resetIntentPlatformSelection();
-  writeChances({ ...CHANCE_DEFAULTS });
-  document.getElementById("intent-chances").open = false;
+function isCreateFormOpen() {
+  return document.getElementById("intent-form")?.classList.contains("add-form-open");
+}
+
+function collapseCreateForm() {
+  const form = document.getElementById("intent-form");
+  const mount = document.getElementById("intent-create-composer");
+  const expandBtn = document.getElementById("intent-expand");
+  if (createComposer) {
+    createComposer.destroy();
+    createComposer = null;
+  }
+  if (mount) mount.hidden = true;
+  form?.classList.remove("add-form-open");
+  if (expandBtn) {
+    expandBtn.hidden = false;
+    setSymbolButton(expandBtn, BTN.add, "Create intent");
+  }
+}
+
+function expandCreateForm() {
+  const form = document.getElementById("intent-form");
+  const mount = document.getElementById("intent-create-composer");
+  const expandBtn = document.getElementById("intent-expand");
+  if (!form || !mount || !expandBtn) return;
+  if (editingIntentId) {
+    editingIntentId = null;
+    void refreshIntents({ force: true });
+  }
+  form.classList.add("add-form-open");
+  mount.hidden = false;
+  expandBtn.hidden = true;
+  if (createComposer) createComposer.destroy();
+  createComposer = mountIntentComposer(mount, {
+    saveLabel: "Create intent",
+    values: {
+      name: "",
+      tags: [],
+      artist_ids: [],
+      platforms: DEFAULT_INTENT_PLATFORMS,
+      distribution: {
+        five: CHANCE_DEFAULTS["chance-five"] / 100,
+        four: CHANCE_DEFAULTS["chance-four"] / 100,
+        three: CHANCE_DEFAULTS["chance-three"] / 100,
+        two: CHANCE_DEFAULTS["chance-two"] / 100,
+        one: CHANCE_DEFAULTS["chance-one"] / 100,
+        unrated: CHANCE_DEFAULTS["chance-unrated"] / 100,
+      },
+    },
+    async onSave(values) {
+      const status = document.getElementById("intent-status");
+      status.textContent = "Creating intent…";
+      try {
+        const res = await fetch("/api/intents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const detail = data.detail;
+          status.textContent =
+            typeof detail === "string"
+              ? detail
+              : detail?.[0]?.msg || "Create intent failed";
+          return;
+        }
+        const filling = data.fill_in_progress ? " · filling caches…" : "";
+        status.textContent = `Created “${data.intent.name}”${filling}`;
+        collapseCreateForm();
+        await refreshIntents({ force: true });
+        await refreshFiles();
+      } catch (err) {
+        status.textContent = "Create intent request failed";
+        console.error(err);
+      }
+    },
+    onCancel() {
+      document.getElementById("intent-status").textContent = "";
+      collapseCreateForm();
+    },
+  });
+  createComposer.focusName();
 }
 
 function resetIntentForm() {
-  clearIntentFormFields();
-  intentCollapsible?.collapse();
+  collapseCreateForm();
 }
 
 function hoursUntilExpiry(iso) {
@@ -1137,15 +1817,18 @@ function hoursUntilExpiry(iso) {
 }
 
 function beginEditIntent(intent) {
-  document.getElementById("intent-edit-id").value = intent.id;
-  document.getElementById("intent-name").value = intent.name;
-  intentTagEditor?.setTags(intent.tags || []);
-  setIntentArtistSelection(intent.artist_ids || []);
-  setIntentPlatformSelection(intent.platforms || DEFAULT_INTENT_PLATFORMS);
-  setChancesFromDist(intent.distribution);
-  document.getElementById("intent-chances").open = true;
-  intentCollapsible?.expand({ submitLabel: "Save changes" });
-  document.getElementById("intent-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (isCreateFormOpen()) collapseCreateForm();
+  editingIntentId = intent.id;
+  void refreshIntents({ force: true });
+}
+
+function cancelInlineIntentEdit() {
+  editingIntentId = null;
+  if (editComposer) {
+    editComposer.destroy();
+    editComposer = null;
+  }
+  void refreshIntents({ force: true });
 }
 
 function knownDevices() {
@@ -3250,10 +3933,9 @@ function buildHoursEditor(intent, editor) {
 
   let deviceSelect = null;
   if (editor.mode === "add") {
-    const deviceLabel = document.createElement("label");
-    deviceLabel.className = "inline-field";
-    deviceLabel.textContent = "Device";
     deviceSelect = document.createElement("select");
+    deviceSelect.setAttribute("aria-label", "Device");
+    deviceSelect.dataset.tip = "Device";
     for (const device of devices) {
       const option = document.createElement("option");
       option.value = device.id;
@@ -3264,42 +3946,35 @@ function buildHoursEditor(intent, editor) {
       const chosen = devices.find((d) => d.id === deviceSelect.value);
       if (chosen) hoursInput.value = chosen.defaultHours;
     });
-    deviceLabel.appendChild(deviceSelect);
-    wrap.appendChild(deviceLabel);
+    wrap.appendChild(deviceSelect);
   } else {
-    const deviceLabel = document.createElement("label");
-    deviceLabel.className = "inline-field";
-    deviceLabel.textContent = "Device";
     const fixed = document.createElement("input");
     fixed.type = "text";
     fixed.value = deviceName(fixedDeviceId);
     fixed.readOnly = true;
-    deviceLabel.appendChild(fixed);
-    wrap.appendChild(deviceLabel);
+    fixed.setAttribute("aria-label", "Device");
+    wrap.appendChild(fixed);
   }
 
-  const hoursLabel = document.createElement("label");
-  hoursLabel.className = "inline-field";
-  hoursLabel.textContent = "Hours";
   const hoursInput = document.createElement("input");
   hoursInput.type = "number";
   hoursInput.min = "0.5";
   hoursInput.step = "0.5";
   hoursInput.value = defaultHours;
-  hoursLabel.appendChild(hoursInput);
-  wrap.appendChild(hoursLabel);
+  hoursInput.placeholder = "hours";
+  hoursInput.setAttribute("aria-label", "Hours");
+  hoursInput.dataset.tip = "Hours";
+  wrap.appendChild(hoursInput);
 
-  const expiresLabel = document.createElement("label");
-  expiresLabel.className = "inline-field";
-  expiresLabel.textContent = "Expires in (hours)";
   const expiresInput = document.createElement("input");
   expiresInput.type = "number";
   expiresInput.min = "0";
   expiresInput.step = "0.5";
-  expiresInput.placeholder = "never";
+  expiresInput.placeholder = "expires";
   expiresInput.value = defaultExpires;
-  expiresLabel.appendChild(expiresInput);
-  wrap.appendChild(expiresLabel);
+  expiresInput.setAttribute("aria-label", "Expires in (hours)");
+  expiresInput.dataset.tip = "Expires in (hours)";
+  wrap.appendChild(expiresInput);
 
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
@@ -3403,7 +4078,17 @@ async function refreshIntents({ force = false } = {}) {
   await refreshIntentArtistOptions();
   const res = await fetch("/api/intents");
   const data = await res.json();
+  if (editComposer) {
+    editComposer.destroy();
+    editComposer = null;
+  }
   list.innerHTML = "";
+  if (
+    editingIntentId &&
+    !(data.intents || []).some((intent) => intent.id === editingIntentId)
+  ) {
+    editingIntentId = null;
+  }
   if (!data.intents.length) {
     const li = document.createElement("li");
     li.className = "muted";
@@ -3415,168 +4100,223 @@ async function refreshIntents({ force = false } = {}) {
 
   for (const intent of data.intents) {
     const li = document.createElement("li");
-    const headingRow = document.createElement("div");
-    headingRow.className = "controls";
-    const heading = document.createElement("h3");
-    heading.textContent = intent.name;
-    heading.style.flex = "1";
-    headingRow.appendChild(heading);
-    const playBtn = document.createElement("button");
-    playBtn.type = "button";
-    playBtn.className = "intent-play";
-    playBtn.dataset.intentId = intent.id;
-    const playingThis =
-      lastPlayerPlaying && lastPlayerIntentId != null && lastPlayerIntentId === intent.id;
-    setIntentPlayButton(playBtn, playingThis);
-    playBtn.addEventListener("click", async () => {
-      const status = document.getElementById("intent-status");
-      try {
-        // Pause only the intent that is actually playing right now.
-        if (isIntentCurrentlyPlaying(intent.id)) {
-          const ok = await pausePlayback();
-          if (status) {
-            status.textContent = ok
-              ? `Paused “${intent.name}”`
-              : document.getElementById("player-status")?.textContent || "Pause failed";
+    const isEditing = editingIntentId === intent.id;
+
+    if (isEditing) {
+      const composerMount = document.createElement("div");
+      composerMount.className = "intent-composer intent-composer-edit";
+      li.appendChild(composerMount);
+      editComposer = mountIntentComposer(composerMount, {
+        saveLabel: "Save changes",
+        values: {
+          name: intent.name,
+          tags: intent.tags || [],
+          artist_ids: intent.artist_ids || [],
+          platforms: intent.platforms || DEFAULT_INTENT_PLATFORMS,
+          distribution: intent.distribution,
+        },
+        async onSave(values) {
+          const status = document.getElementById("intent-status");
+          status.textContent = "Saving intent…";
+          try {
+            const res = await fetch(`/api/intents/${intent.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(values),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              const detail = data.detail;
+              status.textContent =
+                typeof detail === "string"
+                  ? detail
+                  : detail?.[0]?.msg || "Update intent failed";
+              return;
+            }
+            const filling = data.fill_in_progress ? " · filling caches…" : "";
+            status.textContent = `Updated “${data.intent.name}”${filling}`;
+            editingIntentId = null;
+            if (editComposer) {
+              editComposer.destroy();
+              editComposer = null;
+            }
+            await refreshIntents({ force: true });
+            await refreshFiles();
+          } catch (err) {
+            status.textContent = "Update intent request failed";
+            console.error(err);
           }
-          return;
-        }
-        const ok = await playIntent(intent.id);
-        if (status) {
-          status.textContent = ok
-            ? `Playing “${intent.name}”`
-            : document.getElementById("player-status")?.textContent || "Play failed";
-        }
-      } catch (err) {
-        if (status) status.textContent = "Play request failed";
-        console.error(err);
-      }
-    });
-    headingRow.appendChild(playBtn);
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    setSymbolButton(editBtn, BTN.edit, "Edit intent");
-    editBtn.addEventListener("click", () => beginEditIntent(intent));
-    headingRow.appendChild(editBtn);
-    const refreshBtn = document.createElement("button");
-    refreshBtn.type = "button";
-    setSymbolButton(refreshBtn, BTN.refresh, "Refresh");
-    refreshBtn.addEventListener("click", async () => {
-      const status = document.getElementById("intent-status");
-      status.textContent = `Refreshing sequence “${intent.name}”…`;
-      try {
-        const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
-          method: "POST",
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          status.textContent = data.detail || "Refresh sequence failed";
-          return;
-        }
-        status.textContent = data.fill_in_progress
-          ? `Refreshed “${intent.name}” · fill started`
-          : `Refreshed “${intent.name}”`;
-        await refreshIntents();
-        await refreshFiles();
-      } catch (err) {
-        status.textContent = "Refresh sequence request failed";
-        console.error(err);
-      }
-    });
-    headingRow.appendChild(refreshBtn);
-    const fillNowBtn = document.createElement("button");
-    fillNowBtn.type = "button";
-    setSymbolButton(fillNowBtn, BTN.fill, "Fill");
-    fillNowBtn.addEventListener("click", async () => {
-      const status = document.getElementById("intent-status");
-      status.textContent = `Fill “${intent.name}”…`;
-      try {
-        const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          status.textContent = data.detail || "Fill failed";
-          return;
-        }
-        status.textContent = data.fill_in_progress
-          ? `Fill “${intent.name}” started · ${data.files} cached so far`
-          : `Fill “${intent.name}” · ${data.files} cached`;
-        await refreshFiles();
-      } catch (err) {
-        status.textContent = "Fill request failed";
-        console.error(err);
-      }
-    });
-    headingRow.appendChild(fillNowBtn);
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    bindConfirmDelete(deleteBtn, {
-      label: "Delete intent",
-      onConfirm: async () => {
+        },
+        onCancel() {
+          document.getElementById("intent-status").textContent = "";
+          cancelInlineIntentEdit();
+        },
+      });
+      editComposer.focusName();
+    } else {
+      const headingRow = document.createElement("div");
+      headingRow.className = "controls";
+      const heading = document.createElement("h3");
+      heading.textContent = intent.name;
+      heading.style.flex = "1";
+      headingRow.appendChild(heading);
+      const playBtn = document.createElement("button");
+      playBtn.type = "button";
+      playBtn.className = "intent-play";
+      playBtn.dataset.intentId = intent.id;
+      const playingThis =
+        lastPlayerPlaying && lastPlayerIntentId != null && lastPlayerIntentId === intent.id;
+      setIntentPlayButton(playBtn, playingThis);
+      playBtn.addEventListener("click", async () => {
         const status = document.getElementById("intent-status");
-        status.textContent = "Deleting…";
         try {
-          const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            status.textContent = data.detail || "Delete intent failed";
+          // Pause only the intent that is actually playing right now.
+          if (isIntentCurrentlyPlaying(intent.id)) {
+            const ok = await pausePlayback();
+            if (status) {
+              status.textContent = ok
+                ? `Paused “${intent.name}”`
+                : document.getElementById("player-status")?.textContent || "Pause failed";
+            }
             return;
           }
-          if (document.getElementById("intent-edit-id").value === intent.id) {
-            resetIntentForm();
+          const ok = await playIntent(intent.id);
+          if (status) {
+            status.textContent = ok
+              ? `Playing “${intent.name}”`
+              : document.getElementById("player-status")?.textContent || "Play failed";
           }
-          hoursEditorState.delete(intent.id);
-          status.textContent = `Deleted “${intent.name}”`;
-          await refreshIntents();
         } catch (err) {
-          status.textContent = "Delete intent request failed";
+          if (status) status.textContent = "Play request failed";
           console.error(err);
         }
-      },
-    });
-    headingRow.appendChild(deleteBtn);
-    li.appendChild(headingRow);
+      });
+      headingRow.appendChild(playBtn);
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      setSymbolButton(editBtn, BTN.edit, "Edit intent");
+      editBtn.addEventListener("click", () => beginEditIntent(intent));
+      headingRow.appendChild(editBtn);
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      setSymbolButton(refreshBtn, BTN.refresh, "Refresh");
+      refreshBtn.addEventListener("click", async () => {
+        const status = document.getElementById("intent-status");
+        status.textContent = `Refreshing sequence “${intent.name}”…`;
+        try {
+          const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
+            method: "POST",
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            status.textContent = data.detail || "Refresh sequence failed";
+            return;
+          }
+          status.textContent = data.fill_in_progress
+            ? `Refreshed “${intent.name}” · fill started`
+            : `Refreshed “${intent.name}”`;
+          await refreshIntents();
+          await refreshFiles();
+        } catch (err) {
+          status.textContent = "Refresh sequence request failed";
+          console.error(err);
+        }
+      });
+      headingRow.appendChild(refreshBtn);
+      const fillNowBtn = document.createElement("button");
+      fillNowBtn.type = "button";
+      setSymbolButton(fillNowBtn, BTN.fill, "Fill");
+      fillNowBtn.addEventListener("click", async () => {
+        const status = document.getElementById("intent-status");
+        status.textContent = `Fill “${intent.name}”…`;
+        try {
+          const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            status.textContent = data.detail || "Fill failed";
+            return;
+          }
+          status.textContent = data.fill_in_progress
+            ? `Fill “${intent.name}” started · ${data.files} cached so far`
+            : `Fill “${intent.name}” · ${data.files} cached`;
+          await refreshFiles();
+        } catch (err) {
+          status.textContent = "Fill request failed";
+          console.error(err);
+        }
+      });
+      headingRow.appendChild(fillNowBtn);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      bindConfirmDelete(deleteBtn, {
+        label: "Delete intent",
+        onConfirm: async () => {
+          const status = document.getElementById("intent-status");
+          status.textContent = "Deleting…";
+          try {
+            const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              status.textContent = data.detail || "Delete intent failed";
+              return;
+            }
+            if (editingIntentId === intent.id) {
+              editingIntentId = null;
+              if (editComposer) {
+                editComposer.destroy();
+                editComposer = null;
+              }
+            }
+            hoursEditorState.delete(intent.id);
+            status.textContent = `Deleted “${intent.name}”`;
+            await refreshIntents({ force: true });
+          } catch (err) {
+            status.textContent = "Delete intent request failed";
+            console.error(err);
+          }
+        },
+      });
+      headingRow.appendChild(deleteBtn);
+      li.appendChild(headingRow);
 
-    const meta = document.createElement("div");
-    meta.className = "intent-meta muted";
-    const tagsEl = document.createElement("span");
-    tagsEl.className = "intent-meta-tags";
-    tagsEl.textContent = `Tags: ${intent.tags.length ? intent.tags.join(", ") : "-"}`;
-    const artistsEl = document.createElement("span");
-    artistsEl.className = "intent-meta-artists";
-    const artistIds = intent.artist_ids || [];
-    const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
-    artistsEl.textContent = `Artists: ${artistNames.length ? artistNames.join(", ") : "-"}`;
-    const platformsEl = document.createElement("span");
-    platformsEl.className = "intent-meta-platforms";
-    const platformsLabel = document.createElement("span");
-    platformsLabel.textContent = "Sources:";
-    platformsEl.appendChild(platformsLabel);
-    const platforms = intent.platforms || DEFAULT_INTENT_PLATFORMS;
-    const templateRoot = document.getElementById("intent-platforms");
-    for (const platform of platforms) {
-      const template = templateRoot?.querySelector(
-        `.source-toggle[data-platform="${CSS.escape(platform)}"]`,
-      );
-      const icon = document.createElement("span");
-      icon.className = "source-toggle";
-      icon.setAttribute("aria-pressed", "true");
-      icon.title = PLATFORM_LABELS[platform] || platform;
-      if (template) {
-        icon.innerHTML = template.innerHTML;
-      } else {
-        icon.textContent = PLATFORM_LABELS[platform] || platform;
+      const meta = document.createElement("div");
+      meta.className = "intent-meta muted";
+      const tagsEl = document.createElement("span");
+      tagsEl.className = "intent-meta-tags";
+      tagsEl.textContent = `Tags: ${intent.tags.length ? intent.tags.join(", ") : "-"}`;
+      const artistsEl = document.createElement("span");
+      artistsEl.className = "intent-meta-artists";
+      const artistIds = intent.artist_ids || [];
+      const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
+      artistsEl.textContent = `Artists: ${artistNames.length ? artistNames.join(", ") : "-"}`;
+      const platformsEl = document.createElement("span");
+      platformsEl.className = "intent-meta-platforms";
+      const platformsLabel = document.createElement("span");
+      platformsLabel.textContent = "Sources:";
+      platformsEl.appendChild(platformsLabel);
+      const platforms = intent.platforms || DEFAULT_INTENT_PLATFORMS;
+      for (const platform of platforms) {
+        const icon = document.createElement("span");
+        icon.className = "source-toggle";
+        icon.setAttribute("aria-pressed", "true");
+        icon.title = PLATFORM_LABELS[platform] || platform;
+        if (PLATFORM_SVG[platform]) {
+          icon.innerHTML = PLATFORM_SVG[platform];
+        } else {
+          icon.textContent = PLATFORM_LABELS[platform] || platform;
+        }
+        platformsEl.appendChild(icon);
       }
-      platformsEl.appendChild(icon);
+      const chancesEl = document.createElement("span");
+      chancesEl.className = "intent-meta-chances has-tip";
+      chancesEl.textContent = `Rating chances: ${formatChanceBlocks(intent.distribution)}`;
+      chancesEl.dataset.tip = formatChancePercents(intent.distribution);
+      meta.appendChild(tagsEl);
+      meta.appendChild(artistsEl);
+      meta.appendChild(platformsEl);
+      meta.appendChild(chancesEl);
+      li.appendChild(meta);
     }
-    const chancesEl = document.createElement("span");
-    chancesEl.className = "intent-meta-chances has-tip";
-    chancesEl.textContent = `Rating chances: ${formatChanceBlocks(intent.distribution)}`;
-    chancesEl.dataset.tip = formatChancePercents(intent.distribution);
-    meta.appendChild(tagsEl);
-    meta.appendChild(artistsEl);
-    meta.appendChild(platformsEl);
-    meta.appendChild(chancesEl);
-    li.appendChild(meta);
 
     let assignments = [];
     let seq = null;
@@ -4103,81 +4843,11 @@ document.getElementById("refresh-all-artists").addEventListener("click", async (
   }
 });
 
-bindIntentPlatformToggles();
-
-intentCollapsible = bindCollapsibleAdd(document.getElementById("intent-form"), {
-  button: "#intent-submit",
-  expandLabel: "Create intent",
-  submitLabel: "Create intent",
-  cancelButton: "#intent-cancel",
-  focusSelector: "#intent-name",
-  onCancel: () => {
-    document.getElementById("intent-status").textContent = "";
-    clearIntentFormFields();
-  },
+document.getElementById("intent-expand")?.addEventListener("click", () => {
+  expandCreateForm();
 });
-
-document.getElementById("intent-form").addEventListener("submit", async (event) => {
+document.getElementById("intent-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
-  const status = document.getElementById("intent-status");
-  const editId = document.getElementById("intent-edit-id").value.trim();
-  const name = document.getElementById("intent-name").value.trim();
-  const tags = intentTagEditor?.getTags() || [];
-  const chances = readChances();
-  const total = sumChances(chances);
-  if (total !== 100) {
-    status.textContent = `Rating chances must sum to 100% (got ${total})`;
-    return;
-  }
-
-  const platforms = selectedIntentPlatforms();
-  if (!platforms.length) {
-    status.textContent = "Keep at least one source active";
-    return;
-  }
-
-  const body = {
-    name,
-    tags,
-    artist_ids: selectedIntentArtistIds(),
-    platforms,
-    distribution: {
-      five: chances["chance-five"] / 100,
-      four: chances["chance-four"] / 100,
-      three: chances["chance-three"] / 100,
-      two: chances["chance-two"] / 100,
-      one: chances["chance-one"] / 100,
-      unrated: chances["chance-unrated"] / 100,
-    },
-  };
-
-  status.textContent = editId ? "Saving intent…" : "Creating intent…";
-  try {
-    const res = await fetch(editId ? `/api/intents/${editId}` : "/api/intents", {
-      method: editId ? "PATCH" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = data.detail;
-      status.textContent =
-        typeof detail === "string"
-          ? detail
-          : detail?.[0]?.msg || (editId ? "Update intent failed" : "Create intent failed");
-      return;
-    }
-    const filling = data.fill_in_progress ? " · filling caches…" : "";
-    status.textContent = editId
-      ? `Updated “${data.intent.name}”${filling}`
-      : `Created “${data.intent.name}”${filling}`;
-    resetIntentForm();
-    await refreshIntents();
-    await refreshFiles();
-  } catch (err) {
-    status.textContent = editId ? "Update intent request failed" : "Create intent request failed";
-    console.error(err);
-  }
 });
 
 document.getElementById("sync-btn").addEventListener("click", async () => {
@@ -4540,7 +5210,8 @@ function connectViewNotices() {
   initSectionInfo();
   initSectionNav();
   initActionTips();
-  initChanceSelects();
+  const expandBtn = document.getElementById("intent-expand");
+  if (expandBtn) setSymbolButton(expandBtn, BTN.add, "Create intent");
   const playerStarsRoot = document.getElementById("player-stars");
   if (playerStarsRoot) {
     playerStarRating = mountStarRating(playerStarsRoot, {
@@ -4571,14 +5242,6 @@ function connectViewNotices() {
         if (!currentMixId) throw new Error("Nothing to tag");
         await mixTagHandlers(currentMixId).onRemove(tag);
       },
-    });
-  }
-  const intentTagRoot = document.getElementById("intent-tag-editor");
-  if (intentTagRoot) {
-    intentTagEditor = mountTagEditor(intentTagRoot, {
-      tags: [],
-      async onAdd() {},
-      async onRemove() {},
     });
   }
   const rejectedFilter = document.getElementById("catalog-show-rejected");

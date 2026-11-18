@@ -328,6 +328,10 @@ form.add-form-open .add-form-fields-inline {
   margin: 0.75rem 0;
 }
 
+#intent-form.add-form-open .add-form-actions {
+  display: none;
+}
+
 .inline-field {
   display: flex;
   flex-direction: column;
@@ -884,7 +888,7 @@ button,
 .hours-editor select,
 #peers input:not([type="checkbox"]):not([type="range"]),
 #artists-form input:not([type="checkbox"]):not([type="range"]),
-#intents input:not([type="checkbox"]):not([type="range"]),
+#intents input:not([type="checkbox"]):not([type="range"]):not(.tag-picker-input),
 #intents select,
 #player input:not([type="checkbox"]):not([type="range"]):not(.tag-picker-input),
 #player select,
@@ -936,6 +940,7 @@ button.tag-chip-x {
 }
 
 .tag-chip:hover > .tag-chip-x,
+.artist-chip:hover > .tag-chip-x,
 button.tag-chip-x.is-armed {
   display: inline-flex;
 }
@@ -968,15 +973,6 @@ select {
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   padding-right: 1.75rem;
-}
-
-#intent-artists {
-  appearance: auto;
-  height: auto;
-  min-height: calc(var(--control-height) * 3);
-  line-height: 1.3;
-  padding: 0.35rem 0.5rem;
-  background-image: none;
 }
 
 button:disabled {
@@ -1119,6 +1115,194 @@ button:disabled {
   min-width: 0;
 }
 
+.intent-composer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  width: 100%;
+  margin: 0 0 0.5rem;
+}
+
+.intent-form-name-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  max-width: 100%;
+  margin: 0.15rem 0 0.25rem;
+}
+
+.intent-form-name-row .intent-form-name {
+  display: block;
+  box-sizing: border-box;
+  flex: 0 0 12rem;
+  width: 12rem;
+  max-width: min(12rem, calc(100% - 5.5rem));
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.intent-form-name-row > button {
+  flex: 0 0 auto;
+}
+
+.intent-form-name-row > button:first-of-type {
+  margin-left: auto;
+}
+
+.intent-form-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  margin: 0;
+  color: var(--muted);
+}
+
+.intent-form-meta-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.intent-form-meta-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  line-height: var(--control-height);
+  white-space: nowrap;
+}
+
+.intent-form-meta-row .tag-editor {
+  display: inline-flex;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.intent-form-meta-row .source-toggles {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.intent-form-meta .tag-chip,
+.intent-form-meta .tag-chip-label,
+.intent-form-meta .artist-chip,
+.intent-form-meta .artist-chip-label,
+.intent-form-meta .source-toggle[aria-pressed="true"] {
+  color: var(--fg);
+}
+
+.intent-composer .intent-chances {
+  width: 100%;
+  margin: 0;
+}
+
+.intent-composer .intent-chances > summary {
+  cursor: pointer;
+  color: var(--muted);
+  list-style: none;
+}
+
+.intent-composer .intent-chances > summary::-webkit-details-marker {
+  display: none;
+}
+
+.intent-composer .artist-editor .tag-picker-input {
+  width: 9.5rem;
+}
+
+#intent-list .intent-composer-edit {
+  margin-bottom: 0.5rem;
+}
+
+.artist-editor .tag-chips:has(.artist-chip) > .tag-chip-add,
+.artist-editor .tag-chips:has(.artist-chip) > .tag-picker-wrap {
+  margin-left: 0.45rem;
+}
+
+.artist-chip {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: var(--control-height);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.artist-chip:hover {
+  z-index: 1;
+}
+
+.artist-chip-sep {
+  color: var(--muted);
+  line-height: var(--control-height);
+  white-space: pre;
+}
+
+.artist-suggest-list {
+  position: absolute;
+  top: calc(100% + 0.2rem);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 100%;
+  padding: 0.25rem 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 6px 18px color-mix(in srgb, #000 35%, transparent);
+}
+
+button.artist-suggest {
+  display: block;
+  margin: 0;
+  padding: 0.15rem 0.2rem;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 400;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.artist-suggest.is-active,
+button.artist-suggest:hover {
+  color: var(--accent);
+  background: transparent;
+  border: none;
+}
+
 #intent-list .intent-meta-platforms {
   display: inline-flex;
   align-items: center;
@@ -1234,12 +1418,20 @@ button:disabled {
 
 
 #intent-list .hours-editor {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.4rem;
   margin-top: 0.5rem;
 }
 
-#intent-list .hours-editor .inline-field input,
-#intent-list .hours-editor .inline-field select {
-  max-width: 10rem;
+#intent-list .hours-editor input,
+#intent-list .hours-editor select {
+  max-width: 8rem;
+}
+
+#intent-list .hours-editor input[type="number"] {
+  max-width: 5.5rem;
 }
 
 #intent-list .intent-seq-table {
