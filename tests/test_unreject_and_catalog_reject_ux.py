@@ -268,14 +268,21 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
     assert 'id="catalog-show-rejected"' in html
+    assert 'id="play-history-show-rejected"' in html
     assert 'id="catalog-source-filters"' in html
+    assert 'id="catalog-star-filters"' in html
     assert 'id="catalog-tag-filters"' in html
     assert "showRejectedCatalog" in js
+    assert "syncRejectedToggle" in js
     assert "catalogFilterPlatforms" in js
+    assert "catalogFilterMinStars" in js
     assert "catalogFilterTags" in js
+    assert "confirmRemove: false" in js
     assert "mixMatchesCatalogFilters" in js
+    assert "mountCatalogStarFloor" in js
     assert "mountCatalogFilters" in js
     assert "resetCatalogFilters" in js
+    assert "filter-chip" not in html
     assert "mix-rejected" in js
     assert "/api/mixes/${mix.id}/un-reject" in js
     assert "artistGroupStats" in js

@@ -12,10 +12,14 @@ const hoursEditorState = new Map();
 let showRejectedCatalog = false;
 /** Catalog source filter (OR); default all platforms once mounted. */
 let catalogFilterPlatforms = [];
+/** Catalog minimum stars filter; null = any rating (incl. unrated). */
+let catalogFilterMinStars = null;
 /** Catalog tag filter (AND); empty = no tag constraint. */
 let catalogFilterTags = [];
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let catalogTagFilterEditor = null;
+/** @type {{ setFloor: (n: number|null) => void, getFloor: () => number|null } | null} */
+let catalogStarFilter = null;
 /** Play history Rejected filter (default off). */
 let showRejectedHistory = false;
 let rejectUndoTimer = null;
@@ -287,17 +291,19 @@ function renderTagChipsDisplay(tags, allTags) {
 }
 
 /**
- * Chip tag editor: thin colored chips, confirm-to-remove, + picker.
+ * Chip tag editor: thin colored chips, confirm-to-remove (optional), + picker.
  * @param {HTMLElement} root
  * @param {{
  *   tags?: string[],
  *   onAdd: (tag: string) => Promise<void> | void,
  *   onRemove: (tag: string) => Promise<void> | void,
  *   getCatalogTags?: () => string[],
+ *   confirmRemove?: boolean,
  * }} options
  */
 function mountTagEditor(root, options) {
   const getCatalogTags = options.getCatalogTags || (() => catalogTagsCache);
+  const confirmRemove = options.confirmRemove !== false;
   let tags = (options.tags || []).map(normalizeTag).filter(Boolean);
   let confirming = null;
   let picking = false;
@@ -545,7 +551,7 @@ function mountTagEditor(root, options) {
       remove.className = "tag-chip-x";
       // pointerdown (not click): player poll remounts chips between mousedown and
       // click, which can deliver the click to a different tag's ×.
-      if (confirming === tag) {
+      if (confirmRemove && confirming === tag) {
         remove.classList.add("confirm-pending", "is-armed");
         remove.textContent = BTN.confirmDelete;
         remove.setAttribute("aria-label", `Really remove “${tag}”?`);
@@ -561,7 +567,8 @@ function mountTagEditor(root, options) {
         remove.addEventListener("pointerdown", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          armConfirm(tag);
+          if (confirmRemove) armConfirm(tag);
+          else void removeTag(tag);
         });
       }
       chip.appendChild(remove);
@@ -3118,6 +3125,11 @@ function mixMatchesCatalogFilters(mix) {
   ) {
     return false;
   }
+  if (catalogFilterMinStars != null) {
+    if (mix.stars == null || Number(mix.stars) < catalogFilterMinStars) {
+      return false;
+    }
+  }
   if (
     catalogFilterTags.length &&
     !catalogFilterTags.every((t) => (mix.tags || []).includes(t))
@@ -3125,6 +3137,66 @@ function mixMatchesCatalogFilters(mix) {
     return false;
   }
   return true;
+}
+
+/**
+ * Catalog toolbar: click N★ to keep rating ≥ N; click again to clear.
+ * @param {HTMLElement} root
+ * @param {{ floor?: number|null, onChange: (floor: number|null) => Promise<void>|void }} options
+ */
+function mountCatalogStarFloor(root, options) {
+  let floor =
+    options.floor != null && options.floor !== ""
+      ? Number(options.floor)
+      : null;
+  root.classList.add("star-rating");
+  root.setAttribute("role", "group");
+
+  function paint() {
+    root.dataset.stars = floor != null ? String(floor) : "";
+    root.setAttribute(
+      "aria-label",
+      floor != null ? `${floor}★ and up` : "Any rating",
+    );
+    root.replaceChildren();
+    for (let s = 1; s <= 5; s += 1) {
+      const filled = floor != null && s <= floor;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `star-rating-star ${filled ? "is-filled" : "is-empty"}`;
+      btn.textContent = filled ? "★" : "☆";
+      btn.setAttribute("aria-pressed", floor === s ? "true" : "false");
+      btn.setAttribute(
+        "aria-label",
+        floor === s ? `Clear ${s}★ minimum` : `${s}★ and up`,
+      );
+      btn.title = floor === s ? "Clear rating filter" : `${s}★ and up`;
+      btn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        floor = floor === s ? null : s;
+        paint();
+        await options.onChange(floor);
+      });
+      root.appendChild(btn);
+    }
+  }
+
+  paint();
+  return {
+    setFloor(value) {
+      floor = value != null && value !== "" ? Number(value) : null;
+      paint();
+    },
+    getFloor() {
+      return floor;
+    },
+  };
+}
+
+function syncRejectedToggle(btn, on) {
+  if (!btn) return;
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = on ? "♻" : "♲";
 }
 
 function mountCatalogFilters() {
@@ -3140,14 +3212,15 @@ function mountCatalogFilters() {
       btn.type = "button";
       btn.className = "source-toggle";
       btn.dataset.platform = platform;
-      btn.setAttribute("aria-pressed", "true");
+      btn.setAttribute("aria-pressed", "false");
       btn.title = PLATFORM_LABELS[platform] || platform;
       btn.setAttribute("aria-label", PLATFORM_LABELS[platform] || platform);
       btn.innerHTML = PLATFORM_SVG[platform] || "";
       platformsRoot.appendChild(btn);
     }
     sourcesRoot.appendChild(platformsRoot);
-    catalogFilterPlatforms = [...DEFAULT_INTENT_PLATFORMS];
+    // Empty = any source (same as empty tag filter).
+    catalogFilterPlatforms = [];
 
     function readPlatforms() {
       return Array.from(platformsRoot.querySelectorAll(".source-toggle"))
@@ -3160,14 +3233,22 @@ function mountCatalogFilters() {
       const btn = event.target.closest(".source-toggle");
       if (!btn || !platformsRoot.contains(btn)) return;
       const pressed = btn.getAttribute("aria-pressed") === "true";
-      if (pressed) {
-        if (readPlatforms().length <= 1) return;
-        btn.setAttribute("aria-pressed", "false");
-      } else {
-        btn.setAttribute("aria-pressed", "true");
-      }
+      btn.setAttribute("aria-pressed", pressed ? "false" : "true");
       catalogFilterPlatforms = readPlatforms();
       await refreshMixes({ force: true });
+    });
+  }
+
+  const starsRoot = document.getElementById("catalog-star-filters");
+  if (starsRoot) {
+    starsRoot.replaceChildren();
+    catalogFilterMinStars = null;
+    catalogStarFilter = mountCatalogStarFloor(starsRoot, {
+      floor: null,
+      async onChange(floor) {
+        catalogFilterMinStars = floor;
+        await refreshMixes({ force: true });
+      },
     });
   }
 
@@ -3177,6 +3258,7 @@ function mountCatalogFilters() {
     catalogFilterTags = [];
     catalogTagFilterEditor = mountTagEditor(tagsRoot, {
       tags: [],
+      confirmRemove: false,
       getCatalogTags: () => catalogTagsCache,
       async onAdd(tag) {
         catalogFilterTags = [...catalogFilterTags, tag];
@@ -3192,17 +3274,18 @@ function mountCatalogFilters() {
 }
 
 function resetCatalogFilters() {
-  catalogFilterPlatforms = [...DEFAULT_INTENT_PLATFORMS];
+  catalogFilterPlatforms = [];
+  catalogFilterMinStars = null;
   catalogFilterTags = [];
+  showRejectedCatalog = false;
+  syncRejectedToggle(document.getElementById("catalog-show-rejected"), false);
   const sourcesRoot = document.getElementById("catalog-source-filters");
   if (sourcesRoot) {
     for (const btn of sourcesRoot.querySelectorAll(".source-toggle")) {
-      btn.setAttribute(
-        "aria-pressed",
-        catalogFilterPlatforms.includes(btn.dataset.platform) ? "true" : "false",
-      );
+      btn.setAttribute("aria-pressed", "false");
     }
   }
+  catalogStarFilter?.setFloor(null);
   catalogTagFilterEditor?.setTags([]);
 }
 
@@ -5448,14 +5531,18 @@ document.getElementById("player-undo-reject").addEventListener("click", async ()
   }
 });
 
-document.getElementById("catalog-show-rejected")?.addEventListener("change", async (event) => {
-  showRejectedCatalog = Boolean(event.target.checked);
+document.getElementById("catalog-show-rejected")?.addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  showRejectedCatalog = btn.getAttribute("aria-pressed") !== "true";
+  syncRejectedToggle(btn, showRejectedCatalog);
   await refreshMixes({ force: true });
 });
 
-document.getElementById("play-history-show-rejected")?.addEventListener("change", async (event) => {
-  showRejectedHistory = Boolean(event.target.checked);
-  await refreshMixes({ force: true });
+document.getElementById("play-history-show-rejected")?.addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  showRejectedHistory = btn.getAttribute("aria-pressed") !== "true";
+  syncRejectedToggle(btn, showRejectedHistory);
+  await refreshPlayHistory();
 });
 
 /** Notice section taxonomy mirrored from DeviceAgent UI view notices. */
@@ -5555,18 +5642,10 @@ function connectViewNotices() {
       },
     });
   }
-  const rejectedFilter = document.getElementById("catalog-show-rejected");
-  if (rejectedFilter) {
-    rejectedFilter.checked = false;
-    showRejectedCatalog = false;
-  }
   mountCatalogFilters();
   resetCatalogFilters();
-  const historyRejectedFilter = document.getElementById("play-history-show-rejected");
-  if (historyRejectedFilter) {
-    historyRejectedFilter.checked = false;
-    showRejectedHistory = false;
-  }
+  showRejectedHistory = false;
+  syncRejectedToggle(document.getElementById("play-history-show-rejected"), false);
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();

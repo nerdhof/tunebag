@@ -135,10 +135,16 @@
           </span>
         </h2>
         <div class="catalog-toolbar">
-          <label class="filter-chip" title="Show rejected releases (muted)">
-            <input type="checkbox" id="play-history-show-rejected" />
-            Rejected
-          </label>
+          <button
+            type="button"
+            id="play-history-show-rejected"
+            class="source-toggle"
+            aria-pressed="false"
+            title="Show rejected releases (muted)"
+            aria-label="Show rejected releases"
+          >
+            ♲
+          </button>
         </div>
         <div id="play-history-table-wrap">
           <table id="play-history-table">
@@ -259,14 +265,25 @@
           </span>
         </h2>
         <div class="catalog-toolbar">
-          <label class="filter-chip" title="Show rejected releases (muted)">
-            <input type="checkbox" id="catalog-show-rejected" />
-            Rejected
-          </label>
+          <button
+            type="button"
+            id="catalog-show-rejected"
+            class="source-toggle"
+            aria-pressed="false"
+            title="Show rejected releases (muted)"
+            aria-label="Show rejected releases"
+          >
+            ♲
+          </button>
           <div
             id="catalog-source-filters"
             class="catalog-source-filters"
-            title="Show releases from these sources"
+            title="Show releases from these sources (none = any)"
+          ></div>
+          <div
+            id="catalog-star-filters"
+            class="catalog-star-filters"
+            title="Minimum rating (click again to clear)"
           ></div>
           <div
             id="catalog-tag-filters"
