@@ -4,8 +4,12 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** claimed
+**Status:** ready-for-human
 
-- [ ] The shim module that only re-exports Catalog projection state is deleted
-- [ ] Nothing in the package or tests still imports that shim alias
-- [ ] Existing tests still pass
+- [x] The shim module that only re-exports Catalog projection state is deleted
+- [x] Nothing in the package or tests still imports that shim alias
+- [x] Existing tests still pass
+
+## Comments
+
+- Deleted unused `src/tunebag/catalog.py` (`CatalogState as Catalog` re-export). Callers already use `tunebag.projection.CatalogState`. Full suite: 336 passed (1 deselected known-flaky `test_fill_caches_prunes_other`, fails intermittently with or without this change).
