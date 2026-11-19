@@ -168,6 +168,15 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     app.state.agent = agent
 
     if STATIC_DIR.exists():
+        # Before StaticFiles mount so app.js is never stuck on a long browser cache.
+        @app.get("/static/app.js")
+        def companion_app_js() -> FileResponse:
+            return FileResponse(
+                STATIC_DIR / "app.js",
+                media_type="text/javascript",
+                headers={"Cache-Control": "no-store"},
+            )
+
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")

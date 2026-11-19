@@ -35,6 +35,10 @@ let lastKnownPositionSeconds = 0;
 let playheadCommitInFlight = false;
 /** Heartbeat only; pause/stop/seek/skip/track boundaries commit immediately. */
 const PLAYHEAD_COMMIT_MS = 5 * 60 * 1000;
+/** How often to hit GET /api/player while playing (seekbar ticks locally between). */
+const PLAYER_POLL_MS = 2000;
+/** Local seekbar/clock refresh between server polls. */
+const PLAYER_UI_TICK_MS = 250;
 /** Mix id already announced as marked played during this play session. */
 let playheadPlayedNotifiedForMix = null;
 /** Last player poll: used so intent-list play buttons stay in sync. */
@@ -2799,6 +2803,12 @@ function formatClock(seconds) {
 
 let playerSeekDragging = false;
 let playerPollTimer = null;
+let playerUiTickTimer = null;
+/** Wall-clock sync for local seekbar extrapolation between server polls. */
+let playerPositionSyncedAt = 0;
+let playerPositionSyncedSeconds = 0;
+let playerDurationSeconds = 0;
+let playerLocalPlaying = false;
 let playerSeekTracks = [];
 let playerSeekArtist = "";
 /** Stable key for current marks layout; skip DOM rebuild while unchanged. */
@@ -2836,16 +2846,55 @@ function focusInside(el) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+function extrapolatedPlayerPosition() {
+  if (!playerLocalPlaying || playerDurationSeconds <= 0) {
+    return playerPositionSyncedSeconds;
+  }
+  const elapsed = (Date.now() - playerPositionSyncedAt) / 1000;
+  return Math.max(
+    0,
+    Math.min(playerDurationSeconds, playerPositionSyncedSeconds + elapsed),
+  );
+}
+
+function tickPlayerUi() {
+  if (!playerLocalPlaying || playerSeekDragging) return;
+  const pos = extrapolatedPlayerPosition();
+  lastKnownPositionSeconds = pos;
+  // Position/clock only — do not call updateSeekBar (that rebuilds marks and
+  // would clear album titles when tracks are omitted).
+  const seekbar = document.getElementById("player-seekbar");
+  const currentEl = document.getElementById("player-time-current");
+  if (!seekbar || !currentEl) return;
+  const duration = playerDurationSeconds;
+  const clamped = Math.max(0, Math.min(duration, Math.round(pos)));
+  seekbar.value = String(clamped);
+  syncSeekProgress(seekbar);
+  currentEl.textContent = formatClock(clamped);
+}
+
 function setPlayerPolling(playing) {
+  playerLocalPlaying = Boolean(playing);
   if (playing) {
     if (playerPollTimer == null) {
       playerPollTimer = setInterval(() => {
         void refreshPlayer();
-      }, 500);
+      }, PLAYER_POLL_MS);
     }
-  } else if (playerPollTimer != null) {
-    clearInterval(playerPollTimer);
-    playerPollTimer = null;
+    if (playerUiTickTimer == null) {
+      playerUiTickTimer = setInterval(() => {
+        tickPlayerUi();
+      }, PLAYER_UI_TICK_MS);
+    }
+  } else {
+    if (playerPollTimer != null) {
+      clearInterval(playerPollTimer);
+      playerPollTimer = null;
+    }
+    if (playerUiTickTimer != null) {
+      clearInterval(playerUiTickTimer);
+      playerUiTickTimer = null;
+    }
   }
 }
 
@@ -4139,11 +4188,13 @@ async function maybeCommitPlayhead(playing) {
   if (now - lastPlayheadCommitAt < PLAYHEAD_COMMIT_MS) return;
   playheadCommitInFlight = true;
   lastPlayheadCommitAt = now;
+  const position = extrapolatedPlayerPosition();
+  lastKnownPositionSeconds = position;
   try {
     const res = await fetch("/api/player/playhead", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ position_seconds: lastKnownPositionSeconds }),
+      body: JSON.stringify({ position_seconds: position }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return;
@@ -4340,6 +4391,9 @@ async function refreshPlayer() {
     lastKnownPositionSeconds = 0;
     lastPlayheadCommitAt = 0;
     playheadPlayedNotifiedForMix = null;
+    playerPositionSyncedSeconds = 0;
+    playerPositionSyncedAt = 0;
+    playerDurationSeconds = 0;
     if (playerTagEditor && !playerTagEditor.isBusy()) {
       playerTagEditor.setTags([]);
     }
@@ -4351,6 +4405,9 @@ async function refreshPlayer() {
     return;
   }
   const pos = Math.round(data.position_seconds || 0);
+  playerDurationSeconds = Math.max(0, Math.round(data.duration_seconds || 0));
+  playerPositionSyncedSeconds = pos;
+  playerPositionSyncedAt = Date.now();
   if (!playerSeekDragging) {
     lastKnownPositionSeconds = pos;
   }

@@ -152,5 +152,8 @@ def test_stop_with_position_flushes_playhead_to_peer(tmp_path: Path) -> None:
 def test_companion_playhead_heartbeat_is_five_minutes() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     js = (root / "app.js").read_text()
+    html = (root / "index.html").read_text()
     assert "PLAYHEAD_COMMIT_MS = 5 * 60 * 1000" in js
+    assert "PLAYER_POLL_MS = 2000" in js
     assert "position_seconds: Math.max(0, lastKnownPositionSeconds)" in js
+    assert "/static/app.js?v=68" in html

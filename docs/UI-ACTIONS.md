@@ -115,7 +115,7 @@ Not user verbs in this contract (APIs may still exist until an implementation pa
 
 Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Intent verbs / Fill cleanup (ui-actions 05):
 
-- Player still polls while playing (transport/position) until a cheap Player push exists
+- Player still polls while playing (transport/position, every 2s + local seekbar tick) until a cheap Player push exists
 - Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
 
 Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when live position crosses the **Last heard** or **Played** threshold (so Play history updates promptly), plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. Heartbeat ticks must **not** rebuild Catalog / Play history and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync).
