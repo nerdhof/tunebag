@@ -70,8 +70,6 @@ class CatalogState:
         self.pending_assignments: dict[tuple[UUID, UUID], Assignment | None] = {}
         # Sticky until local re-pair; remote DEVICE_PAIRED cannot undo.
         self.unpaired_device_ids: set[UUID] = set()
-        # Events whose author is not yet in Catalog; flushed on DEVICE_PAIRED / pair.
-        self.unknown_author_buffer: dict[UUID, Event] = {}
 
     def add_artist(self, artist: Artist) -> Artist:
         self.artists[artist.id] = artist
@@ -497,7 +495,10 @@ def _apply_device_paired(
 
 
 def _revoke_peer_in_catalog(state: CatalogState, device_id: UUID) -> None:
-    """Drop trust and hours/assignments/buffer for a Peer; Catalog rows stay."""
+    """Drop trust and hours/assignments for a Peer; Catalog rows stay.
+
+    Unknown-author buffer clearing is CatalogJournal policy, not projection state.
+    """
     state.unpaired_device_ids.add(device_id)
     state.remove_device(device_id)
     for intent in list(state.intents.values()):
@@ -507,9 +508,6 @@ def _revoke_peer_in_catalog(state: CatalogState, device_id: UUID) -> None:
         state.clear_assignment(intent.id, device_id)
     for key in [k for k in state.pending_assignments if k[1] == device_id]:
         del state.pending_assignments[key]
-    for event_id, buffered in list(state.unknown_author_buffer.items()):
-        if buffered.device_id == device_id:
-            state.unknown_author_buffer.pop(event_id, None)
 
 
 def _apply_mix_added(state: CatalogState, payload: dict[str, Any]) -> None:

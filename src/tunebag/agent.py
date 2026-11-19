@@ -2792,52 +2792,8 @@ class DeviceAgent:
             )
 
     def _ingest(self, event: Event) -> None:
-        with self._journal.hold():
-            if event.id in self._journal._seen_event_ids:
-                return
-            if event.device_id == self.device.id:
-                return
-            if event.device_id in self.catalog.unpaired_device_ids:
-                return
-            author = self.catalog.devices.get(event.device_id)
-            if author is None:
-                self.catalog.unknown_author_buffer[event.id] = event
-                return
-            self.catalog.unknown_author_buffer.pop(event.id, None)
-            self._commit_foreign_event(event, author.public_key_pem)
-
-    def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
-        """Verify, append, and apply a peer event. Caller must hold journal lock."""
-        if not self._verify(event, public_key_pem):
-            raise InvalidSignature("event signature mismatch")
-        self._journal._seen_event_ids.add(event.id)
-        self._log.append(event)
-        self._journal._apply_live(event)
-        self._record_view_sections_for_event(event.type)
-
-    def _flush_buffered_events_for(self, author_id: UUID) -> None:
-        """Verify and apply buffered events for a newly known author.
-
-        Caller must hold journal lock. Applying a buffered ``DEVICE_PAIRED``
-        may flush further authors. Order follows signed author time then seq.
-        """
-        pending = sorted(
-            (
-                event
-                for event in self.catalog.unknown_author_buffer.values()
-                if event.device_id == author_id
-            ),
-            key=lambda e: (e.created_at, int(e.seq), e.id),
-        )
-        for event in pending:
-            self.catalog.unknown_author_buffer.pop(event.id, None)
-            if event.id in self._journal._seen_event_ids:
-                continue
-            author = self.catalog.devices.get(event.device_id)
-            if author is None:
-                self.catalog.unknown_author_buffer[event.id] = event
-                continue
-            self._commit_foreign_event(event, author.public_key_pem)
+        """Peer Event ingest via CatalogJournal (dedupe / buffer / verify / apply)."""
+        self._journal.ingest_foreign(event)
 
     def _upsert_intent_and_rebuild(
         self,
@@ -2942,16 +2898,14 @@ class DeviceAgent:
             self.remove_local_file(retired_mix_id)
 
     def _on_journal_applied(self, event: Event, effects: LocalEffects) -> None:
-        """Live apply side effects: LocalEffects, unpair cleanup, and pair buffer flush.
+        """Live apply side effects: LocalEffects, UI notices, and unpair cleanup.
 
-        Buffer flush stays here until CatalogJournal owns foreign ingest (ticket 03).
+        Unknown-author buffer flush is CatalogJournal policy (before this callback).
         """
         self._run_local_effects(effects)
-        if event.type is EventType.DEVICE_PAIRED:
-            device_id = UUID(event.payload["id"])
-            if device_id != self.device.id and device_id in self.catalog.devices:
-                self._flush_buffered_events_for(device_id)
-        elif event.type is EventType.DEVICE_UNPAIRED:
+        if event.device_id != self.device.id:
+            self._record_view_sections_for_event(event.type)
+        if event.type is EventType.DEVICE_UNPAIRED:
             device_id = UUID(event.payload["id"])
             if device_id != self.device.id:
                 self._cleanup_revoked_peer_session(device_id)

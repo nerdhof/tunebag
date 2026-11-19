@@ -104,6 +104,162 @@ def test_replay_rebuilds_catalog_without_on_applied() -> None:
     assert next_event.seq == 4
 
 
+def _foreign_event(
+    *,
+    event_type: EventType,
+    author_id: UUID,
+    payload: dict,
+    created_at: datetime | None = None,
+    seq: int = 1,
+    signature: str = "sig",
+) -> Event:
+    return Event(
+        type=event_type,
+        device_id=author_id,
+        created_at=created_at or datetime(2024, 1, 1, 12, 0, 0),
+        seq=seq,
+        payload=payload,
+        signature=signature,
+    )
+
+
+def _pair_payload(device_id: UUID, *, name: str = "peer") -> dict:
+    return {
+        "id": str(device_id),
+        "name": name,
+        "public_key_pem": f"pem-{device_id}",
+        "priority": 10,
+    }
+
+
+def test_ingest_foreign_buffers_unknown_author_until_paired() -> None:
+    journal, catalog, log, applied, _local_id = _make_journal()
+    author_id = uuid4()
+    artist_id = uuid4()
+    foreign = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=author_id,
+        payload=_artist_payload(artist_id),
+    )
+
+    journal.ingest_foreign(foreign)
+
+    assert artist_id not in catalog.artists
+    assert applied == []
+    assert log.all() == []
+
+    pair = journal.append_local(EventType.DEVICE_PAIRED, _pair_payload(author_id))
+
+    assert artist_id in catalog.artists
+    assert catalog.artists[artist_id].name == "DJ Example"
+    assert foreign.id in {e.id for e in log.all()}
+    # Pair Event's on_applied runs after the buffered flush.
+    assert [e.id for e, _ in applied] == [foreign.id, pair.id]
+
+
+def test_ingest_foreign_silently_skips_dedupe_self_and_unpaired() -> None:
+    journal, catalog, log, applied, local_id = _make_journal()
+    author_id = uuid4()
+    journal.append_local(EventType.DEVICE_PAIRED, _pair_payload(author_id))
+    applied.clear()
+
+    artist_id = uuid4()
+    foreign = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=author_id,
+        payload=_artist_payload(artist_id),
+    )
+    journal.ingest_foreign(foreign)
+    assert artist_id in catalog.artists
+    assert len(applied) == 1
+
+    journal.ingest_foreign(foreign)  # dedupe
+    self_authored = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=local_id,
+        payload=_artist_payload(uuid4()),
+    )
+    journal.ingest_foreign(self_authored)
+
+    unpaired_id = uuid4()
+    catalog.unpaired_device_ids.add(unpaired_id)
+    unpaired = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=unpaired_id,
+        payload=_artist_payload(uuid4()),
+    )
+    journal.ingest_foreign(unpaired)
+
+    assert len(applied) == 1
+    assert len(log.all()) == 2  # pair + first foreign
+
+
+def test_ingest_foreign_known_author_applies_and_bad_sig_fails_fast() -> None:
+    from cryptography.exceptions import InvalidSignature
+
+    catalog = CatalogState()
+    log = EventLog()
+    applied: list[tuple[Event, LocalEffects]] = []
+    local_id = uuid4()
+    author_id = uuid4()
+    verify_ok = {"value": True}
+
+    journal = CatalogJournal(
+        catalog=catalog,
+        log=log,
+        local_device_id=local_id,
+        local_public_key_pem="local-pem",
+        clock=lambda: datetime(2024, 1, 1, 12, 0, 0),
+        sign=lambda event: "sig",
+        verify=lambda event, pem: verify_ok["value"],
+        on_applied=lambda event, effects: applied.append((event, effects)),
+    )
+    journal.append_local(EventType.DEVICE_PAIRED, _pair_payload(author_id))
+    applied.clear()
+
+    artist_id = uuid4()
+    foreign = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=author_id,
+        payload=_artist_payload(artist_id),
+    )
+    journal.ingest_foreign(foreign)
+    assert artist_id in catalog.artists
+    assert [e.id for e, _ in applied] == [foreign.id]
+
+    verify_ok["value"] = False
+    bad = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=author_id,
+        payload=_artist_payload(uuid4()),
+        signature="bad",
+    )
+    try:
+        journal.ingest_foreign(bad)
+        raise AssertionError("expected InvalidSignature")
+    except InvalidSignature:
+        pass
+    assert bad.id not in {e.id for e in log.all()}
+
+
+def test_unpair_drops_buffered_events_so_re_pair_does_not_apply_them() -> None:
+    journal, catalog, log, _applied, _local_id = _make_journal()
+    author_id = uuid4()
+    artist_id = uuid4()
+    foreign = _foreign_event(
+        event_type=EventType.ARTIST_ADDED,
+        author_id=author_id,
+        payload=_artist_payload(artist_id),
+    )
+    journal.ingest_foreign(foreign)
+    journal.append_local(EventType.DEVICE_UNPAIRED, {"id": str(author_id)})
+
+    journal.append_local(EventType.DEVICE_PAIRED, _pair_payload(author_id))
+
+    assert artist_id not in catalog.artists
+    assert foreign.id not in {e.id for e in log.all()}
+
+
 def test_hold_export_never_sees_half_written_section() -> None:
     journal, _catalog, _log, _applied, _device_id = _make_journal()
     first_id = uuid4()

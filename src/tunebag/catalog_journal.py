@@ -12,7 +12,8 @@ from uuid import UUID
 from cryptography.exceptions import InvalidSignature
 
 from tunebag.events import Event, EventLog, EventType
-from tunebag.projection import CatalogState, LocalEffects, apply as apply_catalog_event
+from tunebag.projection import CatalogState, LocalEffects
+from tunebag.projection import apply as apply_catalog_event
 
 OnApplied = Callable[[Event, LocalEffects], None]
 SignFn = Callable[[Event], str]
@@ -21,7 +22,7 @@ ClockFn = Callable[[], datetime]
 
 
 class CatalogJournal:
-    """Owns the Event log lock, per-author seq, dedupe, sign/verify ports, and apply."""
+    """Event log spine: lock, seq, dedupe, sign/verify, unknown-author buffer, apply."""
 
     def __init__(
         self,
@@ -46,6 +47,7 @@ class CatalogJournal:
         self._lock = threading.RLock()
         self._event_seq = 0
         self._seen_event_ids: set[UUID] = set()
+        self._unknown_author_buffer: dict[UUID, Event] = {}
 
     @contextmanager
     def hold(self) -> Iterator[None]:
@@ -75,6 +77,26 @@ class CatalogJournal:
             self._apply_live(event)
             return event
 
+    def ingest_foreign(self, event: Event) -> None:
+        """Verify and apply a peer Event, or buffer it until the author is paired.
+
+        Silent skips: already seen, self-authored, or unpaired author.
+        ``InvalidSignature`` fails fast when the author is known.
+        """
+        with self._lock:
+            if event.id in self._seen_event_ids:
+                return
+            if event.device_id == self._local_device_id:
+                return
+            if event.device_id in self._catalog.unpaired_device_ids:
+                return
+            author = self._catalog.devices.get(event.device_id)
+            if author is None:
+                self._unknown_author_buffer[event.id] = event
+                return
+            self._unknown_author_buffer.pop(event.id, None)
+            self._commit_foreign(event, author.public_key_pem)
+
     def replay(self) -> None:
         """Rebuild Catalog from the durable Event log (cold start; no on_applied)."""
         with self._lock:
@@ -101,12 +123,55 @@ class CatalogJournal:
                     now=self._clock(),
                 )
 
+    def _commit_foreign(self, event: Event, public_key_pem: str) -> None:
+        """Verify, append, and live-apply a peer Event. Caller must hold ``_lock``."""
+        if not self._verify(event, public_key_pem):
+            raise InvalidSignature("event signature mismatch")
+        self._seen_event_ids.add(event.id)
+        self._log.append(event)
+        self._apply_live(event)
+
+    def _flush_buffered_events_for(self, author_id: UUID) -> None:
+        """Re-enter ``ingest_foreign`` for buffered Events of a newly known author.
+
+        Caller must hold ``_lock``. Applying a buffered ``DEVICE_PAIRED`` may
+        flush further authors. Order follows signed author time then seq.
+        """
+        pending = sorted(
+            (
+                event
+                for event in self._unknown_author_buffer.values()
+                if event.device_id == author_id
+            ),
+            key=lambda e: (e.created_at, int(e.seq), e.id),
+        )
+        for event in pending:
+            self.ingest_foreign(event)
+
+    def _drop_buffered_events_for(self, author_id: UUID) -> None:
+        """Drop buffered Events for an unpaired author. Caller must hold ``_lock``."""
+        for event_id, buffered in list(self._unknown_author_buffer.items()):
+            if buffered.device_id == author_id:
+                self._unknown_author_buffer.pop(event_id, None)
+
     def _apply_live(self, event: Event) -> None:
-        """Project one Event and invoke on_applied. Caller must hold ``_lock``."""
+        """Project one Event, flush/drop trust buffers, then on_applied.
+
+        Caller must hold ``_lock``. After live ``DEVICE_PAIRED``, buffered
+        Events for that author flush (re-entrant ingest) before ``on_applied``.
+        """
         _, effects = apply_catalog_event(
             self._catalog,
             event,
             local_device_id=self._local_device_id,
             now=self._clock(),
         )
+        if event.type is EventType.DEVICE_PAIRED:
+            device_id = UUID(event.payload["id"])
+            if device_id != self._local_device_id and device_id in self._catalog.devices:
+                self._flush_buffered_events_for(device_id)
+        elif event.type is EventType.DEVICE_UNPAIRED:
+            device_id = UUID(event.payload["id"])
+            if device_id != self._local_device_id:
+                self._drop_buffered_events_for(device_id)
         self._on_applied(event, effects)
