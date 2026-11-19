@@ -72,9 +72,13 @@ def test_player_api_uses_catalog_artist_name(tmp_path: Path) -> None:
     body = res.json()
     assert body["current_mix_id"] == str(mix.id)
     assert body["artist"] == "DJ Example"
+    assert body["artist_url"] == "https://example.com/a"
+    assert body["platform"] == Platform.SOUNDCLOUD.value
+    assert body["url"] == "https://example.com/a"
     assert body["title"] == "Set A"
     assert body["kind"] == "mix"
     assert body["tracks"] == []
+    assert body["has_cover"] is False
 
 
 def test_player_api_includes_album_track_sections(tmp_path: Path) -> None:

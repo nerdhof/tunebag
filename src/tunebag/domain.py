@@ -70,6 +70,7 @@ class Mix(BaseModel):
     url: str
     duration_seconds: int
     size_bytes: int | None = None
+    cover_url: str | None = None
     kind: ReleaseKind = ReleaseKind.MIX
     tracks: list[AlbumTrack] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)

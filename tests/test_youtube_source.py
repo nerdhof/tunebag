@@ -67,6 +67,7 @@ def _album_info(
     return {
         "id": olak_id,
         "title": title,
+        "thumbnail": "https://i.ytimg.com/vi/cover/hqdefault.jpg",
         "entries": tracks,
     }
 
@@ -152,6 +153,7 @@ def test_youtube_lists_olak_albums_with_ordered_tracks() -> None:
     assert album.title == "Fear Inoculum"
     assert album.url == album_url
     assert album.duration_seconds == 1300
+    assert album.cover_url == "https://i.ytimg.com/vi/cover/hqdefault.jpg"
     assert len(album.tracks) == 2
     assert album.tracks[0].platform_id == VIDEO_A
     assert album.tracks[0].title == "Fear Inoculum"

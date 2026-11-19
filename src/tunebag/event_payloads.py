@@ -90,6 +90,8 @@ def encode_mix_added(mix: Mix) -> dict[str, Any]:
     }
     if mix.size_bytes is not None:
         payload["size_bytes"] = int(mix.size_bytes)
+    if mix.cover_url:
+        payload["cover_url"] = mix.cover_url
     if mix.tracks:
         payload["tracks"] = [
             {
@@ -112,6 +114,8 @@ def decode_mix_added(payload: dict[str, Any]) -> Mix:
     raw_size = payload.get("size_bytes")
     size_bytes = None if raw_size is None else int(raw_size)
     kind_raw = payload.get("kind", ReleaseKind.MIX.value)
+    raw_cover = payload.get("cover_url")
+    cover_url = str(raw_cover) if raw_cover else None
     tracks = [
         AlbumTrack(
             platform_id=str(t["platform_id"]),
@@ -131,6 +135,7 @@ def decode_mix_added(payload: dict[str, Any]) -> Mix:
         url=payload["url"],
         duration_seconds=int(payload["duration_seconds"]),
         size_bytes=size_bytes,
+        cover_url=cover_url,
         kind=ReleaseKind(kind_raw),
         tracks=tracks,
     )

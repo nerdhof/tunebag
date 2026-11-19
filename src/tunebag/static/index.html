@@ -89,31 +89,34 @@
           </div>
         </div>
         <div class="player-below">
-          <p id="player-now">Nothing playing</p>
-          <div class="form-row player-meta" aria-label="Rate and tag">
-            <div class="inline-field" title="Rate the current release from 1 to 5">
-              <div
-                id="player-stars"
-                class="star-rating"
-                role="radiogroup"
-                aria-label="Rate the current release from 1 to 5"
-              ></div>
-            </div>
-            <div class="player-reject-tags">
-              <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
-              <button
-                type="button"
-                id="player-undo-reject"
-                hidden
-                aria-label="Undo reject"
-                data-tip="Undo reject"
-              >
-                ↺
-              </button>
-              <div class="player-tags-field" title="Tags for the current release">
-                <span class="player-tags-row">
-                  <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
-                </span>
+          <img id="player-cover" class="player-cover" alt="" hidden width="80" height="80" />
+          <div class="player-below-text">
+            <p id="player-now">Nothing playing</p>
+            <div class="form-row player-meta" aria-label="Rate and tag">
+              <div class="inline-field" title="Rate the current release from 1 to 5">
+                <div
+                  id="player-stars"
+                  class="star-rating"
+                  role="radiogroup"
+                  aria-label="Rate the current release from 1 to 5"
+                ></div>
+              </div>
+              <div class="player-reject-tags">
+                <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
+                <button
+                  type="button"
+                  id="player-undo-reject"
+                  hidden
+                  aria-label="Undo reject"
+                  data-tip="Undo reject"
+                >
+                  ↺
+                </button>
+                <div class="player-tags-field" title="Tags for the current release">
+                  <span class="player-tags-row">
+                    <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
+                  </span>
+                </div>
               </div>
             </div>
           </div>

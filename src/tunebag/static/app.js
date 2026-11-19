@@ -1593,6 +1593,39 @@ const PLATFORM_SVG = {
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M23.5 7.2a3 3 0 0 0-2.1-2.1C19.5 4.6 12 4.6 12 4.6s-7.5 0-9.4.5A3 3 0 0 0 .5 7.2 31.5 31.5 0 0 0 0 12a31.5 31.5 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31.5 31.5 0 0 0 24 12a31.5 31.5 0 0 0-.5-4.8zM9.75 15.02V8.98L15.5 12l-5.75 3.02z"/></svg>',
 };
 
+/**
+ * Platform icon link to an artist or release page (catalog + player).
+ * @param {string|null|undefined} platform
+ * @param {string|null|undefined} href
+ * @param {{ page?: "artist"|"release" }} [options]
+ * @returns {HTMLAnchorElement|null}
+ */
+function createSourcePageLink(platform, href, options = {}) {
+  const url = String(href || "").trim();
+  if (!url) return null;
+  const page = options.page === "release" ? "release" : "artist";
+  const platformLabel = PLATFORM_LABELS[platform] || platform || "source";
+  const openTip = `Open ${page} page on ${platformLabel}`;
+  const link = document.createElement("a");
+  link.className = "artist-link";
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.removeAttribute("title");
+  link.setAttribute("aria-label", openTip);
+  link.dataset.tip = openTip;
+  if (platform && PLATFORM_SVG[platform]) {
+    const icon = document.createElement("span");
+    icon.className = "artist-source-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = PLATFORM_SVG[platform];
+    link.appendChild(icon);
+  } else {
+    link.textContent = "↗";
+  }
+  return link;
+}
+
 const CHANCE_FIELD_META = [
   { id: "chance-five", label: "5★", title: "Share of the sequence for 5★ releases" },
   { id: "chance-four", label: "4★", title: "Share of the sequence for 4★ releases" },
@@ -2457,6 +2490,9 @@ let playerSeekArtist = "";
 let playerSeekMarksKey = "";
 /** Track index currently highlighted (−1 = none). Survives poll refreshes. */
 let playerSeekHotIndex = -1;
+/** Stable key for #player-now; skip DOM rebuild while unchanged. */
+let playerNowKey = "";
+let playerCoverMixId = null;
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2628,7 +2664,11 @@ function seekLabelHeadroomRem(tracks, artist) {
     if (text.length > maxChars) maxChars = text.length;
   }
   // 0.7rem labels at −60°: vertical rise ≈ chars * charWidth * sin(60°) + gap.
-  return Math.min(14, Math.max(3.5, maxChars * 0.28 + 0.7));
+  const rise = Math.min(16, Math.max(3.5, maxChars * 0.28 + 0.7));
+  // Player heading + transport top margin sit inside #player's clip; reuse that
+  // band so long titles can extend into the caption instead of padding only.
+  const captionCredit = 2.5;
+  return Math.max(2.75, rise - captionCredit);
 }
 
 function setSeekLabelHeadroom(seekRow, tracks, artist) {
@@ -3343,31 +3383,16 @@ async function refreshMixes({ force = false } = {}) {
       artistLabel.appendChild(toggle);
       appendArtistFoldName(artistLabel, group.artistName, group.mixes);
       if (group.artistUrl) {
-        const platformLabel =
-          PLATFORM_LABELS[group.platform] || group.platform || "source";
-        const openTip = `Open artist page on ${platformLabel}`;
-        artistLabel.appendChild(document.createTextNode(" "));
-        const link = document.createElement("a");
-        link.className = "artist-link";
-        link.href = group.artistUrl;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.removeAttribute("title");
-        link.setAttribute("aria-label", openTip);
-        link.dataset.tip = openTip;
-        if (group.platform && PLATFORM_SVG[group.platform]) {
-          const icon = document.createElement("span");
-          icon.className = "artist-source-icon";
-          icon.setAttribute("aria-hidden", "true");
-          icon.innerHTML = PLATFORM_SVG[group.platform];
-          link.appendChild(icon);
-        } else {
-          link.textContent = "↗";
-        }
-        link.addEventListener("click", (event) => {
-          event.stopPropagation();
+        const link = createSourcePageLink(group.platform, group.artistUrl, {
+          page: "artist",
         });
-        artistLabel.appendChild(link);
+        if (link) {
+          artistLabel.appendChild(document.createTextNode(" "));
+          link.addEventListener("click", (event) => {
+            event.stopPropagation();
+          });
+          artistLabel.appendChild(link);
+        }
       }
       foldMain.appendChild(artistLabel);
       const statsEl = buildArtistStatsEl(group.mixes);
@@ -3752,7 +3777,7 @@ async function refreshPlayHistory(mixes) {
           if (status) status.textContent = data.detail || "Resume failed";
           return;
         }
-        if (status) status.textContent = `Playing “${data.mix.title}”`;
+        if (status) status.textContent = "";
         lastPlayheadCommitAt = Date.now();
         playheadPlayedNotifiedForMix = null;
         await refreshPlayer();
@@ -3975,12 +4000,72 @@ async function playIntent(intentId) {
     if (status) status.textContent = data.detail || "Play failed";
     return false;
   }
-  if (status) status.textContent = `Playing “${data.mix.title}”`;
+  if (status) status.textContent = "";
   lastPlayheadCommitAt = Date.now();
   playheadPlayedNotifiedForMix = null;
   await refreshPlayer();
   await refreshFiles();
   return true;
+}
+
+function renderPlayerCover(data) {
+  const cover = document.getElementById("player-cover");
+  if (!cover) return;
+  const mixId = data.current_mix_id || null;
+  const show = Boolean(mixId && data.has_cover);
+  if (!show) {
+    if (playerCoverMixId != null) {
+      cover.hidden = true;
+      cover.removeAttribute("src");
+      cover.alt = "";
+      playerCoverMixId = null;
+    }
+    return;
+  }
+  if (playerCoverMixId === mixId) {
+    cover.hidden = false;
+    return;
+  }
+  playerCoverMixId = mixId;
+  cover.alt = data.title ? `Cover art for ${data.title}` : "Release cover art";
+  cover.src = `/api/mixes/${mixId}/cover`;
+  cover.hidden = false;
+}
+
+function renderPlayerNow(data) {
+  const now = document.getElementById("player-now");
+  if (!now) return;
+  renderPlayerCover(data);
+  if (!data.current_mix_id) {
+    if (playerNowKey !== "idle") {
+      now.replaceChildren();
+      now.textContent = "Nothing playing";
+      playerNowKey = "idle";
+    }
+    return;
+  }
+  const title = data.title || "Untitled";
+  const artist = data.artist || "Unknown";
+  const sizePart =
+    data.size_bytes != null && Number(data.size_bytes) > 0
+      ? ` (${formatBytes(data.size_bytes)})`
+      : "";
+  const label = `${artist} - ${title}${sizePart}`;
+  const platform = data.platform || "";
+  const releaseUrl = data.url || "";
+  const artistUrl = data.artist_url || "";
+  const href = releaseUrl || artistUrl;
+  const page = releaseUrl ? "release" : "artist";
+  const key = `${data.current_mix_id}|${label}|${platform}|${href}|${page}`;
+  if (key === playerNowKey) return;
+  playerNowKey = key;
+  now.replaceChildren();
+  now.appendChild(document.createTextNode(label));
+  const link = createSourcePageLink(platform, href, { page });
+  if (link) {
+    now.appendChild(document.createTextNode(" "));
+    now.appendChild(link);
+  }
 }
 
 async function refreshPlayer() {
@@ -3990,7 +4075,7 @@ async function refreshPlayer() {
   if (!now) return;
   currentMixId = data.current_mix_id || null;
   if (!data.current_mix_id) {
-    now.textContent = "Nothing playing";
+    renderPlayerNow(data);
     lastKnownPositionSeconds = 0;
     lastPlayheadCommitAt = 0;
     playheadPlayedNotifiedForMix = null;
@@ -4008,13 +4093,7 @@ async function refreshPlayer() {
   if (!playerSeekDragging) {
     lastKnownPositionSeconds = pos;
   }
-  const title = data.title || "Untitled";
-  const artist = data.artist || "Unknown";
-  const label = `${artist} - ${title}`;
-  now.textContent =
-    data.size_bytes != null && Number(data.size_bytes) > 0
-      ? `${label} (${formatBytes(data.size_bytes)})`
-      : label;
+  renderPlayerNow(data);
   if (playerStarRating && !playerStarRating.isBusy()) {
     playerStarRating.setStars(data.stars);
   }
@@ -5363,7 +5442,7 @@ document.getElementById("player-skip").addEventListener("click", async () => {
       status.textContent = data.detail || "Skip failed";
       return;
     }
-    status.textContent = `Playing “${data.mix.title}”`;
+    status.textContent = "";
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
     await refreshPlayer();
@@ -5493,7 +5572,7 @@ async function rateCurrentPlayerMix(stars) {
     status.textContent = data.detail || "Rate failed";
     throw new Error(data.detail || "Rate failed");
   }
-  status.textContent = `Rated ${stars}★`;
+  status.textContent = "";
   await refreshMixes();
   await refreshPlayer();
 }

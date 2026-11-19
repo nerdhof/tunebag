@@ -356,19 +356,23 @@ form.add-form-open .add-form-fields-inline {
 }
 
 /*
- * Hard-clip angled seek titles at the transport edge (no clip-margin — that
- * reintroduced page scroll). Tags live in .player-below, outside this clip.
+ * Hard-clip angled seek titles at the player card edge (heading + transport +
+ * below). Clipping only the transport cut titles off under the Player caption;
+ * clip-margin reintroduced page scroll.
  */
+#player {
+  overflow: clip;
+}
+
 .player-transport {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
   align-items: stretch;
   margin: 0.75rem 0 0;
-  overflow: clip;
+  overflow: visible;
 }
 
-#player,
 .player-below {
   overflow: visible;
 }
@@ -458,11 +462,28 @@ form.add-form-open .add-form-fields-inline {
 .player-seek.has-track-labels .player-seek-main {
   padding-top: var(--seek-label-headroom, 5.5rem);
   box-sizing: content-box;
-  overflow: visible; /* transport hard-clips overhang; keep labels inside headroom */
+  overflow: visible; /* #player hard-clips overhang; headroom + caption share the band */
 }
 
 .player-below {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
   margin-top: 0.55rem;
+  min-width: 0;
+}
+
+.player-cover {
+  flex: 0 0 5rem;
+  width: 5rem;
+  height: 5rem;
+  object-fit: cover;
+  border-radius: 0.2rem;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.player-below-text {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -470,6 +491,18 @@ form.add-form-open .add-form-fields-inline {
   margin: 0 0 0.35rem;
   color: var(--fg);
   font-weight: 700;
+}
+
+#player-now .artist-link {
+  margin-left: 0.15rem;
+  vertical-align: middle;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+#player-now .artist-link:hover {
+  text-decoration: underline;
 }
 
 .form-row.player-meta {
@@ -544,7 +577,7 @@ form.add-form-open .add-form-fields-inline {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
-/* Full headroom column: hover/click target + light tint. */
+/* Full headroom column: hover/click target (no fill; bar + label carry the hot state). */
 .player-seek-section {
   position: absolute;
   left: 0;
@@ -570,7 +603,6 @@ form.add-form-open .add-form-fields-inline {
 .player-seek-section:hover,
 .player-seek-section.is-hot {
   z-index: 5;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .player-seek-duration {
@@ -1848,14 +1880,14 @@ button.artist-suggest:hover {
   text-decoration: underline;
 }
 
-#catalog-table .artist-source-icon {
+.artist-source-icon {
   display: inline-flex;
   width: 0.95em;
   height: 0.95em;
   opacity: 0.85;
 }
 
-#catalog-table .artist-source-icon svg {
+.artist-source-icon svg {
   width: 100%;
   height: 100%;
   display: block;

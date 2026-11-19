@@ -29,6 +29,7 @@ class Upload:
     url: str
     duration_seconds: int
     size_bytes: int | None = None
+    cover_url: str | None = None
     tracks: tuple[Track, ...] = ()
 
 
@@ -63,6 +64,7 @@ def release_from_upload(
             url=upload.url,
             duration_seconds=duration_seconds,
             size_bytes=size_bytes,
+            cover_url=upload.cover_url,
             kind=ReleaseKind.ALBUM,
             tracks=[
                 AlbumTrack(
@@ -85,6 +87,7 @@ def release_from_upload(
         url=upload.url,
         duration_seconds=upload.duration_seconds,
         size_bytes=upload.size_bytes,
+        cover_url=upload.cover_url,
         kind=ReleaseKind.MIX,
     )
 

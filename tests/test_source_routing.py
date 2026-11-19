@@ -138,3 +138,19 @@ def test_soundcloud_upload_reads_optional_size_bytes() -> None:
     )
     assert bare is not None
     assert bare.size_bytes is None
+
+
+def test_soundcloud_upload_upscales_artwork_url() -> None:
+    from tunebag.source.soundcloud import _soundcloud_upload
+
+    upload = _soundcloud_upload(
+        {
+            "id": 101,
+            "title": "Art",
+            "permalink_url": "https://soundcloud.com/dj/art",
+            "duration": 3_600_000,
+            "artwork_url": "https://i1.sndcdn.com/artworks-xyz-large.jpg",
+        }
+    )
+    assert upload is not None
+    assert upload.cover_url == "https://i1.sndcdn.com/artworks-xyz-t500x500.jpg"

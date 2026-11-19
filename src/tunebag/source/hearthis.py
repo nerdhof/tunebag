@@ -119,4 +119,18 @@ def _hearthis_upload(
         url=str(permalink),
         duration_seconds=duration_seconds,
         size_bytes=optional_size_bytes(item),
+        cover_url=_hearthis_cover_url(item),
     )
+
+
+def _hearthis_cover_url(item: dict) -> str | None:
+    for key in ("thumb", "artwork_url", "artwork_url_retina"):
+        raw = item.get(key)
+        if isinstance(raw, str) and raw.startswith("http"):
+            return raw
+    user = item.get("user")
+    if isinstance(user, dict):
+        avatar = user.get("avatar_url") or user.get("thumb")
+        if isinstance(avatar, str) and avatar.startswith("http"):
+            return avatar
+    return None

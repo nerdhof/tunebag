@@ -91,9 +91,12 @@ def test_mix_added_roundtrip_for_mix_release() -> None:
         url="https://example.com/m1",
         duration_seconds=5400,
         size_bytes=12_000_000,
+        cover_url="https://cdn.example/cover.jpg",
         kind=ReleaseKind.MIX,
     )
-    restored = decode_mix_added(encode_mix_added(mix))
+    payload = encode_mix_added(mix)
+    assert payload["cover_url"] == "https://cdn.example/cover.jpg"
+    restored = decode_mix_added(payload)
     assert restored.id == mix.id
     assert restored.artist_id == mix.artist_id
     assert restored.platform == mix.platform
@@ -102,8 +105,25 @@ def test_mix_added_roundtrip_for_mix_release() -> None:
     assert restored.url == mix.url
     assert restored.duration_seconds == mix.duration_seconds
     assert restored.size_bytes == mix.size_bytes
+    assert restored.cover_url == mix.cover_url
     assert restored.kind is ReleaseKind.MIX
     assert restored.tracks == []
+
+
+def test_mix_added_decode_omits_missing_cover_url() -> None:
+    mix = Mix(
+        artist_id=uuid4(),
+        platform=Platform.SOUNDCLOUD,
+        platform_id="m2",
+        title="No cover",
+        url="https://example.com/m2",
+        duration_seconds=3600,
+        kind=ReleaseKind.MIX,
+    )
+    payload = encode_mix_added(mix)
+    assert "cover_url" not in payload
+    restored = decode_mix_added(payload)
+    assert restored.cover_url is None
 
 
 def test_mix_added_roundtrip_for_album_tracks() -> None:

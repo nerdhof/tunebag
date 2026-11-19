@@ -19,6 +19,7 @@ def test_mix_upload_maps_to_mix_release() -> None:
         url="https://soundcloud.com/dj/long",
         duration_seconds=3600,
         size_bytes=12_000_000,
+        cover_url="https://i1.sndcdn.com/artworks-xyz-t500x500.jpg",
     )
     release = release_from_upload(ARTIST_ID, upload, MIN)
     assert release is not None
@@ -27,6 +28,7 @@ def test_mix_upload_maps_to_mix_release() -> None:
     assert release.platform_id == "m1"
     assert release.duration_seconds == 3600
     assert release.size_bytes == 12_000_000
+    assert release.cover_url == "https://i1.sndcdn.com/artworks-xyz-t500x500.jpg"
     assert release.tracks == []
 
 

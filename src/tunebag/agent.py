@@ -29,6 +29,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from tunebag.activity import ActivityEntry, ActivityLog
+from tunebag.cover_cache import CoverCache, CoverFetcher, cover_media_type
 from tunebag.discovery import (
     DISCOVERY_REFRESH_SECONDS,
     LanAdvertisement,
@@ -164,6 +165,7 @@ class DeviceAgent:
         player: AudioPlayer | None = None,
         clock: Callable[[], datetime] | None = None,
         discovery: LanDiscovery | None = None,
+        cover_fetch: CoverFetcher | None = None,
     ) -> None:
         # Persist identity/log/hints only for an explicit data_dir so in-process
         # multi-agent tests (default ~/.tunebag) do not collide on one identity.json.
@@ -220,6 +222,7 @@ class DeviceAgent:
             self.catalog,
             on_changed=lambda: self._mark_view_sections(UIViewSection.CACHE),
         )
+        self._covers = CoverCache(self.data_dir, fetch=cover_fetch)
         # Local-only (not events): simulated link mode, reject undo, skip delay, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
@@ -688,11 +691,47 @@ class DeviceAgent:
         return self._cache.album_bytes(mix_id)
 
     def remove_local_file(self, mix_id: UUID) -> None:
-        """Drop local audio for a Release so it can be fetched again."""
+        """Drop local audio (and cover) for a Release so it can be fetched again."""
         had = self._cache.remove(mix_id)
+        self._covers.remove(mix_id)
         self._refresh_intent_folders()
         if had:
             self._mark_view_sections(UIViewSection.CACHE)
+
+    def has_local_cover(self, mix_id: UUID) -> bool:
+        return self._covers.has(mix_id)
+
+    def has_cover(self, mix_id: UUID) -> bool:
+        """True when a local cover exists or Catalog has a fetchable cover_url."""
+        if self._covers.has(mix_id):
+            return True
+        mix = self.catalog.mixes.get(mix_id)
+        return mix is not None and bool(mix.cover_url)
+
+    def ensure_cover(self, mix_id: UUID, url: str | None = None) -> bool:
+        """Ensure local cover bytes exist. Soft-fails on network errors."""
+        if self._covers.has(mix_id):
+            return True
+        cover_url = url
+        if not cover_url:
+            mix = self.catalog.mixes.get(mix_id)
+            cover_url = mix.cover_url if mix is not None else None
+        if not cover_url:
+            return False
+        ok = self._covers.ensure(mix_id, cover_url)
+        if ok:
+            self.note(f"cover cached: {mix_id}")
+        return ok
+
+    def cover_bytes(self, mix_id: UUID) -> tuple[bytes, str] | None:
+        """Return (bytes, media_type) for a local or freshly ensured cover."""
+        if mix_id not in self.catalog.mixes:
+            return None
+        if not self.ensure_cover(mix_id):
+            return None
+        path = self._covers.path(mix_id)
+        data = path.read_bytes()
+        return data, cover_media_type(data)
 
     def intent_folder(self, intent_id: UUID) -> Path:
         """Directory of this device's assigned files for an intent."""
@@ -1256,7 +1295,9 @@ class DeviceAgent:
                     level=logging.WARNING,
                 )
                 raise
-            # Network fetch stays outside the batch so PEERS/other SSE is not held.
+            # Catalog apply stays in the batch; cover HTTP stays outside so SSE
+            # is not held across image downloads.
+            cover_jobs: list[tuple[UUID, str]] = []
             with self._view_notice_batch():
                 artist = self._artist_by_url(listing.url) or self._artist_by_url(url)
                 if artist is None:
@@ -1277,17 +1318,31 @@ class DeviceAgent:
                         },
                     )
                 kept = 0
+                by_platform = self._mixes_by_platform_key()
                 for upload in listing.uploads:
                     mix = release_from_upload(artist.id, upload, min_duration_seconds)
                     if mix is None:
                         continue
                     key = (mix.platform, mix.platform_id)
                     if key in known:
+                        existing = by_platform.get(key)
+                        if (
+                            existing is not None
+                            and upload.cover_url
+                            and not self.has_local_cover(existing.id)
+                        ):
+                            cover_jobs.append((existing.id, upload.cover_url))
                         continue
                     self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
                     known.add(key)
-                    added.append(self.catalog.mixes[mix.id])
+                    stored = self.catalog.mixes[mix.id]
+                    added.append(stored)
+                    by_platform[key] = stored
+                    if upload.cover_url:
+                        cover_jobs.append((stored.id, upload.cover_url))
                     kept += 1
+            for mix_id, cover_url in cover_jobs:
+                self.ensure_cover(mix_id, cover_url)
             self.note(
                 f"fetch artist list end: {listing.name} · "
                 f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
@@ -1307,7 +1362,11 @@ class DeviceAgent:
         *,
         min_duration_seconds: int = DEFAULT_MIN_DURATION_SECONDS,
     ) -> list[Mix]:
-        """Re-list known artists' own uploads; add new catalog rows only."""
+        """Re-list known artists' own uploads; add new catalog rows only.
+
+        Also backfills local cover art for known Releases that still lack a
+        cached image when the listing exposes a cover URL.
+        """
         if artist_ids:
             artists: list[Artist] = []
             for artist_id in artist_ids:
@@ -1320,6 +1379,7 @@ class DeviceAgent:
 
         self.note(f"refresh artists start · {len(artists)} artist(s)")
         known = self._known_platform_keys()
+        by_platform = self._mixes_by_platform_key()
         added: list[Mix] = []
         for artist in artists:
             self.note(f"fetch artist list start: {artist.url}")
@@ -1333,6 +1393,7 @@ class DeviceAgent:
                     level=logging.WARNING,
                 )
                 raise
+            cover_jobs: list[tuple[UUID, str]] = []
             with self._view_notice_batch():
                 kept = 0
                 for upload in listing.uploads:
@@ -1341,11 +1402,24 @@ class DeviceAgent:
                         continue
                     key = (mix.platform, mix.platform_id)
                     if key in known:
+                        existing = by_platform.get(key)
+                        if (
+                            existing is not None
+                            and upload.cover_url
+                            and not self.has_local_cover(existing.id)
+                        ):
+                            cover_jobs.append((existing.id, upload.cover_url))
                         continue
                     self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
                     known.add(key)
-                    added.append(self.catalog.mixes[mix.id])
+                    stored = self.catalog.mixes[mix.id]
+                    added.append(stored)
+                    by_platform[key] = stored
+                    if upload.cover_url:
+                        cover_jobs.append((stored.id, upload.cover_url))
                     kept += 1
+            for mix_id, cover_url in cover_jobs:
+                self.ensure_cover(mix_id, cover_url)
             self.note(
                 f"fetch artist list end: {artist.name} · "
                 f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
@@ -1361,6 +1435,9 @@ class DeviceAgent:
 
     def _known_platform_keys(self) -> set[tuple[Platform, str]]:
         return {(m.platform, m.platform_id) for m in self.catalog.mixes.values()}
+
+    def _mixes_by_platform_key(self) -> dict[tuple[Platform, str], Mix]:
+        return {(m.platform, m.platform_id): m for m in self.catalog.mixes.values()}
 
     def _artist_by_url(self, url: str) -> Artist | None:
         key = _normalize_artist_url(url)
@@ -2381,6 +2458,7 @@ class DeviceAgent:
         platform_id: str,
         artist_name: str,
         size_bytes: int | None = None,
+        cover_url: str | None = None,
     ) -> Mix:
         artist = Artist(
             platform=platform,
@@ -2396,6 +2474,7 @@ class DeviceAgent:
             url=url,
             duration_seconds=duration_seconds,
             size_bytes=size_bytes,
+            cover_url=cover_url,
         )
         with self._view_notice_batch():
             self._append_and_apply(

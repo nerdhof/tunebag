@@ -536,6 +536,16 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             ]
         }
 
+    @app.get("/api/mixes/{mix_id}/cover")
+    def mix_cover(mix_id: UUID) -> Response:
+        if agent.mix(mix_id) is None:
+            raise HTTPException(status_code=404, detail=f"unknown mix {mix_id}")
+        payload = agent.cover_bytes(mix_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="cover not available")
+        data, media_type = payload
+        return Response(content=data, media_type=media_type)
+
     @app.post("/api/mixes/{mix_id}/rate")
     def rate_mix(mix_id: UUID, body: RateBody) -> dict:
         try:
@@ -625,9 +635,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         current = agent.current_mix()
         mix = agent.mix(current) if current is not None else None
         artist_name = None
+        artist_url = None
         if mix is not None:
             artist = agent.catalog.artists.get(mix.artist_id)
             artist_name = artist.name if artist is not None else "Unknown"
+            artist_url = artist.url if artist is not None else None
         pending_until = None
         if current is not None:
             pending = next(
@@ -654,6 +666,9 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             ),
             "current_mix_id": str(current) if current is not None else None,
             "artist": artist_name,
+            "artist_url": artist_url,
+            "platform": mix.platform.value if mix is not None else None,
+            "url": mix.url if mix is not None else None,
             "title": mix.title if mix is not None else None,
             "kind": mix.kind.value if mix is not None else None,
             "tracks": tracks,
@@ -669,6 +684,9 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "played": mix.played if mix is not None else False,
             "rejected": mix.rejected if mix is not None else False,
             "reject_pending_until": pending_until,
+            "has_cover": (
+                agent.has_cover(current) if current is not None else False
+            ),
         }
 
     @app.post("/api/player/play")

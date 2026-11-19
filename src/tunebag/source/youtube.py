@@ -189,6 +189,7 @@ class YouTubeSource:
             url=album_url,
             duration_seconds=sum(t.duration_seconds for t in tracks),
             size_bytes=None,
+            cover_url=_youtube_cover_url(info),
             tracks=tuple(tracks),
         )
 
@@ -358,6 +359,42 @@ def _youtube_playlist_index(item: dict[str, Any], *, fallback: int) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return fallback
+
+
+def _youtube_cover_url(info: dict[str, Any]) -> str | None:
+    thumb = info.get("thumbnail")
+    if isinstance(thumb, str) and thumb.startswith("http"):
+        return thumb
+    thumbs = info.get("thumbnails")
+    if isinstance(thumbs, list) and thumbs:
+        best: str | None = None
+        best_area = -1
+        for item in thumbs:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url")
+            if not isinstance(url, str) or not url.startswith("http"):
+                continue
+            try:
+                width = int(item.get("width") or 0)
+                height = int(item.get("height") or 0)
+            except (TypeError, ValueError):
+                width, height = 0, 0
+            area = width * height
+            if area >= best_area:
+                best_area = area
+                best = url
+        if best is not None:
+            return best
+    entries = info.get("entries") or []
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            nested = _youtube_cover_url(entry)
+            if nested is not None:
+                return nested
+    return None
 
 
 def _youtube_track_from_entry(item: dict[str, Any]) -> Track | None:

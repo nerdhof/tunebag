@@ -207,5 +207,25 @@ def _bandcamp_upload_from_tralbum(
         url=canonical.rstrip("/") if canonical.endswith("/") else canonical,
         duration_seconds=duration_seconds,
         size_bytes=size_bytes,
+        cover_url=_bandcamp_cover_url(tralbum, current=current),
         tracks=tuple(tracks),
     )
+
+
+def _bandcamp_cover_url(tralbum: dict, *, current: dict) -> str | None:
+    for key in ("artFullsizeUrl", "art_url", "thumbUrl", "thumb_url"):
+        for blob in (tralbum, current):
+            raw = blob.get(key)
+            if isinstance(raw, str) and raw.startswith("http"):
+                return raw
+    art_id = tralbum.get("art_id")
+    if art_id is None:
+        art_id = current.get("art_id")
+    if art_id is None:
+        return None
+    try:
+        art_num = int(art_id)
+    except (TypeError, ValueError):
+        return None
+    # `_10` is a large square used by Bandcamp album pages.
+    return f"https://f4.bcbits.com/img/a{art_num}_10.jpg"

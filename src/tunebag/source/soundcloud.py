@@ -131,4 +131,15 @@ def _soundcloud_upload(track: dict) -> Upload | None:
         url=str(permalink),
         duration_seconds=int(duration_ms) // 1000,
         size_bytes=optional_size_bytes(track),
+        cover_url=_soundcloud_cover_url(track),
     )
+
+
+def _soundcloud_cover_url(track: dict) -> str | None:
+    raw = track.get("artwork_url") or track.get("avatar_url")
+    if not raw or not isinstance(raw, str):
+        return None
+    # API often returns "-large"; prefer a sharper square for UI.
+    if "-large." in raw:
+        return raw.replace("-large.", "-t500x500.")
+    return raw

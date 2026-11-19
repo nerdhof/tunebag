@@ -23,6 +23,7 @@ def _tralbum_attr(
     tracks: list[dict],
     free_download_page: str | None = None,
     minimum_price: float = 0.0,
+    art_id: int | None = None,
 ) -> str:
     payload = {
         "id": album_id,
@@ -31,6 +32,8 @@ def _tralbum_attr(
         "trackinfo": tracks,
         "freeDownloadPage": free_download_page,
     }
+    if art_id is not None:
+        payload["art_id"] = art_id
     return escape(json.dumps(payload), quote=True)
 
 
@@ -51,6 +54,7 @@ def _album_html(
     tracks: list[dict],
     free_download_page: str | None = "https://bandcamp.com/download?id=1",
     minimum_price: float = 0.0,
+    art_id: int | None = None,
 ) -> str:
     return f"""
     <html><body>
@@ -60,6 +64,7 @@ def _album_html(
         tracks=tracks,
         free_download_page=free_download_page,
         minimum_price=minimum_price,
+        art_id=art_id,
     )}"></div>
     </body></html>
     """
@@ -150,6 +155,7 @@ def test_bandcamp_lists_free_full_albums_with_tracks() -> None:
             album_id=99,
             title="Full Disc",
             tracks=tracks,
+            art_id=1234567890,
         ),
     }
     source = _source_with_pages(pages)
@@ -163,6 +169,7 @@ def test_bandcamp_lists_free_full_albums_with_tracks() -> None:
     assert album.title == "Full Disc"
     assert album.url == "https://example.bandcamp.com/album/full-disc"
     assert album.duration_seconds == 1300
+    assert album.cover_url == "https://f4.bcbits.com/img/a1234567890_10.jpg"
     assert len(album.tracks) == 2
     assert album.tracks[0].platform_id == "1"
     assert album.tracks[0].title == "One"
