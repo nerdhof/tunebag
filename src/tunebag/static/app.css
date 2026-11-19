@@ -356,15 +356,21 @@ form.add-form-open .add-form-fields-inline {
 }
 
 /*
- * Hard-clip angled seek titles at heading + transport (no clip-margin — that
- * reintroduced page scroll). Tags live in .player-below, outside this clip.
+ * Angled seek labels clip at the player card top without clipping tag suggest:
+ * .player-clip uses overflow:clip but extends upward (negative margin + matching
+ * padding via --player-seek-clip-rise) so its clip edge aligns with #player.
+ * .player-now-row stays a sibling (outside the clip) with higher z-index so the
+ * tag picker can paint over the seek area and past #player.
  */
 #player {
+  position: relative;
   overflow: visible;
 }
 
 .player-clip {
   overflow: clip;
+  margin-top: calc(-1 * var(--player-seek-clip-rise, 0px));
+  padding-top: var(--player-seek-clip-rise, 0px);
 }
 
 .player-transport {
@@ -372,12 +378,36 @@ form.add-form-open .add-form-fields-inline {
   flex-direction: column;
   gap: 0.55rem;
   align-items: stretch;
-  margin: 0.75rem 0 0;
+  margin: 0.55rem 0 0;
   overflow: visible;
 }
 
 .player-below {
   overflow: visible;
+}
+
+.player-now-row {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.75rem 1rem;
+  margin-top: 0.55rem;
+  min-width: 0;
+}
+
+.player-now-row > .player-below {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.player-now-row > .player-top {
+  order: 2;
+  flex: 0 0 auto;
+  margin: 0;
+  align-self: flex-start;
 }
 
 .player-top {
@@ -428,6 +458,8 @@ form.add-form-open .add-form-fields-inline {
   align-items: baseline;
   gap: 0.3rem;
   min-width: 0;
+  /* Tuck under the bar so offset/duration read with the seek row. */
+  margin-top: -0.1rem;
 }
 
 .player-seek {
@@ -438,7 +470,7 @@ form.add-form-open .add-form-fields-inline {
     ". times .";
   align-items: end;
   column-gap: 0.35rem;
-  row-gap: 0.15rem;
+  row-gap: 0.05rem;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -458,14 +490,14 @@ form.add-form-open .add-form-fields-inline {
  * (times are a separate grid row so they don’t pull buttons down). */
 .player-seek.has-track-labels {
   overflow: visible;
-  /* Room for hover track duration under the bar (avoid layout jump / overlap). */
-  row-gap: 0.85rem;
+  /* Slim gap: hover track duration is absolute under the section, not in-flow. */
+  row-gap: 0.35rem;
 }
 
 .player-seek.has-track-labels .player-seek-main {
   padding-top: var(--seek-label-headroom, 5.5rem);
   box-sizing: content-box;
-  overflow: visible; /* .player-clip hard-clips overhang; headroom + caption share the band */
+  overflow: visible; /* .player-clip (raised) hard-clips at the player card top */
 }
 
 .player-below {
@@ -473,13 +505,14 @@ form.add-form-open .add-form-fields-inline {
   align-items: flex-start;
   gap: 0.65rem;
   margin-top: 0.55rem;
+  margin-bottom: 0;
   min-width: 0;
 }
 
 .player-cover {
-  flex: 0 0 5rem;
-  width: 5rem;
-  height: 5rem;
+  flex: 0 0 6.25rem;
+  width: 6.25rem;
+  height: 6.25rem;
   object-fit: cover;
   border-radius: 0.2rem;
   background: color-mix(in srgb, var(--fg) 8%, transparent);
@@ -723,9 +756,21 @@ form.add-form-open .add-form-fields-inline {
 }
 
 @media (max-width: 40rem) {
+  .player-now-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+  }
+
+  .player-now-row > .player-top {
+    order: -1;
+    align-self: stretch;
+  }
+
   .player-top #player-intent {
-    flex: 0 1 auto;
-    width: 12rem;
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
   }
 
   .player-symbols {

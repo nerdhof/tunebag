@@ -315,6 +315,20 @@ def test_player_ui_has_cover_slot() -> None:
     assert ".player-cover" in css
     assert "renderPlayerCover" in js
     assert "has_cover" in js
+    # Intent + cover/meta share .player-now-row above seek controls.
+    # DOM keeps intent before cover (narrow stack); wide CSS order puts intent right.
+    assert 'class="player-now-row"' in html
+    assert "player-now-row" in css
+    intent_at = html.index('id="player-intent"')
+    below_at = html.index('class="player-below"')
+    clip_at = html.index('class="player-clip"')
+    assert intent_at < below_at < clip_at
+    assert 'id="player-seekbar"' in html[clip_at:]
+    assert "order: 2" in css or "order:2" in css.replace(" ", "")
+    # Seek labels clip via raised .player-clip; tags stay outside that clip.
+    assert "--player-seek-clip-rise" in css
+    assert "syncPlayerSeekClipRise" in js
+    assert "overflow: visible" in css or "overflow:visible" in css.replace(" ", "")
 
 
 def test_cover_endpoint_404_without_art(tmp_path: Path) -> None:

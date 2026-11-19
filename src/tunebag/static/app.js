@@ -2664,11 +2664,24 @@ function seekLabelHeadroomRem(tracks, artist) {
     if (text.length > maxChars) maxChars = text.length;
   }
   // 0.7rem labels at −60°: vertical rise ≈ chars * charWidth * sin(60°) + gap.
-  const rise = Math.min(16, Math.max(3.5, maxChars * 0.28 + 0.7));
-  // Player heading + transport top margin sit inside .player-clip; reuse that
-  // band so long titles can extend into the caption instead of padding only.
-  const captionCredit = 2.5;
-  return Math.max(2.75, rise - captionCredit);
+  // Labels may overhang into the cover/meta row; clip edge is raised to #player.
+  return Math.min(16, Math.max(3.5, maxChars * 0.28 + 0.7));
+}
+
+/**
+ * Extend .player-clip upward so overflow:clip matches the #player top edge.
+ * Tag UI stays outside .player-clip (sibling) and is not clipped.
+ */
+function syncPlayerSeekClipRise() {
+  const player = document.getElementById("player");
+  const clip = player?.querySelector(".player-clip");
+  if (!player || !clip) return;
+  clip.style.setProperty("--player-seek-clip-rise", "0px");
+  const rise = Math.max(
+    0,
+    Math.round(clip.getBoundingClientRect().top - player.getBoundingClientRect().top),
+  );
+  clip.style.setProperty("--player-seek-clip-rise", `${rise}px`);
 }
 
 function setSeekLabelHeadroom(seekRow, tracks, artist) {
@@ -2676,6 +2689,7 @@ function setSeekLabelHeadroom(seekRow, tracks, artist) {
   if (!tracks || tracks.length < 2) {
     seekRow.classList.remove("has-track-labels");
     seekRow.style.removeProperty("--seek-label-headroom");
+    syncPlayerSeekClipRise();
     return;
   }
   seekRow.classList.add("has-track-labels");
@@ -2683,6 +2697,7 @@ function setSeekLabelHeadroom(seekRow, tracks, artist) {
     "--seek-label-headroom",
     `${seekLabelHeadroomRem(tracks, artist)}rem`,
   );
+  syncPlayerSeekClipRise();
 }
 
 function renderSeekMarks(tracks, duration, artist) {
@@ -4019,6 +4034,7 @@ function renderPlayerCover(data) {
       cover.removeAttribute("src");
       cover.alt = "";
       playerCoverMixId = null;
+      syncPlayerSeekClipRise();
     }
     return;
   }
@@ -4030,6 +4046,8 @@ function renderPlayerCover(data) {
   cover.alt = data.title ? `Cover art for ${data.title}` : "Release cover art";
   cover.src = `/api/mixes/${mixId}/cover`;
   cover.hidden = false;
+  // Cover size changes now-row height; refresh raised clip after paint.
+  requestAnimationFrame(() => syncPlayerSeekClipRise());
 }
 
 function renderPlayerNow(data) {
@@ -5751,6 +5769,12 @@ function connectViewNotices() {
   await refreshIntents();
   await refreshPlayerIntents();
   await refreshPlayer();
+  syncPlayerSeekClipRise();
+  window.addEventListener("resize", () => syncPlayerSeekClipRise());
+  const playerNowRow = document.querySelector("#player .player-now-row");
+  if (playerNowRow && typeof ResizeObserver === "function") {
+    new ResizeObserver(() => syncPlayerSeekClipRise()).observe(playerNowRow);
+  }
   connectViewNotices();
   setInterval(refreshActivity, 1000);
 })();
