@@ -21,6 +21,8 @@ from tunebag.source.models import ArtistListing, Track, Upload
 from tunebag.ytdlp_fetch import (
     AudioFetcher,
     ProgressCallback,
+    YtdlpCookies,
+    apply_ytdlp_cookies,
     fetch_audio_bytes,
     youtube_anonymous_blocked_error,
     youtube_auth_challenge,
@@ -58,10 +60,12 @@ class YouTubeSource:
         extract_info: YoutubeExtractor | None = None,
         browse_music_artist: YoutubeMusicBrowse | None = None,
         audio_fetcher: AudioFetcher | None = None,
+        cookies: YtdlpCookies | None = None,
     ) -> None:
         self._extract_info = extract_info
         self._browse_music_artist = browse_music_artist
         self._audio_fetcher = audio_fetcher
+        self._cookies = cookies
 
     def list_uploads(self, artist_url: str) -> ArtistListing:
         releases_url = youtube_artist_releases_url(artist_url)
@@ -198,12 +202,13 @@ class YouTubeSource:
             source_url,
             fetcher=self._audio_fetcher,
             on_progress=on_progress,
+            cookies=self._cookies,
         )
 
     def _extract(self, url: str) -> dict[str, Any]:
         if self._extract_info is not None:
             return self._extract_info(url)
-        return _youtube_extract_info(url)
+        return _youtube_extract_info(url, cookies=self._cookies)
 
     def _browse_music(self, channel_id: str) -> dict[str, Any]:
         if self._browse_music_artist is not None:
@@ -376,7 +381,11 @@ def _youtube_track_from_entry(item: dict[str, Any]) -> Track | None:
     )
 
 
-def _youtube_extract_info(url: str) -> dict[str, Any]:
+def _youtube_extract_info(
+    url: str,
+    *,
+    cookies: YtdlpCookies | None = None,
+) -> dict[str, Any]:
     from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError
 
@@ -387,12 +396,15 @@ def _youtube_extract_info(url: str) -> dict[str, Any]:
         "extract_flat": "in_playlist",
         "remote_components": ["ejs:github"],
     }
+    apply_ytdlp_cookies(opts, cookies, for_youtube=True)
     try:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except DownloadError as exc:
         if youtube_auth_challenge(exc):
-            raise youtube_anonymous_blocked_error(url, exc) from exc
+            raise youtube_anonymous_blocked_error(
+                url, exc, cookies=cookies
+            ) from exc
         raise
     if not isinstance(info, dict):
         raise TypeError(f"yt-dlp returned no info for {url}")

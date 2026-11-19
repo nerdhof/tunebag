@@ -115,6 +115,7 @@
       points: [
         "Listing shape is platform-defined (e.g. SoundCloud/hearthis → Mix uploads; Bandcamp/YouTube → Album discography).",
         "YouTube (including Music URLs) lists Album Releases from the channel releases tab.",
+        "If YouTube blocks anonymous fetch, restart with tunebag serve --cookies FILE or --cookies-from-browser BROWSER.",
         "Delete of an Artist is sticky across Devices.",
       ],
     },
@@ -351,10 +352,6 @@
     {
       title: "Bandcamp track-level UX",
       body: "the Artist → Album adapter is in; seek-bar track marks + hover titles are in; later: per-track skip/reject, and titles while playing.",
-    },
-    {
-      title: "YouTube anonymous auth escape hatch",
-      body: "the Artist → Album adapter is in (channel releases tab under YouTube, including Music URLs as the same platform); later: cookies when anonymous fetch is blocked.",
     },
     {
       title: "OR tag filters",

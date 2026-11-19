@@ -296,6 +296,83 @@ def test_youtube_listing_enables_ejs_without_cookies(
     assert "cookiesfrombrowser" not in opts
 
 
+def test_youtube_listing_forwards_cookiefile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tunebag.ytdlp_fetch import YtdlpCookies
+
+    captured: list[dict] = []
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            captured.append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, *, download: bool = True) -> dict:
+            del download
+            return {
+                "id": CHANNEL_ID,
+                "channel_id": CHANNEL_ID,
+                "channel": "TOOL",
+                "title": "TOOL - Releases",
+                "entries": [],
+                "webpage_url": url,
+            }
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    source = YouTubeSource(cookies=YtdlpCookies.from_cookiefile("/tmp/yt.txt"))
+    listing = source.list_uploads("https://www.youtube.com/@TOOLmusic")
+
+    assert listing.platform_id == CHANNEL_ID
+    assert captured[0]["cookiefile"] == "/tmp/yt.txt"
+    assert "cookiesfrombrowser" not in captured[0]
+
+
+def test_youtube_listing_forwards_cookies_from_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tunebag.ytdlp_fetch import YtdlpCookies
+
+    cookies = YtdlpCookies.from_browser("chrome:Default")
+    captured: list[dict] = []
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            captured.append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, *, download: bool = True) -> dict:
+            del download
+            return {
+                "id": CHANNEL_ID,
+                "channel_id": CHANNEL_ID,
+                "channel": "TOOL",
+                "title": "TOOL - Releases",
+                "entries": [],
+                "webpage_url": url,
+            }
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    source = YouTubeSource(cookies=cookies)
+    listing = source.list_uploads("https://www.youtube.com/@TOOLmusic")
+
+    assert listing.platform_id == CHANNEL_ID
+    assert captured[0]["cookiesfrombrowser"] == ("chrome", "Default", None, None)
+    assert "cookiefile" not in captured[0]
+
+
 def test_youtube_listing_auth_challenge_surfaces_actionable_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -324,6 +401,7 @@ def test_youtube_listing_auth_challenge_surfaces_actionable_error(
 
     message = str(excinfo.value).lower()
     assert "anonymous" in message or "cookie" in message
+    assert "--cookies" in message or "cookies-from-browser" in message
     assert "youtube" in message
 
 

@@ -102,6 +102,7 @@ from tunebag.source import (
     release_from_upload,
     youtube_normalize_artist_url,
 )
+from tunebag.ytdlp_fetch import YtdlpCookies
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 
 _HTTP_TIMEOUT = 5.0
@@ -161,6 +162,7 @@ class DeviceAgent:
         base_url: str | None = None,
         identity: DeviceIdentity | None = None,
         source: Source | None = None,
+        cookies: YtdlpCookies | None = None,
         data_dir: Path | None = None,
         player: AudioPlayer | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -191,7 +193,9 @@ class DeviceAgent:
             priority=priority,
         )
         self.base_url = base_url
-        self.source = source if source is not None else default_source()
+        self.source = (
+            source if source is not None else default_source(cookies=cookies)
+        )
         self._discovery: LanDiscovery = (
             discovery if discovery is not None else NullLanDiscovery()
         )

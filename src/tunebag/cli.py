@@ -11,6 +11,7 @@ from tunebag import __version__
 from tunebag.agent import DeviceAgent
 from tunebag.discovery import DISCOVERY_REFRESH_SECONDS, MdnsLanDiscovery
 from tunebag.web import create_app
+from tunebag.ytdlp_fetch import YtdlpCookies
 
 
 def default_data_dir(name: str) -> Path:
@@ -36,6 +37,16 @@ def _start_discovery_ticker(agent: DeviceAgent, stop: threading.Event) -> None:
     threading.Thread(target=_loop, name="tunebag-discovery", daemon=True).start()
 
 
+def ytdlp_cookies_from_args(args: argparse.Namespace) -> YtdlpCookies | None:
+    """Build YouTube cookie config from serve --cookies / --cookies-from-browser."""
+    if args.cookies:
+        return YtdlpCookies.from_cookiefile(args.cookies)
+    browser = getattr(args, "cookies_from_browser", None)
+    if browser:
+        return YtdlpCookies.from_browser(browser)
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="tunebag",
@@ -54,6 +65,17 @@ def main(argv: list[str] | None = None) -> None:
         default=100,
         help="Fetch priority (lower = preferred; laptop ahead of phone)",
     )
+    cookies_group = serve.add_mutually_exclusive_group()
+    cookies_group.add_argument(
+        "--cookies",
+        metavar="FILE",
+        help="Netscape cookies file for YouTube (forwarded to yt-dlp)",
+    )
+    cookies_group.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER[+KEYRING][:PROFILE][::CONTAINER]",
+        help="Load YouTube cookies from a browser (forwarded to yt-dlp)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -69,6 +91,10 @@ def main(argv: list[str] | None = None) -> None:
             data_dir = default_data_dir(args.name)
         except ValueError as exc:
             parser.error(str(exc))
+        try:
+            cookies = ytdlp_cookies_from_args(args)
+        except ValueError as exc:
+            parser.error(str(exc))
         base_url = f"http://{args.host}:{args.port}"
         discovery = MdnsLanDiscovery()
         agent = DeviceAgent(
@@ -77,6 +103,7 @@ def main(argv: list[str] | None = None) -> None:
             base_url=base_url,
             data_dir=data_dir,
             discovery=discovery,
+            cookies=cookies,
         )
         if agent.seed_default_intents_if_empty():
             print(

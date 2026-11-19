@@ -27,7 +27,7 @@ from tunebag.source.models import (
 )
 from tunebag.source.soundcloud import SoundCloudSource
 from tunebag.source.youtube import YouTubeSource
-from tunebag.ytdlp_fetch import ProgressCallback
+from tunebag.ytdlp_fetch import ProgressCallback, YtdlpCookies
 
 __all__ = [
     "DEFAULT_MIN_DURATION_SECONDS",
@@ -41,6 +41,7 @@ __all__ = [
     "Track",
     "Upload",
     "YouTubeSource",
+    "YtdlpCookies",
     "bandcamp_normalize_artist_url",
     "default_source",
     "platform_for_url",
@@ -102,11 +103,12 @@ class CompositeSource:
         hearthis: Source | None = None,
         bandcamp: Source | None = None,
         youtube: Source | None = None,
+        cookies: YtdlpCookies | None = None,
     ) -> None:
         self._soundcloud: Source = soundcloud or SoundCloudSource()
         self._hearthis: Source = hearthis or HearthisSource()
         self._bandcamp: Source = bandcamp or BandcampSource()
-        self._youtube: Source = youtube or YouTubeSource()
+        self._youtube: Source = youtube or YouTubeSource(cookies=cookies)
 
     def list_uploads(self, artist_url: str) -> ArtistListing:
         return self._for_url(artist_url).list_uploads(artist_url)
@@ -140,5 +142,5 @@ class CompositeSource:
         )
 
 
-def default_source() -> CompositeSource:
-    return CompositeSource()
+def default_source(*, cookies: YtdlpCookies | None = None) -> CompositeSource:
+    return CompositeSource(cookies=cookies)

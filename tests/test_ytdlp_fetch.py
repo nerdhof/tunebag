@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Self
 
 import pytest
 
-from tunebag.ytdlp_fetch import fetch_audio_bytes
+from tunebag.ytdlp_fetch import YtdlpCookies, fetch_audio_bytes
 
 
 class _FakeYDL:
@@ -150,4 +150,76 @@ def test_youtube_auth_challenge_surfaces_actionable_error(
     message = str(excinfo.value).lower()
     assert "anonymous" in message
     assert "cookie" in message
+    assert "--cookies" in message or "cookies-from-browser" in message
     assert "youtube" in message
+
+
+def test_youtube_fetch_forwards_cookiefile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+    cookies = YtdlpCookies.from_cookiefile("/tmp/cookies.txt")
+
+    data = fetch_audio_bytes(
+        "https://www.youtube.com/watch?v=abcdefghijk",
+        cookies=cookies,
+    )
+
+    assert data == b"fake-audio"
+    opts = _FakeYDL.instances[0].opts
+    assert opts["cookiefile"] == "/tmp/cookies.txt"
+    assert "cookiesfrombrowser" not in opts
+    assert opts.get("remote_components") == ["ejs:github"]
+
+
+def test_youtube_fetch_forwards_cookies_from_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cookies = YtdlpCookies.from_browser("firefox")
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+
+    data = fetch_audio_bytes(
+        "https://www.youtube.com/watch?v=abcdefghijk",
+        cookies=cookies,
+    )
+
+    assert data == b"fake-audio"
+    opts = _FakeYDL.instances[0].opts
+    assert opts["cookiesfrombrowser"] == ("firefox", None, None, None)
+    assert "cookiefile" not in opts
+
+
+def test_non_youtube_fetch_ignores_cookies(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _FakeYDL)
+    cookies = YtdlpCookies.from_cookiefile("/tmp/cookies.txt")
+
+    data = fetch_audio_bytes(
+        "https://hearthis.at/tasmo/echochamber280/",
+        cookies=cookies,
+    )
+
+    assert data == b"fake-audio"
+    assert "cookiefile" not in _FakeYDL.instances[0].opts
+
+
+def test_youtube_auth_challenge_with_cookies_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AuthFailYDL(_FakeYDL):
+        def download(self, urls: list[str]) -> None:
+            del urls
+            from yt_dlp.utils import DownloadError
+
+            raise DownloadError(
+                "ERROR: [youtube] abcdefghijk: Sign in to confirm you’re not a bot"
+            )
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", _AuthFailYDL)
+
+    with pytest.raises(ValueError) as excinfo:
+        fetch_audio_bytes(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            cookies=YtdlpCookies.from_cookiefile("/tmp/cookies.txt"),
+        )
+
+    message = str(excinfo.value).lower()
+    assert "still blocked" in message
+    assert "does not use" not in message
