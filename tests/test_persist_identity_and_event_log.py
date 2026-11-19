@@ -187,13 +187,14 @@ def test_local_only_state_is_not_in_event_log(tmp_path: Path) -> None:
     first.set_metered(True)
     first.reject_mix(mix.id)
     assert first.is_metered() is True
-    assert any(p.mix_id == mix.id for p in first.pending_rejects())
-    assert first.catalog.mixes[mix.id].rejected is False
+    # Reject is Event-backed (persists); metered stays local-only.
+    assert first.catalog.mixes[mix.id].rejected is True
+    assert mix.id in {m.id for m in first.files()}  # Soft: bytes until Soft → Hard
 
     second = DeviceAgent("laptop", source=FakeSource(), data_dir=data_dir)
 
     assert second.is_metered() is False
-    assert second.pending_rejects() == []
-    assert second.catalog.mixes[mix.id].rejected is False
+    assert second.catalog.mixes[mix.id].rejected is True
+    assert second.catalog.mixes[mix.id].rejected_at is not None
     assert mix.id in {m.id for m in second.files()}
     assert second.file_bytes(mix.id) == b"audio-bytes"

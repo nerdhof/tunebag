@@ -112,9 +112,7 @@ def test_manual_sync_still_forces_immediate_catch_up(tmp_path: Path) -> None:
     assert mix.id in {m.id for m in phone.mixes()}
 
 
-def test_reject_stays_local_during_undo_window_despite_auto_sync(
-    tmp_path: Path,
-) -> None:
+def test_reject_syncs_immediately_via_auto_sync(tmp_path: Path) -> None:
     laptop, phone, source, _clock = _pair(tmp_path)
     url = "https://example.com/maybe-reject"
     source.bytes_by_url[url] = b"audio:maybe"
@@ -135,6 +133,5 @@ def test_reject_stays_local_during_undo_window_despite_auto_sync(
     laptop.wait_for_sync()
     phone.wait_for_sync()
 
-    assert laptop.catalog.mixes[mix.id].rejected is False
-    assert any(p.mix_id == mix.id for p in laptop.pending_rejects())
-    assert phone.catalog.mixes[mix.id].rejected is False
+    assert laptop.catalog.mixes[mix.id].rejected is True
+    assert phone.catalog.mixes[mix.id].rejected is True

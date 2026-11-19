@@ -9,7 +9,6 @@ from tunebag.agent import DeviceAgent
 from tunebag.discovery import FakeLanDiscovery
 from tunebag.domain import Platform, Stars
 from tunebag.player import NullPlayer
-from tunebag.reject import UNDO_SECONDS
 from tunebag.source import FakeSource
 from tunebag.ui_notices import UIViewNotice, UIViewSection
 
@@ -123,10 +122,6 @@ def test_reject_commit_emits_mixes_and_play_history(tmp_path: Path) -> None:
     agent.drain_view_notices()
 
     agent.reject_mix(mix.id)
-    assert _catalog_sections(agent) == []
-
-    clock.advance(UNDO_SECONDS + 1)
-    agent.commit_pending_rejects()
 
     sections = set(_catalog_sections(agent))
     assert UIViewSection.MIXES in sections

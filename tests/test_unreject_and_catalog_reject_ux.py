@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, Stars
-from tunebag.reject import UNDO_SECONDS
+from tunebag.reject import SOFT_REJECT_SECONDS
 from tunebag.source import FakeSource
 from tunebag.web import create_app
 
@@ -92,8 +92,6 @@ def test_unreject_clears_reject_and_mix_reenters_sequence(tmp_path: Path) -> Non
     )
 
     laptop.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
     assert laptop.catalog.mixes[mix_id].rejected is True
 
     laptop.un_reject_mix(mix_id)
@@ -119,15 +117,11 @@ def test_newer_unreject_beats_older_reject_across_peers(tmp_path: Path) -> None:
 
     clock.advance(1)
     laptop.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
 
     clock.advance(30)
     # Phone rejects too (so it can later un-reject after meeting), then both meet;
     # phone's later Un-reject must win over laptop's older Reject.
     phone.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    phone.commit_pending_rejects()
     clock.advance(1)
     phone.un_reject_mix(mix_id)
 
@@ -148,15 +142,11 @@ def test_newer_reject_beats_older_unreject_across_peers(tmp_path: Path) -> None:
 
     clock.advance(1)
     laptop.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
     clock.advance(1)
     laptop.un_reject_mix(mix_id)
 
     clock.advance(30)
     phone.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    phone.commit_pending_rejects()
 
     laptop.connect(phone)
     laptop.sync()
@@ -190,9 +180,10 @@ def test_unreject_does_not_restore_file_bytes(tmp_path: Path) -> None:
     assert mix_id in {m.id for m in laptop.files()}
 
     laptop.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
+    clock.advance(SOFT_REJECT_SECONDS)
+    laptop.commit_reject_file_deletes()
     phone.sync()
+    phone.commit_reject_file_deletes()
     assert mix_id not in {m.id for m in laptop.files()}
     assert mix_id not in {m.id for m in phone.files()}
 
@@ -203,9 +194,9 @@ def test_unreject_does_not_restore_file_bytes(tmp_path: Path) -> None:
     assert mix_id not in {m.id for m in phone.files()}
 
 
-def test_catalog_reject_uses_same_pending_undo_window(tmp_path: Path) -> None:
-    """Catalog reject shares reject_mix — local until commit, undo cancels."""
-    laptop, phone, source, clock = _pair(tmp_path)
+def test_catalog_reject_commits_immediately_and_syncs(tmp_path: Path) -> None:
+    """Catalog reject shares reject_mix — Event appends immediately."""
+    laptop, phone, source, _clock = _pair(tmp_path)
     mix_id = _add_mix(
         laptop,
         source,
@@ -222,15 +213,10 @@ def test_catalog_reject_uses_same_pending_undo_window(tmp_path: Path) -> None:
     laptop.fill_caches()
 
     laptop.reject_mix(mix_id)
-    assert laptop.catalog.mixes[mix_id].rejected is False
-    assert any(p.mix_id == mix_id for p in laptop.pending_rejects())
+    assert laptop.catalog.mixes[mix_id].rejected is True
+    assert laptop.catalog.mixes[mix_id].rejected_at is not None
     phone.sync()
-    assert phone.catalog.mixes[mix_id].rejected is False
-
-    assert laptop.undo_reject(mix_id) is True
-    clock.advance(UNDO_SECONDS)
-    assert laptop.commit_pending_rejects() == []
-    assert laptop.catalog.mixes[mix_id].rejected is False
+    assert phone.catalog.mixes[mix_id].rejected is True
 
 
 def test_artists_api_includes_rejected_mix_count(tmp_path: Path) -> None:
@@ -247,8 +233,6 @@ def test_artists_api_includes_rejected_mix_count(tmp_path: Path) -> None:
         agent, source, title="Rejected", platform_id="rej", stars=Stars.FIVE
     )
     agent.reject_mix(rejected)
-    clock.advance(UNDO_SECONDS)
-    agent.commit_pending_rejects()
     rejected_artist_id = str(agent.catalog.mixes[rejected].artist_id)
     kept_artist_id = str(agent.catalog.mixes[kept].artist_id)
 
@@ -315,8 +299,6 @@ def test_unreject_api_clears_committed_reject(tmp_path: Path) -> None:
     )
     mix_id = _add_mix(agent, source, title="API", platform_id="api", stars=Stars.FIVE)
     agent.reject_mix(mix_id)
-    clock.advance(UNDO_SECONDS)
-    agent.commit_pending_rejects()
     client = TestClient(create_app(agent))
 
     res = client.post(f"/api/mixes/{mix_id}/un-reject")

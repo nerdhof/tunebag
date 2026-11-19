@@ -418,7 +418,9 @@ def test_played_is_sticky_and_reject_beats_older_unreject() -> None:
     mix = state.mixes[mix_id]
     assert mix.played is True
     assert mix.rejected is True
-    assert reject_effects.delete_files == [mix_id]
+    assert mix.rejected_at == t0 + timedelta(seconds=2)
+    # File delete is deferred Soft → Hard (agent-local), not a projection effect.
+    assert reject_effects.delete_files == []
 
 
 def test_replay_order_does_not_change_converged_catalog() -> None:

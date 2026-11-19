@@ -496,10 +496,8 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
     @app.get("/api/mixes")
     def mixes() -> dict:
+        agent.commit_reject_file_deletes()
         artists_by_id = {a.id: a for a in agent.artists()}
-        pending_until = {
-            str(p.mix_id): p.undo_until.isoformat() for p in agent.pending_rejects()
-        }
         return {
             "mixes": [
                 {
@@ -525,12 +523,16 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "played": mix.played,
                     "skipped": mix.skipped,
                     "rejected": mix.rejected,
+                    "rejected_at": (
+                        mix.rejected_at.isoformat()
+                        if mix.rejected_at is not None
+                        else None
+                    ),
                     "last_heard_at": (
                         mix.last_heard_at.isoformat()
                         if mix.last_heard_at is not None
                         else None
                     ),
-                    "reject_pending_until": pending_until.get(str(mix.id)),
                 }
                 for mix in agent.mixes()
             ]
@@ -568,34 +570,16 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             mix = agent.reject_mix(mix_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        pending = next(
-            (p for p in agent.pending_rejects() if p.mix_id == mix_id),
-            None,
-        )
         return {
             "ok": True,
             "mix": {
                 "id": str(mix.id),
                 "rejected": mix.rejected,
-                "reject_pending_until": (
-                    pending.undo_until.isoformat() if pending is not None else None
+                "rejected_at": (
+                    mix.rejected_at.isoformat()
+                    if mix.rejected_at is not None
+                    else None
                 ),
-            },
-        }
-
-    @app.post("/api/mixes/{mix_id}/undo-reject")
-    def undo_reject(mix_id: UUID) -> dict:
-        undone = agent.undo_reject(mix_id)
-        mix = agent.mix(mix_id)
-        if mix is None:
-            raise HTTPException(status_code=404, detail=f"unknown mix {mix_id}")
-        return {
-            "ok": True,
-            "undone": undone,
-            "mix": {
-                "id": str(mix.id),
-                "rejected": mix.rejected,
-                "reject_pending_until": None,
             },
         }
 
@@ -610,7 +594,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "mix": {
                 "id": str(mix.id),
                 "rejected": mix.rejected,
-                "reject_pending_until": None,
+                "rejected_at": None,
             },
         }
 
@@ -640,14 +624,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             artist = agent.catalog.artists.get(mix.artist_id)
             artist_name = artist.name if artist is not None else "Unknown"
             artist_url = artist.url if artist is not None else None
-        pending_until = None
-        if current is not None:
-            pending = next(
-                (p for p in agent.pending_rejects() if p.mix_id == current),
-                None,
-            )
-            if pending is not None:
-                pending_until = pending.undo_until.isoformat()
         tracks: list[dict] = []
         if mix is not None and mix.kind is ReleaseKind.ALBUM and mix.tracks:
             tracks = [
@@ -683,7 +659,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "tags": mix.tags if mix is not None else [],
             "played": mix.played if mix is not None else False,
             "rejected": mix.rejected if mix is not None else False,
-            "reject_pending_until": pending_until,
+            "rejected_at": (
+                mix.rejected_at.isoformat()
+                if mix is not None and mix.rejected_at is not None
+                else None
+            ),
             "has_cover": (
                 agent.has_cover(current) if current is not None else False
             ),

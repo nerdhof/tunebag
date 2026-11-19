@@ -190,8 +190,6 @@ def test_offline_divergent_edits_converge_to_identical_catalog(tmp_path: Path) -
 
     clock.advance(1)
     laptop.reject_mix(mix_id)
-    clock.advance(25)
-    laptop.commit_pending_rejects()
 
     laptop.connect(phone)
     laptop.sync()

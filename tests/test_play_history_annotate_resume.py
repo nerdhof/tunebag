@@ -145,22 +145,23 @@ def test_http_play_with_mix_id_resumes_at_catalog_playhead(tmp_path: Path) -> No
 
 
 def test_play_history_ui_contract_rejected_filter_and_reject_pipeline() -> None:
-    """Static Play history exposes Rejected filter + reject/undo/un-reject hooks."""
+    """Static Play history exposes Rejected filter + reject/un-reject hooks."""
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
     assert 'id="play-history-show-rejected"' in html
     assert "showRejectedHistory" in js
     assert "history-reject" in js
-    assert "history-undo-reject" in js
+    assert "history-undo-reject" not in js
     assert "history-un-reject" in js
     assert "/api/mixes/${mix.id}/reject" in js
-    assert "/api/mixes/${mix.id}/undo-reject" in js
+    assert "undo-reject" not in js
     assert "/api/mixes/${mix.id}/un-reject" in js
     assert "mix-rejected" in js
-    # Default filter hides rejected when showRejectedHistory is false
+    assert "isHardRejected" in js
+    # Default filter hides Hard Rejected when showRejectedHistory is false
     assert "showRejectedHistory" in js
-    assert "!mix.rejected" in js or "mix.rejected" in js
+    assert "isHardRejected(mix)" in js
 
 
 def test_play_history_ui_contract_rate_tag_and_resume() -> None:

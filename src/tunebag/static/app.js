@@ -22,9 +22,10 @@ let catalogTagFilterEditor = null;
 let catalogStarFilter = null;
 /** Play history Rejected filter (default off). */
 let showRejectedHistory = false;
-let rejectUndoTimer = null;
-/** @type {Map<string, number>} mixId → timeout handle for catalog reject undo refresh */
-const catalogRejectTimers = new Map();
+/** Soft Rejected window (matches backend SOFT_REJECT_SECONDS). */
+const SOFT_REJECT_MS = 5 * 60 * 1000;
+/** @type {Map<string, number>} mixId → timeout when Soft ages to Hard (list refresh) */
+const softRejectTimers = new Map();
 let fillWasInProgress = false;
 let lastFilesRefreshAt = 0;
 let filesRefreshInFlight = null;
@@ -1216,16 +1217,26 @@ let artistNameById = new Map();
 /** @type {ReturnType<typeof bindCollapsibleAdd> | null} */
 let pairCollapsible = null;
 
-/** First click arms (💥); second click runs onConfirm. */
-function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
-  setSymbolButton(btn, BTN.delete, label);
+/** First click arms; second click runs onConfirm. */
+function bindConfirmClick(
+  btn,
+  {
+    idleSymbol,
+    idleLabel,
+    armedSymbol = BTN.confirmDelete,
+    armedLabel = "really?",
+    onConfirm,
+    stopPropagation = false,
+  },
+) {
+  setSymbolButton(btn, idleSymbol, idleLabel);
   let armed = false;
   let resetTimer = null;
 
   const reset = () => {
     armed = false;
     btn.classList.remove("confirm-pending");
-    setSymbolButton(btn, BTN.delete, label);
+    setSymbolButton(btn, idleSymbol, idleLabel);
     if (resetTimer) {
       clearTimeout(resetTimer);
       resetTimer = null;
@@ -1237,7 +1248,7 @@ function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
     if (!armed) {
       armed = true;
       btn.classList.add("confirm-pending");
-      setSymbolButton(btn, BTN.confirmDelete, "really delete?");
+      setSymbolButton(btn, armedSymbol, armedLabel);
       if (actionTipActive === btn) showActionTip(btn);
       resetTimer = setTimeout(reset, 4000);
       return;
@@ -1245,6 +1256,29 @@ function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
     reset();
     await onConfirm(event);
   });
+}
+
+/** First click arms (💥); second click runs onConfirm. */
+function bindConfirmDelete(btn, { label, onConfirm, stopPropagation = false }) {
+  bindConfirmClick(btn, {
+    idleSymbol: BTN.delete,
+    idleLabel: label,
+    armedSymbol: BTN.confirmDelete,
+    armedLabel: "really delete?",
+    onConfirm,
+    stopPropagation,
+  });
+}
+
+function isSoftRejected(mix, nowMs = Date.now()) {
+  if (!mix || !mix.rejected || !mix.rejected_at) return false;
+  const at = Date.parse(mix.rejected_at);
+  if (!Number.isFinite(at)) return false;
+  return nowMs - at < SOFT_REJECT_MS;
+}
+
+function isHardRejected(mix, nowMs = Date.now()) {
+  return !!(mix && mix.rejected && !isSoftRejected(mix, nowMs));
 }
 
 let actionTipEl = null;
@@ -2484,21 +2518,19 @@ function mountStarRating(root, { stars = null, interactive = true, onRate = null
 }
 
 /**
- * Shared annotate control kit (Rate, Tag, Reject / Undo / Un-reject).
+ * Shared annotate control kit (Rate, Tag, Reject confirm-click / Un-reject).
  * Used by Player, Play history, and Catalog so later tickets edit one mount.
- * Product behaviour matches pre-ui-actions-01 surfaces (Catalog Rate still off).
  *
  * Row mode (`surface` catalog|history): builds stars + reject chrome + tag editor.
  * Player mode (`surface` "player"): binds long-lived roots from index.html.
  *
  * @param {{
  *   surface: "catalog"|"history"|"player",
- *   mix?: { id: string, stars?: number|null, tags?: string[], rejected?: boolean, reject_pending_until?: string|null },
+ *   mix?: { id: string, stars?: number|null, tags?: string[], rejected?: boolean, rejected_at?: string|null },
  *   starsRoot: HTMLElement,
  *   actionsRoot?: HTMLElement,
  *   tagRoot?: HTMLElement,
  *   rejectBtn?: HTMLElement,
- *   undoBtn?: HTMLElement,
  *   statusEl?: HTMLElement,
  *   rateInteractive?: boolean,
  *   allowUnreject?: boolean,
@@ -2520,7 +2552,7 @@ function mountAnnotateKit(options) {
 /**
  * @param {{
  *   surface: "catalog"|"history",
- *   mix: { id: string, stars?: number|null, tags?: string[], rejected?: boolean, reject_pending_until?: string|null },
+ *   mix: { id: string, stars?: number|null, tags?: string[], rejected?: boolean, rejected_at?: string|null },
  *   starsRoot: HTMLElement,
  *   actionsRoot: HTMLElement,
  *   rateInteractive?: boolean,
@@ -2563,48 +2595,37 @@ function mountRowAnnotateKit({
 
   const rejectClass =
     surface === "catalog" ? "catalog-reject" : "history-reject";
-  const undoClass =
-    surface === "catalog" ? "catalog-undo-reject" : "history-undo-reject";
   const unRejectClass =
     surface === "catalog" ? "catalog-un-reject" : "history-un-reject";
   const rejectBtn = document.createElement("button");
   rejectBtn.type = "button";
   rejectBtn.className = rejectClass;
-  const undoBtn = document.createElement("button");
-  undoBtn.type = "button";
-  undoBtn.className = undoClass;
   const unRejectBtn = document.createElement("button");
   unRejectBtn.type = "button";
   unRejectBtn.className = unRejectClass;
-  setSymbolButton(rejectBtn, BTN.reject, "Reject release");
-  setSymbolButton(undoBtn, BTN.cancel, "Undo reject");
   setSymbolButton(unRejectBtn, BTN.unreject, "Un-reject release");
+
+  bindConfirmClick(rejectBtn, {
+    idleSymbol: BTN.reject,
+    idleLabel: "Reject release",
+    armedSymbol: BTN.confirmDelete,
+    armedLabel: "really reject?",
+    stopPropagation: true,
+    async onConfirm() {
+      const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
+      if (res.ok) {
+        await refreshAfterAnnotateMutation();
+      }
+    },
+  });
 
   syncRowAnnotateRejectButtons({
     rejectBtn,
-    undoBtn,
     unRejectBtn,
     mix,
     allowUnreject,
   });
 
-  rejectBtn.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
-    if (res.ok) {
-      await refreshAfterAnnotateMutation();
-    }
-  });
-  undoBtn.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    const res = await fetch(`/api/mixes/${mix.id}/undo-reject`, {
-      method: "POST",
-    });
-    if (res.ok) {
-      clearCatalogRejectTimer(mix.id);
-      await refreshAfterAnnotateMutation();
-    }
-  });
   if (allowUnreject) {
     unRejectBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -2612,6 +2633,7 @@ function mountRowAnnotateKit({
         method: "POST",
       });
       if (res.ok) {
+        clearSoftRejectTimer(mix.id);
         await refreshAfterAnnotateMutation({ intents: true });
       }
     });
@@ -2620,7 +2642,6 @@ function mountRowAnnotateKit({
   }
 
   actionsRoot.appendChild(rejectBtn);
-  actionsRoot.appendChild(undoBtn);
   if (allowUnreject) actionsRoot.appendChild(unRejectBtn);
 
   const tagEditorRoot = document.createElement("div");
@@ -2645,45 +2666,39 @@ function mountRowAnnotateKit({
   });
   actionsRoot.appendChild(tagEditorRoot);
 
-  return { starRating, tagEditor, rejectBtn, undoBtn, unRejectBtn };
+  return { starRating, tagEditor, rejectBtn, unRejectBtn };
 }
 
 /**
- * Visibility + pending-timer scheduling for Catalog / History reject chrome.
+ * Visibility + Soft-window refresh for Catalog / History reject chrome.
  */
 function syncRowAnnotateRejectButtons({
   rejectBtn,
-  undoBtn,
   unRejectBtn,
   mix,
   allowUnreject = true,
 }) {
-  const pendingUntil = mix.reject_pending_until;
-  if (pendingUntil) {
+  if (mix.rejected) {
     rejectBtn.hidden = true;
-    if (unRejectBtn) unRejectBtn.hidden = true;
-    undoBtn.hidden = false;
-    scheduleCatalogRejectRefresh(mix.id, pendingUntil);
-  } else if (mix.rejected) {
-    rejectBtn.hidden = true;
-    undoBtn.hidden = true;
     if (unRejectBtn) unRejectBtn.hidden = !allowUnreject;
-    clearCatalogRejectTimer(mix.id);
+    if (isSoftRejected(mix)) {
+      scheduleSoftRejectRefresh(mix.id, mix.rejected_at);
+    } else {
+      clearSoftRejectTimer(mix.id);
+    }
   } else {
     rejectBtn.hidden = false;
-    undoBtn.hidden = true;
     if (unRejectBtn) unRejectBtn.hidden = true;
-    clearCatalogRejectTimer(mix.id);
+    clearSoftRejectTimer(mix.id);
   }
 }
 
 /**
- * Player annotate kit: long-lived stars / tags / Reject+Undo (no Un-reject).
+ * Player annotate kit: long-lived stars / tags / Reject confirm (no Un-reject).
  * @param {{
  *   starsRoot: HTMLElement,
  *   tagRoot: HTMLElement,
  *   rejectBtn: HTMLElement,
- *   undoBtn: HTMLElement,
  *   statusEl?: HTMLElement|null,
  *   getMixId: () => string|null,
  *   onRate: (stars: number) => void|Promise<void>,
@@ -2693,7 +2708,6 @@ function mountPlayerAnnotateKit({
   starsRoot,
   tagRoot,
   rejectBtn,
-  undoBtn,
   statusEl = null,
   getMixId,
   onRate,
@@ -2718,94 +2732,52 @@ function mountPlayerAnnotateKit({
     },
   });
 
-  rejectBtn.addEventListener("click", async () => {
-    const status = document.getElementById("player-status");
-    const player = await (await fetch("/api/player")).json();
-    if (!player.current_mix_id) {
-      if (status) status.textContent = "Nothing to reject";
-      return;
-    }
-    try {
-      const res = await fetch(`/api/mixes/${player.current_mix_id}/reject`, {
-        method: "POST",
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (status) status.textContent = data.detail || "Reject failed";
+  bindConfirmClick(rejectBtn, {
+    idleSymbol: BTN.reject,
+    idleLabel: "Reject release",
+    armedSymbol: BTN.confirmDelete,
+    armedLabel: "really reject?",
+    async onConfirm() {
+      const status = document.getElementById("player-status");
+      const player = await (await fetch("/api/player")).json();
+      if (!player.current_mix_id) {
+        if (status) status.textContent = "Nothing to reject";
         return;
       }
-      if (status) status.textContent = "Reject started — undo available briefly";
-      await refreshAfterAnnotateMutation();
-    } catch (err) {
-      if (status) status.textContent = "Reject request failed";
-      console.error(err);
-    }
-  });
-
-  undoBtn.addEventListener("click", async () => {
-    const status = document.getElementById("player-status");
-    const player = await (await fetch("/api/player")).json();
-    if (!player.current_mix_id) {
-      if (status) status.textContent = "Nothing to undo";
-      return;
-    }
-    try {
-      const res = await fetch(`/api/mixes/${player.current_mix_id}/undo-reject`, {
-        method: "POST",
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (status) status.textContent = data.detail || "Undo reject failed";
-        return;
+      try {
+        const res = await fetch(`/api/mixes/${player.current_mix_id}/reject`, {
+          method: "POST",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (status) status.textContent = data.detail || "Reject failed";
+          return;
+        }
+        if (status) status.textContent = "Rejected";
+        await refreshAfterAnnotateMutation();
+      } catch (err) {
+        if (status) status.textContent = "Reject request failed";
+        console.error(err);
       }
-      if (status) {
-        status.textContent = data.undone ? "Reject undone" : "Nothing to undo";
-      }
-      await refreshAfterAnnotateMutation();
-    } catch (err) {
-      if (status) status.textContent = "Undo reject request failed";
-      console.error(err);
-    }
+    },
   });
 
   function updateRejectControls(data) {
-    if (!undoBtn || !rejectBtn) return;
-    const until = data.reject_pending_until;
-    clearRejectUndoTimer();
-    if (until && data.current_mix_id) {
-      undoBtn.hidden = false;
+    if (!rejectBtn) return;
+    if (data.rejected) {
       rejectBtn.hidden = true;
       if (statusEl) {
         statusEl.hidden = false;
-        statusEl.textContent =
-          "Reject pending — undo available for a few seconds";
+        statusEl.textContent = isSoftRejected(data) ? "Rejected (soft)" : "Rejected";
       }
-      const ms = Date.parse(until) - Date.now();
-      if (Number.isFinite(ms) && ms > 0) {
-        rejectUndoTimer = setTimeout(async () => {
-          await refreshPlayer();
-          await refreshMixes();
-          await refreshFiles();
-        }, ms + 50);
-      } else {
-        // Window already elapsed; refresh flushes commit via pending_rejects.
-        void (async () => {
-          await refreshPlayer();
-          await refreshMixes();
-          await refreshFiles();
-        })();
+      if (isSoftRejected(data) && data.current_mix_id) {
+        scheduleSoftRejectRefresh(data.current_mix_id, data.rejected_at);
       }
     } else {
-      undoBtn.hidden = true;
       rejectBtn.hidden = false;
       if (statusEl) {
-        if (data.rejected) {
-          statusEl.hidden = false;
-          statusEl.textContent = "Rejected";
-        } else {
-          statusEl.hidden = true;
-          statusEl.textContent = "";
-        }
+        statusEl.hidden = true;
+        statusEl.textContent = "";
       }
     }
   }
@@ -3613,29 +3585,29 @@ function setArtistExpanded(artistId, expanded) {
   else expandedCatalogArtists.delete(artistId);
 }
 
-function clearCatalogRejectTimer(mixId) {
-  const handle = catalogRejectTimers.get(mixId);
+function clearSoftRejectTimer(mixId) {
+  const handle = softRejectTimers.get(mixId);
   if (handle != null) {
     clearTimeout(handle);
-    catalogRejectTimers.delete(mixId);
+    softRejectTimers.delete(mixId);
   }
 }
 
-function scheduleCatalogRejectRefresh(mixId, untilIso) {
-  clearCatalogRejectTimer(mixId);
-  if (!untilIso) return;
-  const untilMs = Date.parse(untilIso);
-  if (Number.isNaN(untilMs)) return;
-  const delay = Math.max(0, untilMs - Date.now()) + 50;
+function scheduleSoftRejectRefresh(mixId, rejectedAtIso) {
+  clearSoftRejectTimer(mixId);
+  if (!rejectedAtIso) return;
+  const at = Date.parse(rejectedAtIso);
+  if (Number.isNaN(at)) return;
+  const delay = Math.max(0, at + SOFT_REJECT_MS - Date.now()) + 50;
   const handle = setTimeout(async () => {
-    catalogRejectTimers.delete(mixId);
+    softRejectTimers.delete(mixId);
     await refreshAfterAnnotateMutation();
   }, delay);
-  catalogRejectTimers.set(mixId, handle);
+  softRejectTimers.set(mixId, handle);
 }
 
 function mixMatchesCatalogFilters(mix) {
-  if (!showRejectedCatalog && mix.rejected) return false;
+  if (!showRejectedCatalog && isHardRejected(mix)) return false;
   if (
     catalogFilterPlatforms.length &&
     !catalogFilterPlatforms.includes(mix.platform)
@@ -4013,7 +3985,7 @@ async function refreshPlayHistory(mixes) {
   }
   const heard = rows
     .filter((mix) => mix.last_heard_at)
-    .filter((mix) => showRejectedHistory || !mix.rejected)
+    .filter((mix) => showRejectedHistory || !isHardRejected(mix))
     .slice()
     .sort((a, b) => String(b.last_heard_at).localeCompare(String(a.last_heard_at)));
   body.replaceChildren();
@@ -4141,27 +4113,23 @@ async function refreshPlayerIntents() {
   }
 }
 
-function clearRejectUndoTimer() {
-  if (rejectUndoTimer != null) {
-    clearTimeout(rejectUndoTimer);
-    rejectUndoTimer = null;
-  }
-}
-
 function updateRejectControls(data) {
   if (playerAnnotateKit?.updateRejectControls) {
     playerAnnotateKit.updateRejectControls(data);
     return;
   }
   // Fallback before kit mounts (should be rare).
-  const undoBtn = document.getElementById("player-undo-reject");
   const rejectBtn = document.getElementById("player-reject");
   const status = document.getElementById("player-reject-status");
-  if (!undoBtn || !rejectBtn || !status) return;
-  undoBtn.hidden = true;
-  rejectBtn.hidden = false;
-  status.hidden = true;
-  status.textContent = "";
+  if (!rejectBtn || !status) return;
+  rejectBtn.hidden = !!data.rejected;
+  if (data.rejected) {
+    status.hidden = false;
+    status.textContent = isSoftRejected(data) ? "Rejected (soft)" : "Rejected";
+  } else {
+    status.hidden = true;
+    status.textContent = "";
+  }
 }
 
 async function maybeCommitPlayhead(playing) {
@@ -5977,14 +5945,12 @@ function connectViewNotices() {
   const playerStarsRoot = document.getElementById("player-stars");
   const playerTagRoot = document.getElementById("player-tag-editor");
   const playerRejectBtn = document.getElementById("player-reject");
-  const playerUndoBtn = document.getElementById("player-undo-reject");
-  if (playerStarsRoot && playerTagRoot && playerRejectBtn && playerUndoBtn) {
+  if (playerStarsRoot && playerTagRoot && playerRejectBtn) {
     playerAnnotateKit = mountAnnotateKit({
       surface: "player",
       starsRoot: playerStarsRoot,
       tagRoot: playerTagRoot,
       rejectBtn: playerRejectBtn,
-      undoBtn: playerUndoBtn,
       statusEl: document.getElementById("player-reject-status"),
       getMixId: () => currentMixId,
       async onRate(stars) {

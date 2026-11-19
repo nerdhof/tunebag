@@ -4,12 +4,16 @@
 
 **Blocked by:** 01: Shared annotate control kit; 02: View-notice + refresh contract
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] Confirm-click Reject commits a Reject Event with no undo / `reject_pending_until` product path
-- [ ] API/Catalog snapshots expose Reject author time (or equivalent) for the Soft window
-- [ ] Soft Rejected rows appear muted in default Catalog and Play history; Hard Rejected only when that list’s Rejected filter is on; filters stay independent
-- [ ] File bytes are not deleted until Soft → Hard (5 minutes from Reject author time)
-- [ ] Player has Reject (confirm) and no Un-reject; lists have Reject or Un-reject by state
-- [ ] Companion updates via the shared refresh/notice path after Reject / Un-reject (local and peer)
-- [ ] Tests cover confirm commit, Soft/Hard visibility, delayed delete, and Un-reject during Soft vs after Hard
+- [x] Confirm-click Reject commits a Reject Event with no undo / `reject_pending_until` product path
+- [x] API/Catalog snapshots expose Reject author time (or equivalent) for the Soft window
+- [x] Soft Rejected rows appear muted in default Catalog and Play history; Hard Rejected only when that list’s Rejected filter is on; filters stay independent
+- [x] File bytes are not deleted until Soft → Hard (5 minutes from Reject author time)
+- [x] Player has Reject (confirm) and no Un-reject; lists have Reject or Un-reject by state
+- [x] Companion updates via the shared refresh/notice path after Reject / Un-reject (local and peer)
+- [x] Tests cover confirm commit, Soft/Hard visibility, delayed delete, and Un-reject during Soft vs after Hard
+
+## Comments
+
+- Replaced 20s `RejectBuffer` undo with immediate `MIX_REJECTED` + Soft window (`SOFT_REJECT_SECONDS` / `rejected_at` on Mix). Projection no longer deletes files on Reject; `RejectFileDeleteBuffer` + `_prune_unassigned_files` Soft skip defer bytes until Soft → Hard. API exposes `rejected_at`; dropped `reject_pending_until` / `undo-reject`. Companion: `bindConfirmClick` Reject, Soft/Hard list filters, Player Reject-only. Tests: `tests/test_reject_confirm_soft_hard.py` (+ updated callers).

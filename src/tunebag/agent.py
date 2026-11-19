@@ -45,7 +45,6 @@ from tunebag.domain import (
     Mix,
     Platform,
     Playhead,
-    RejectPending,
     ReleaseKind,
     Sequence,
     SkipPending,
@@ -87,7 +86,7 @@ from tunebag.playback import (
 from tunebag.event_payloads import encode_intent, encode_mix_added
 from tunebag.projection import CatalogState, LocalEffects
 from tunebag.maintenance import BoundMaintenance, CatalogChange, CatalogChangeReason
-from tunebag.reject import RejectBuffer
+from tunebag.reject import RejectFileDeleteBuffer, is_soft_rejected
 from tunebag.release_cache import OriginFetch, ReleaseCache
 from tunebag.release_layout import album_timeline_location
 from tunebag.sequence_provision import SequenceProvisioner
@@ -224,11 +223,12 @@ class DeviceAgent:
             on_changed=lambda: self._mark_view_sections(UIViewSection.CACHE),
         )
         self._covers = CoverCache(self.data_dir, fetch=cover_fetch)
-        # Local-only (not events): simulated link mode, reject undo, skip delay, now-playing.
+        # Local-only (not events): simulated link mode, Soft→Hard File delete,
+        # skip delay, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
         self._clock: Callable[[], datetime] = clock or datetime.utcnow
-        self._rejects = RejectBuffer()
+        self._reject_file_deletes = RejectFileDeleteBuffer()
         self._skips = SkipBuffer()
         # Event log spine: lock, seq, dedupe, sign/verify, live apply / boot replay.
         self._journal = CatalogJournal(
@@ -272,6 +272,8 @@ class DeviceAgent:
             self._journal.replay()
             # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
             self._prune_stale_locator_hints()
+            # Boot replay skips on_applied — arm Soft→Hard File deletes from Catalog.
+            self._arm_reject_file_deletes_from_catalog()
         self._start_discovery()
         self._sequence_provisioner = SequenceProvisioner()
         # Catalog maintenance ports (rebuild / fill / prune) — after methods exist.
@@ -2253,14 +2255,21 @@ class DeviceAgent:
         return self.catalog.mixes[mix_id]
 
     def reject_mix(self, mix_id: UUID) -> Mix:
-        """Start a local 20s undo window; nothing syncs until commit."""
-        self.commit_pending_rejects()
+        """Append a Reject Event immediately (confirm-click; no undo buffer)."""
+        self.commit_reject_file_deletes()
         if mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
         if self.catalog.mixes[mix_id].rejected:
             return self.catalog.mixes[mix_id]
         self._skips.cancel(mix_id)
-        self._rejects.start(mix_id, self.device.id, now=self._clock())
+        with self._view_notice_batch():
+            self._append_and_apply(
+                EventType.MIX_REJECTED,
+                {"mix_id": str(mix_id)},
+            )
+            self._maintenance.after_catalog_change(
+                CatalogChange(CatalogChangeReason.REJECT_COMMIT)
+            )
         return self.catalog.mixes[mix_id]
 
     def pending_skips(self) -> list[SkipPending]:
@@ -2291,13 +2300,9 @@ class DeviceAgent:
                 committed.append(pending.mix_id)
         return committed
 
-    def undo_reject(self, mix_id: UUID) -> bool:
-        """Cancel a pending reject during the undo window."""
-        return self._rejects.undo(mix_id)
-
     def un_reject_mix(self, mix_id: UUID) -> Mix:
-        """Clear a committed Reject so the Mix may re-enter sequences again."""
-        self.commit_pending_rejects()
+        """Clear a Reject so the Mix may re-enter sequences again."""
+        self.commit_reject_file_deletes()
         if mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
         if not self.catalog.mixes[mix_id].rejected:
@@ -2312,29 +2317,33 @@ class DeviceAgent:
             )
         return self.catalog.mixes[mix_id]
 
-    def pending_rejects(self) -> list[RejectPending]:
-        self.commit_pending_rejects()
-        return self._rejects.pending()
+    def commit_reject_file_deletes(self) -> list[UUID]:
+        """Delete File (and cover) bytes for Rejects whose Soft window has ended."""
+        deleted: list[UUID] = []
+        for mix_id in self._reject_file_deletes.ready_to_delete(now=self._clock()):
+            mix = self.catalog.mixes.get(mix_id)
+            if mix is None or not mix.rejected:
+                continue
+            # Always clear local audio/cover — cover may exist without a blob.
+            self.remove_local_file(mix_id)
+            deleted.append(mix_id)
+        return deleted
 
-    def commit_pending_rejects(self) -> list[UUID]:
-        """Commit rejects whose undo windows have ended; delete + rebuild."""
-        committed: list[UUID] = []
-        with self._view_notice_batch():
-            for pending in self._rejects.ready_to_commit(now=self._clock()):
-                if pending.mix_id not in self.catalog.mixes:
-                    continue
-                if self.catalog.mixes[pending.mix_id].rejected:
-                    committed.append(pending.mix_id)
-                    continue
-                self._append_and_apply(
-                    EventType.MIX_REJECTED,
-                    {"mix_id": str(pending.mix_id)},
-                )
-                self._maintenance.after_catalog_change(
-                    CatalogChange(CatalogChangeReason.REJECT_COMMIT)
-                )
-                committed.append(pending.mix_id)
-        return committed
+    def _arm_reject_file_deletes_from_catalog(self) -> None:
+        """Schedule Soft→Hard File deletes from projected Reject author times."""
+        for mix in self.catalog.mixes.values():
+            if mix.rejected and mix.rejected_at is not None:
+                self._reject_file_deletes.schedule(mix.id, mix.rejected_at)
+            else:
+                self._reject_file_deletes.cancel(mix.id)
+
+    def _sync_reject_file_delete_schedule(self, mix_id: UUID) -> None:
+        """Keep local File-delete schedule aligned with Catalog Reject state."""
+        mix = self.catalog.mixes.get(mix_id)
+        if mix is not None and mix.rejected and mix.rejected_at is not None:
+            self._reject_file_deletes.schedule(mix_id, mix.rejected_at)
+        else:
+            self._reject_file_deletes.cancel(mix_id)
 
     def create_intent(
         self,
@@ -2506,7 +2515,11 @@ class DeviceAgent:
         raise ValueError(f"unknown device_id(s) for hours: {bad}")
 
     def _prune_unassigned_files(self) -> None:
-        """Drop local blobs no remaining assignment wants (except currently playing)."""
+        """Drop local blobs no remaining assignment wants (except currently playing).
+
+        Soft Rejected Releases keep bytes until Soft → Hard (ADR-0007), even when
+        rebuild drops them from assignments.
+        """
         wanted: set[UUID] = set()
         for intent in self.intents():
             assignment = self.assignment(intent.id)
@@ -2514,10 +2527,18 @@ class DeviceAgent:
                 continue
             wanted.update(assignment.mix_ids)
         playing = self.current_mix() if self.is_playing() else None
+        now = self._clock()
         for mix_id in list(self._cache.local_ids()):
             if mix_id in wanted:
                 continue
             if playing is not None and mix_id == playing:
+                continue
+            mix = self.catalog.mixes.get(mix_id)
+            if mix is not None and is_soft_rejected(
+                rejected=mix.rejected,
+                rejected_at=mix.rejected_at,
+                now=now,
+            ):
                 continue
             self.remove_local_file(mix_id)
 
@@ -2567,7 +2588,7 @@ class DeviceAgent:
         return self._journal.export()
 
     def sync(self, *, fill: bool = True) -> None:
-        self.commit_pending_rejects()
+        self.commit_reject_file_deletes()
         self.commit_pending_skips()
         self.apply_expired_hours()
         self.note("sync start")
@@ -3055,6 +3076,8 @@ class DeviceAgent:
         Unknown-author buffer flush is CatalogJournal policy (before this callback).
         """
         self._run_local_effects(effects)
+        if event.type in (EventType.MIX_REJECTED, EventType.MIX_UNREJECTED):
+            self._sync_reject_file_delete_schedule(UUID(event.payload["mix_id"]))
         if event.device_id != self.device.id:
             self._record_view_sections_for_event(event.type)
         if event.type is EventType.DEVICE_UNPAIRED:

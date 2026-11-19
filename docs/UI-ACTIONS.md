@@ -113,13 +113,11 @@ Not user verbs in this contract (APIs may still exist until an implementation pa
 
 ## Gaps vs current code
 
-Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. As of the docs-only pass, the companion still roughly does the older model:
+Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Reject Soft/Hard (ui-actions 04):
 
-- Reject uses a ~20s undo buffer (`reject_pending_until`) and early File delete; no Soft/Hard visibility
-- Player lacks Un-reject (aligned) but still shows Undo, not confirm-click
 - Intent row still labeled/acts like Play rather than **Switch to intent**; sequence control tip may say Refresh
 - Cache still exposes global Fill and related chrome
 - Player still polls while playing (transport/position)
-- Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording, rate/reject undo wording)
+- Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
 
 Follow-up implementation should close these gaps against this contract.
