@@ -57,29 +57,35 @@
               title="Which intent sequence to play"
               aria-label="Intent"
             ></select>
-            <div class="player-symbols form-row">
+          </div>
+          <div class="player-seek form-row">
+            <div class="player-symbols player-symbols-prev" role="group" aria-label="Playback">
               <button type="button" id="player-play" aria-label="Play" data-tip="Play">▶</button>
               <button type="button" id="player-skip" aria-label="Skip" data-tip="Skip">⏭</button>
+            </div>
+            <div class="player-seek-main">
+              <div class="player-seek-rail">
+                <div id="player-seek-marks" class="player-seek-marks" aria-hidden="true"></div>
+                <input
+                  id="player-seekbar"
+                  type="range"
+                  min="0"
+                  max="0"
+                  step="1"
+                  value="0"
+                  disabled
+                  aria-label="Seek within the current release"
+                />
+              </div>
+            </div>
+            <div class="player-symbols player-symbols-next" role="group" aria-label="Stop and mark">
               <button type="button" id="player-stop" aria-label="Stop" data-tip="Stop">⏹</button>
               <button type="button" id="player-mark" aria-label="Mark played" data-tip="Mark played">✓</button>
             </div>
-          </div>
-          <div class="player-seek form-row">
-            <span id="player-time-current" class="seek-time">0:00</span>
-            <div class="player-seek-rail">
-              <div id="player-seek-marks" class="player-seek-marks" aria-hidden="true"></div>
-              <input
-                id="player-seekbar"
-                type="range"
-                min="0"
-                max="0"
-                step="1"
-                value="0"
-                disabled
-                aria-label="Seek within the current release"
-              />
+            <div class="player-seek-times">
+              <span id="player-time-current" class="seek-time">0:00</span>
+              <span id="player-time-total" class="seek-time">0:00</span>
             </div>
-            <span id="player-time-total" class="seek-time">0:00</span>
           </div>
         </div>
         <div class="player-below">

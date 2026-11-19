@@ -392,7 +392,7 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-symbols {
-  flex: 0 0 auto;
+  display: flex;
   flex-wrap: nowrap;
   align-items: center;
   width: max-content;
@@ -400,15 +400,38 @@ form.add-form-open .add-form-fields-inline {
   gap: 0.25rem;
 }
 
+.player-symbols-prev {
+  grid-area: prev;
+}
+
+.player-seek-main {
+  grid-area: main;
+  min-width: 0;
+  overflow: visible;
+}
+
+.player-symbols-next {
+  grid-area: next;
+}
+
+.player-seek-times {
+  grid-area: times;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
 .player-seek {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    "rail rail"
-    "current total";
-  column-gap: 0.3rem;
+    "prev main next"
+    ". times .";
+  align-items: end;
+  column-gap: 0.35rem;
   row-gap: 0.15rem;
-  align-items: center;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -416,21 +439,21 @@ form.add-form-open .add-form-fields-inline {
 }
 
 #player-time-current {
-  grid-area: current;
   justify-self: start;
 }
 
 #player-time-total {
-  grid-area: total;
   justify-self: end;
   text-align: right;
 }
 
-/* Grow only the seek row for angled titles; top controls stay put.
- * Leave a right inset so the last -60° title isn’t clipped by .player-transport. */
+/* Grow only the seek main for angled titles; side controls stay on the bar row
+ * (times are a separate grid row so they don’t pull buttons down). */
 .player-seek.has-track-labels {
-  width: calc(100% - 3.5rem);
-  max-width: calc(100% - 3.5rem);
+  overflow: visible;
+}
+
+.player-seek.has-track-labels .player-seek-main {
   padding-top: var(--seek-label-headroom, 5.5rem);
   box-sizing: content-box;
   overflow: visible; /* transport hard-clips overhang; keep labels inside headroom */
@@ -466,7 +489,6 @@ form.add-form-open .add-form-fields-inline {
 
 .player-seek-rail {
   --seek-bar-height: 1.25rem;
-  grid-area: rail;
   position: relative;
   flex: 1 1 auto;
   width: 100%;
@@ -670,6 +692,26 @@ form.add-form-open .add-form-fields-inline {
 
   .player-symbols {
     width: auto;
+  }
+
+  /* Seek full-width; times then controls under, split left/right. */
+  .player-seek {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "main main"
+      "times times"
+      "prev next";
+    align-items: center;
+    column-gap: 0.25rem;
+    row-gap: 0.25rem;
+  }
+
+  .player-symbols-prev {
+    justify-self: start;
+  }
+
+  .player-symbols-next {
+    justify-self: end;
   }
 }
 
