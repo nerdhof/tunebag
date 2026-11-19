@@ -3056,11 +3056,17 @@ function groupMixesByArtist(mixes) {
         artistId,
         artistName,
         artistUrl: mix.artist_url || null,
+        platform: mix.platform || null,
         mixes: [],
       };
       groups.set(artistId, group);
-    } else if (!group.artistUrl && mix.artist_url) {
-      group.artistUrl = mix.artist_url;
+    } else {
+      if (!group.artistUrl && mix.artist_url) {
+        group.artistUrl = mix.artist_url;
+      }
+      if (!group.platform && mix.platform) {
+        group.platform = mix.platform;
+      }
     }
     group.mixes.push(mix);
   }
@@ -3337,19 +3343,30 @@ async function refreshMixes({ force = false } = {}) {
       artistLabel.appendChild(toggle);
       appendArtistFoldName(artistLabel, group.artistName, group.mixes);
       if (group.artistUrl) {
+        const platformLabel =
+          PLATFORM_LABELS[group.platform] || group.platform || "source";
+        const openTip = `Open artist page on ${platformLabel}`;
+        artistLabel.appendChild(document.createTextNode(" "));
         const link = document.createElement("a");
         link.className = "artist-link";
         link.href = group.artistUrl;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
         link.removeAttribute("title");
-        link.setAttribute("aria-label", "Open artist page");
-        link.dataset.tip = "Open artist page";
-        link.textContent = "↗";
+        link.setAttribute("aria-label", openTip);
+        link.dataset.tip = openTip;
+        if (group.platform && PLATFORM_SVG[group.platform]) {
+          const icon = document.createElement("span");
+          icon.className = "artist-source-icon";
+          icon.setAttribute("aria-hidden", "true");
+          icon.innerHTML = PLATFORM_SVG[group.platform];
+          link.appendChild(icon);
+        } else {
+          link.textContent = "↗";
+        }
         link.addEventListener("click", (event) => {
           event.stopPropagation();
         });
-        artistLabel.appendChild(document.createTextNode(" "));
         artistLabel.appendChild(link);
       }
       foldMain.appendChild(artistLabel);
