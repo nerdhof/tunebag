@@ -189,9 +189,19 @@ def test_unreject_does_not_restore_file_bytes(tmp_path: Path) -> None:
 
     laptop.un_reject_mix(mix_id)
     phone.sync()
+    # Un-reject itself does not restore bytes; rebuild + request_fill may
+    # re-fetch once the Release is assigned again.
+    laptop.wait_for_fill()
+    phone.wait_for_fill()
 
-    assert mix_id not in {m.id for m in laptop.files()}
-    assert mix_id not in {m.id for m in phone.files()}
+    laptop_assignment = laptop.assignment(
+        next(i.id for i in laptop.intents() if i.name == "Plan")
+    )
+    assert laptop_assignment is not None
+    if mix_id in laptop_assignment.mix_ids:
+        assert mix_id in {m.id for m in laptop.files()}
+    else:
+        assert mix_id not in {m.id for m in laptop.files()}
 
 
 def test_catalog_reject_commits_immediately_and_syncs(tmp_path: Path) -> None:

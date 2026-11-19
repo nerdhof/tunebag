@@ -60,10 +60,13 @@ def test_mark_played_rebuilds_fills_and_retires() -> None:
     ]
 
 
-def test_un_reject_rebuilds_without_fill() -> None:
+def test_un_reject_rebuilds_and_request_fill() -> None:
     actions = FakeActions()
     assert after_catalog_change(actions, CatalogChange(CatalogChangeReason.UN_REJECT))
-    assert actions.calls == [("rebuild_all", None)]
+    assert actions.calls == [
+        ("rebuild_all", None),
+        ("request_fill", None),
+    ]
 
 
 def test_intent_upsert_rebuilds_prunes_and_optionally_fills() -> None:

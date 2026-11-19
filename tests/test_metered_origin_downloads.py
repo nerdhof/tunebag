@@ -216,6 +216,48 @@ def test_peer_copy_ignores_metered_cap(tmp_path: Path) -> None:
     assert phone.assignment(intent.id) is not None
 
 
+def test_metered_advancing_current_makes_next_actionable(tmp_path: Path) -> None:
+    """set_current_mix re-kicks fill so the new Metered window can origin-fetch."""
+    laptop, _phone, source = _pair(tmp_path)
+    _intent_id, first, second, third = _three_hour_plan(
+        laptop, source, name="Advance window"
+    )
+
+    laptop.set_metered(True)
+    laptop.set_current_mix(first)
+    laptop.fill_caches()
+    assert {m.id for m in laptop.files()} == {first, second}
+    third_url = laptop.catalog.mixes[third].url
+    assert third_url not in source.fetch_calls
+
+    source.fetch_calls.clear()
+    laptop.set_current_mix(second)
+    laptop.wait_for_fill()
+
+    assert {m.id for m in laptop.files()} == {first, second, third}
+    assert source.fetch_calls == [third_url]
+
+
+def test_unmetered_toggle_refills_deferred_pending(tmp_path: Path) -> None:
+    """Leaving Metered re-kicks fill so deferred assignment gaps become actionable."""
+    laptop, _phone, source = _pair(tmp_path)
+    _intent_id, first, second, third = _three_hour_plan(
+        laptop, source, name="Unmetered kick"
+    )
+
+    laptop.set_metered(True)
+    laptop.set_current_mix(first)
+    laptop.fill_caches()
+    assert {m.id for m in laptop.files()} == {first, second}
+
+    source.fetch_calls.clear()
+    laptop.set_metered(False)
+    laptop.wait_for_fill()
+
+    assert {m.id for m in laptop.files()} == {first, second, third}
+    assert source.fetch_calls == [laptop.catalog.mixes[third].url]
+
+
 def test_catalog_sync_still_happens_on_metered_link(tmp_path: Path) -> None:
     laptop, phone, source = _pair(tmp_path)
     mix_id = _add_mix(

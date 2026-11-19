@@ -157,9 +157,11 @@ def test_phone_gets_shared_mix_as_soon_as_laptop_has_it(tmp_path: Path) -> None:
         ],
     )
     laptop.wait_for_fill()
-    # Drop the auto-fill so we can simulate a partial laptop cache.
-    for mix in list(laptop.files()):
-        laptop.remove_local_file(mix.id)
+    phone.wait_for_fill()
+    # Drop the auto-fill (laptop origin + phone peer-nudge) for a partial cache.
+    for agent in (laptop, phone):
+        for mix in list(agent.files()):
+            agent.remove_local_file(mix.id)
     phone.sync(fill=False)
     assignment = laptop.assignment(intent.id)
     assert assignment is not None
@@ -167,7 +169,7 @@ def test_phone_gets_shared_mix_as_soon_as_laptop_has_it(tmp_path: Path) -> None:
     head, tail = assignment.mix_ids[0], assignment.mix_ids[1]
     head_url = laptop.catalog.mixes[head].url
 
-    # Simulate laptop having only the sequence head so far.
+    # Simulate laptop having only the sequence head so far (no peer nudge).
     laptop._store_local_file(head, source.bytes_by_url[head_url])
     calls_before = list(source.fetch_calls)
     phone.fill_caches()
@@ -238,8 +240,10 @@ def test_phone_origin_fetches_when_laptop_unreachable(tmp_path: Path) -> None:
         ],
     )
     laptop.wait_for_fill()
-    for mix in list(laptop.files()):
-        laptop.remove_local_file(mix.id)
+    phone.wait_for_fill()
+    for agent in (laptop, phone):
+        for mix in list(agent.files()):
+            agent.remove_local_file(mix.id)
     phone.sync(fill=False)
     phone.disconnect(laptop)
     source.fetch_calls.clear()
@@ -520,15 +524,154 @@ def test_fill_caches_picks_sooner_intent_before_later_mix(tmp_path: Path) -> Non
 
     # Deep into Alpha's first mix: Bravo's head (urgency 0) beats Alpha's next
     # mix (urgency ≈ 100). Catalog order would still finish Alpha first.
+    # Position before set_current_mix: that call kicks background fill.
     laptop._store_local_file(head, source.bytes_by_url[head_url])
-    laptop.set_current_mix(head)
-    laptop._playback_position = 3500.0
     source.fetch_calls.clear()
-
-    laptop.fill_caches()
+    laptop._playback_position = 3500.0
+    laptop.set_current_mix(head)
+    laptop.wait_for_fill()
 
     assert source.fetch_calls == [
         "https://example.com/b0",
         tail_url,
     ]
     assert {m.id for m in laptop.files()} == {a0, a1, b0}
+
+
+def test_laptop_fill_nudges_phone_waiting_on_preferred(tmp_path: Path) -> None:
+    """After laptop caches a shared Release, phone fill resumes via peer nudge."""
+    laptop, phone, source = _pair(tmp_path)
+    first = _add_mix(
+        laptop,
+        source,
+        title="First",
+        duration_seconds=3600,
+        platform_id="nudge-first",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Second",
+        duration_seconds=3600,
+        platform_id="nudge-second",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Nudge",
+        seed=1,
+        device_hours=[
+            (phone.device_id, 7200),
+            (laptop.device_id, 7200),
+        ],
+    )
+    laptop.wait_for_fill()
+    phone.wait_for_fill()
+    for agent in (laptop, phone):
+        for mix in list(agent.files()):
+            agent.remove_local_file(mix.id)
+    phone.sync(fill=False)
+    phone.wait_for_fill()
+    assert {m.id for m in phone.files()} == set()
+    assert {m.id for m in laptop.files()} == set()
+
+    first_url = laptop.catalog.mixes[first].url
+    second_url = laptop.catalog.mixes[second].url
+    calls_before = list(source.fetch_calls)
+    phone.fill_caches()
+    assert {m.id for m in phone.files()} == set()
+    assert source.fetch_calls == calls_before
+
+    laptop.fill_caches()
+    phone.wait_for_fill()
+
+    assert {m.id for m in phone.files()} == {first, second}
+    # Laptop origin-fetched both; phone only peer-copied (no extra origin calls).
+    assert source.fetch_calls.count(first_url) == calls_before.count(first_url) + 1
+    assert source.fetch_calls.count(second_url) == calls_before.count(second_url) + 1
+    assignment = phone.assignment(intent.id)
+    assert assignment is not None
+    assert set(assignment.mix_ids) == {first, second}
+
+
+def test_request_fill_refills_after_idle_boot_style(tmp_path: Path) -> None:
+    """Cli-style request_fill after idle pending restores urgent Files."""
+    laptop, _phone, source = _pair(tmp_path)
+    mix_id = _add_mix(
+        laptop,
+        source,
+        title="Boot",
+        duration_seconds=3600,
+        platform_id="boot",
+        stars=Stars.FIVE,
+    )
+    laptop.create_intent(
+        "Boot fill",
+        seed=1,
+        device_hours=[(laptop.device_id, 3600)],
+    )
+    laptop.wait_for_fill()
+    laptop.remove_local_file(mix_id)
+    source.fetch_calls.clear()
+    assert not laptop.fill_in_progress
+
+    laptop.request_fill()
+    laptop.wait_for_fill()
+
+    assert {m.id for m in laptop.files()} == {mix_id}
+    assert source.fetch_calls == ["https://example.com/boot"]
+
+
+def test_mark_played_coalesces_fill_while_background_running(tmp_path: Path) -> None:
+    """Played rebuild + fill coalesces onto an in-flight background fill."""
+    gate = threading.Event()
+    fetch_started = threading.Event()
+    fetch_urls: list[str] = []
+
+    class GatedSource(FakeSource):
+        def fetch_bytes(self, source_url: str, *, on_progress=None) -> bytes:
+            fetch_urls.append(source_url)
+            fetch_started.set()
+            assert gate.wait(timeout=5.0), "fill gate was not released"
+            return super().fetch_bytes(source_url, on_progress=on_progress)
+
+    source = GatedSource()
+    laptop = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=source,  # type: ignore[arg-type]
+        data_dir=tmp_path / "played-coalesce",
+    )
+    ids = [
+        _add_mix(
+            laptop,
+            source,
+            title=f"Played {n}",
+            duration_seconds=3600,
+            platform_id=f"played-{n}",
+            stars=Stars.FIVE,
+        )
+        for n in range(1, 5)
+    ]
+    intent = laptop.create_intent(
+        "Played coalesce",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    assert laptop.fill_in_progress is True
+    assert fetch_started.wait(timeout=2.0)
+
+    before = laptop.assignment(intent.id)
+    assert before is not None
+    head = before.mix_ids[0]
+    # mark_played runs fill_caches synchronously (waits on in-flight fill).
+    threading.Timer(0.05, gate.set).start()
+    laptop.mark_played(head)
+    laptop.wait_for_fill(timeout=5.0)
+
+    after = laptop.assignment(intent.id)
+    assert after is not None
+    assert laptop.catalog.mixes[head].played
+    cached = {m.id for m in laptop.files()}
+    assert set(after.mix_ids).issubset(cached)
+    assert set(ids).issuperset(set(after.mix_ids))

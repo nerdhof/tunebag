@@ -468,6 +468,9 @@ class DeviceAgent:
         # Becoming reachable triggers a catalog sync attempt on both sides.
         self.request_sync(fill=False)
         other.request_sync(fill=False)
+        # Peer bytes / preferred-origin graph may have become actionable.
+        self.request_fill()
+        other.request_fill()
 
     def disconnect(self, other: DeviceAgent) -> None:
         """Mark another in-process agent unreachable."""
@@ -818,6 +821,10 @@ class DeviceAgent:
     def set_metered(self, metered: bool) -> None:
         """Simulate a metered link (demo switch; no SIM required)."""
         self._metered = bool(metered)
+        # Unmetered makes the full assignment actionable; enabling metered only
+        # shrinks the window (next fill pass already skips deferred).
+        if not self._metered:
+            self.request_fill()
 
     def current_mix(self) -> UUID | None:
         return self._current_mix_id
@@ -827,6 +834,8 @@ class DeviceAgent:
         if mix_id is not None and mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
         self._current_mix_id = mix_id
+        # Metered window moves with play / skip / continue.
+        self.request_fill()
 
     def is_playing(self) -> bool:
         self._supervise_playback()
@@ -1348,10 +1357,14 @@ class DeviceAgent:
         """Fill this device's assignments from peers or origin.
 
         Missing mixes are fetched in soonest-needed order across intents
-        (sequence time offset minus listen progress). When metered, origin
-        fetches are limited to the current mix plus one ahead per intent,
-        unless ``override_intent_id`` is that intent (Fill now). Peer copies
-        always ignore the metered cap. Files already local stay.
+        (sequence time offset minus listen progress). Only **actionable**
+        gaps are attempted: peer already has bytes, or this device may
+        origin-fetch under Metered / preferred-origin rules. Deferred gaps
+        stay pending and the pass ends (re-kick on play, unmetered, peer
+        cache, connect, …). When metered, origin fetches are limited to the
+        current mix plus one ahead per intent, unless ``override_intent_id``
+        is that intent (Fill now). Peer copies always ignore the metered cap.
+        Files already local stay.
 
         Returns the number of mixes with local audio after the pass. Per-mix
         fetch failures are skipped so one bad URL does not abort the fill.
@@ -1400,6 +1413,12 @@ class DeviceAgent:
                     key = (intent.id, mix_id)
                     if key in attempted or self._has_local_file(mix_id):
                         continue
+                    if not self._fetch_actionable(
+                        intent.id,
+                        mix_id,
+                        override_intent_id=override_intent_id,
+                    ):
+                        continue
                     urgency = self._mix_urgency(assignment, mix_id)
                     candidates.append(
                         (urgency, str(intent.id), index, intent.id, mix_id)
@@ -1426,6 +1445,8 @@ class DeviceAgent:
                     level=logging.WARNING,
                 )
                 continue
+            if self._has_local_file(mix_id):
+                self._nudge_peers_waiting_on_us(intent_id, mix_id)
         # Drop leftovers from prior assignments / deleted intents before
         # rewriting intent folders. Batch only this short tail.
         with self._view_notice_batch():
@@ -2784,6 +2805,50 @@ class DeviceAgent:
             )
         )
 
+    def _trusted_reachable_peers(self) -> list[DeviceAgent]:
+        return [
+            peer
+            for peer in self._reachable
+            if self._trusts_public_key(peer.public_key_pem)
+        ]
+
+    def _peer_has_release(self, peer: DeviceAgent, mix_id: UUID) -> bool:
+        return peer._has_local_file(mix_id)
+
+    def _fetch_actionable(
+        self,
+        intent_id: UUID,
+        mix_id: UUID,
+        *,
+        override_intent_id: UUID | None = None,
+    ) -> bool:
+        """True when a peer already has bytes or this device may origin-fetch now.
+
+        False means Metered hold or preferred-peer wait — leave pending and idle
+        until a re-kick (play, metered flip, peer cache, connect, …).
+        """
+        if self._has_local_file(mix_id):
+            return False
+        for peer in self._trusted_reachable_peers():
+            if self._peer_has_release(peer, mix_id):
+                return True
+        preferred = self._preferred_origin_agent(intent_id, mix_id)
+        if preferred is not self and preferred is not None:
+            return False
+        return self._origin_fetch_allowed(intent_id, mix_id, override_intent_id)
+
+    def _nudge_peers_waiting_on_us(self, intent_id: UUID, mix_id: UUID) -> None:
+        """Resume fill on peers for whom we are the preferred origin for ``mix_id``.
+
+        Avoids a peer-copy (phone ← laptop) nudging the preferred origin to
+        keep origin-fetching the rest of the assignment mid handoff.
+        """
+        for peer in self._trusted_reachable_peers():
+            if not self._assignment_includes(peer, intent_id, mix_id):
+                continue
+            if peer._preferred_origin_agent(intent_id, mix_id) is self:
+                peer.request_fill()
+
     def _ensure_local_file(
         self,
         intent_id: UUID,
@@ -2797,11 +2862,7 @@ class DeviceAgent:
         mix = self.catalog.mixes.get(mix_id)
         if mix is None:
             return
-        peers = [
-            peer
-            for peer in self._reachable
-            if self._trusts_public_key(peer.public_key_pem)
-        ]
+        peers = self._trusted_reachable_peers()
         preferred = self._preferred_origin_agent(intent_id, mix_id)
         origin: OriginFetch | None = None
         if preferred is self or preferred is None:

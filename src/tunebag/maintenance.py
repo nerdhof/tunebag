@@ -100,6 +100,7 @@ def after_catalog_change(actions: MaintenanceActions, change: CatalogChange) -> 
 
     if reason is CatalogChangeReason.UN_REJECT:
         actions.rebuild_all_sequences()
+        actions.request_fill()
         return True
 
     if reason in (
