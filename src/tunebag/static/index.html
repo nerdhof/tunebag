@@ -184,7 +184,9 @@
             <span class="section-info-tip" role="tooltip">
               An intent is a shared plan: tag filter, optional artist filter, source toggles, and rating distribution.
               Assign hours (and optional expiry) per device after creating; both share one seeded sequence, and the
-              smaller budget is the opening stretch.
+              smaller budget is the opening stretch. Switch to intent starts or continues that plan’s playback
+              (pauses when it is already playing). Regenerate sequence rebuilds assignments; Fill now tops one
+              intent to its full device budget on a metered link.
             </span>
           </span>
         </h2>
@@ -219,8 +221,8 @@
             </button>
             <span class="section-info-tip" role="tooltip">
               Audio on this device for its assigned hours. Creating or updating an intent fills
-              automatically; use the button to retry. On a metered link, origin downloads stay at the
-              current release plus one ahead per intent; peer copies still fill.
+              automatically; use Fill now on an Intent to top up once while metered. On a metered link,
+              origin downloads stay at the current release plus one ahead per intent; peer copies still fill.
             </span>
           </span>
         </h2>
@@ -232,7 +234,6 @@
             <input type="checkbox" id="metered-toggle" />
             Metered link (simulated)
           </label>
-          <button type="button" id="fill-btn" aria-label="Fill caches" data-tip="Fill caches">⬇</button>
         </div>
         <p id="fill-status" class="muted" role="status"></p>
         <div id="cache-table-wrap">

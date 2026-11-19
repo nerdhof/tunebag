@@ -113,10 +113,8 @@ Not user verbs in this contract (APIs may still exist until an implementation pa
 
 ## Gaps vs current code
 
-Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Reject Soft/Hard (ui-actions 04):
+Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Intent verbs / Fill cleanup (ui-actions 05):
 
-- Intent row still labeled/acts like Play rather than **Switch to intent**; sequence control tip may say Refresh
-- Cache still exposes global Fill and related chrome
 - Player still polls while playing (transport/position)
 - Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
 

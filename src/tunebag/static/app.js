@@ -4175,7 +4175,8 @@ function updatePlayPauseButton(playing) {
 }
 
 function setIntentPlayButton(btn, playingThis) {
-  const label = playingThis ? "Pause" : "Play";
+  // Glossary: Switch to intent; when that Intent is already playing → Pause.
+  const label = playingThis ? "Pause" : "Switch to intent";
   setSymbolButton(btn, playingThis ? BTN.pause : BTN.play, label);
   btn.dataset.playing = playingThis ? "true" : "false";
 }
@@ -4233,12 +4234,7 @@ async function pausePlayback() {
   }
   if (status) status.textContent = data.played ? "Paused · marked played" : "Paused";
   lastPlayheadCommitAt = Date.now();
-  await refreshPlayer();
-  if (data.played) {
-    await refreshMixes();
-    await refreshFiles();
-    await refreshIntents();
-  }
+  await refreshAfterIntentPlaybackMutation({ markedPlayed: Boolean(data.played) });
   return true;
 }
 
@@ -4263,8 +4259,7 @@ async function playIntent(intentId) {
   if (status) status.textContent = "";
   lastPlayheadCommitAt = Date.now();
   playheadPlayedNotifiedForMix = null;
-  await refreshPlayer();
-  await refreshFiles();
+  await refreshAfterIntentPlaybackMutation();
   return true;
 }
 
@@ -4400,7 +4395,7 @@ async function refreshFiles({ force = false } = {}) {
     td.colSpan = 6;
     td.className = "muted";
     td.textContent =
-      "No assigned audio yet — create an intent with hours, or press Fill caches";
+      "No assigned audio yet — create an intent with hours, or use Fill now on an Intent";
     tr.appendChild(td);
     body.appendChild(tr);
     return;
@@ -4926,7 +4921,7 @@ async function refreshIntents({ force = false } = {}) {
               : document.getElementById("player-status")?.textContent || "Play failed";
           }
         } catch (err) {
-          if (status) status.textContent = "Play request failed";
+          if (status) status.textContent = "Switch to intent request failed";
           console.error(err);
         }
       });
@@ -4936,51 +4931,50 @@ async function refreshIntents({ force = false } = {}) {
       setSymbolButton(editBtn, BTN.edit, "Edit intent");
       editBtn.addEventListener("click", () => beginEditIntent(intent));
       headingRow.appendChild(editBtn);
-      const refreshBtn = document.createElement("button");
-      refreshBtn.type = "button";
-      setSymbolButton(refreshBtn, BTN.refresh, "Refresh");
-      refreshBtn.addEventListener("click", async () => {
+      const regenerateBtn = document.createElement("button");
+      regenerateBtn.type = "button";
+      setSymbolButton(regenerateBtn, BTN.refresh, "Regenerate sequence");
+      regenerateBtn.addEventListener("click", async () => {
         const status = document.getElementById("intent-status");
-        status.textContent = `Refreshing sequence “${intent.name}”…`;
+        status.textContent = `Regenerating sequence “${intent.name}”…`;
         try {
           const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
             method: "POST",
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) {
-            status.textContent = data.detail || "Refresh sequence failed";
+            status.textContent = data.detail || "Regenerate sequence failed";
             return;
           }
           status.textContent = data.fill_in_progress
-            ? `Refreshed “${intent.name}” · fill started`
-            : `Refreshed “${intent.name}”`;
-          await refreshIntents();
-          await refreshFiles();
+            ? `Regenerated “${intent.name}” · fill started`
+            : `Regenerated “${intent.name}”`;
+          await refreshAffectedSurfaces(["intents", "cache"], { force: true });
         } catch (err) {
-          status.textContent = "Refresh sequence request failed";
+          status.textContent = "Regenerate sequence request failed";
           console.error(err);
         }
       });
-      headingRow.appendChild(refreshBtn);
+      headingRow.appendChild(regenerateBtn);
       const fillNowBtn = document.createElement("button");
       fillNowBtn.type = "button";
-      setSymbolButton(fillNowBtn, BTN.fill, "Fill");
+      setSymbolButton(fillNowBtn, BTN.fill, "Fill now");
       fillNowBtn.addEventListener("click", async () => {
         const status = document.getElementById("intent-status");
-        status.textContent = `Fill “${intent.name}”…`;
+        status.textContent = `Fill now “${intent.name}”…`;
         try {
           const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) {
-            status.textContent = data.detail || "Fill failed";
+            status.textContent = data.detail || "Fill now failed";
             return;
           }
           status.textContent = data.fill_in_progress
-            ? `Fill “${intent.name}” started · ${data.files} cached so far`
-            : `Fill “${intent.name}” · ${data.files} cached`;
-          await refreshFiles();
+            ? `Fill now “${intent.name}” started · ${data.files} cached so far`
+            : `Fill now “${intent.name}” · ${data.files} cached`;
+          await refreshAffectedSurfaces(["cache", "intents"], { force: true });
         } catch (err) {
-          status.textContent = "Fill request failed";
+          status.textContent = "Fill now request failed";
           console.error(err);
         }
       });
@@ -5651,27 +5645,6 @@ document.getElementById("metered-toggle").addEventListener("change", async (even
   }
 });
 
-document.getElementById("fill-btn").addEventListener("click", async () => {
-  const status = document.getElementById("fill-status");
-  status.textContent = "Starting fill…";
-  try {
-    const res = await fetch("/api/fill", { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) {
-      status.textContent = data.detail || "Fill failed";
-      return;
-    }
-    status.textContent = data.fill_in_progress
-      ? `Filling caches… (${data.files} cached so far)`
-      : `Filled · ${data.files} cached`;
-    await refreshFiles();
-    await refreshIntents();
-  } catch (err) {
-    status.textContent = "Fill request failed";
-    console.error(err);
-  }
-});
-
 document.getElementById("player-play").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   const btn = document.getElementById("player-play");
@@ -5913,6 +5886,16 @@ async function refreshAfterAnnotateMutation({ intents = false } = {}) {
   if (intents) sections.push("intents");
   await refreshAffectedSurfaces(sections, { force: true });
   await refreshPlayer();
+}
+
+/** After Switch to intent / Pause from an Intent row (and Player transport play/pause). */
+async function refreshAfterIntentPlaybackMutation({ markedPlayed = false } = {}) {
+  await refreshPlayer();
+  const sections = ["cache"];
+  if (markedPlayed) {
+    sections.push("mixes", "play_history", "intents");
+  }
+  await refreshAffectedSurfaces(sections, { force: true });
 }
 
 function connectViewNotices() {
