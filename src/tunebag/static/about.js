@@ -99,7 +99,7 @@
       summary:
         "A shared plan: tag filter plus rating distribution. Devices attach hours and optional expiry.",
       points: [
-        "Membership uses AND of required Tags.",
+        "Membership uses OR of required Tags.",
         "Rating distribution draws across 5★…1★ and unrated (must sum to 1).",
         "All Devices sharing an Intent share one seeded Sequence.",
       ],
@@ -161,10 +161,10 @@
       label: "Tag",
       layer: 5,
       col: COL.catalog,
-      tip: "Free-text label on a Release; Intent membership is AND of required Tags.",
+      tip: "Free-text label on a Release; Intent membership is OR of required Tags.",
       summary: "A free-text label on a Release. Suggestions prefer existing tags.",
       points: [
-        "Intent membership uses AND of required Tags.",
+        "Intent membership uses OR of required Tags.",
         "Unrated Releases may still match a tagged Intent.",
       ],
     },

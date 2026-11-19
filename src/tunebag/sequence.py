@@ -53,7 +53,7 @@ def matches_filter(
     if artists and mix.artist_id not in set(artists):
         return False
     if tags:
-        return set(tags).issubset(set(mix.tags))
+        return not set(tags).isdisjoint(set(mix.tags))
     # Empty tags: untagged-only when no artist filter; otherwise all tags OK.
     if not artists:
         return len(mix.tags) == 0

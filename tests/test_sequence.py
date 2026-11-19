@@ -205,6 +205,51 @@ def test_matches_filter_tags_and_artist_intersection() -> None:
     assert matches_filter(deep_b, ["deep"], [artist_a]) is False
 
 
+def test_matches_filter_tags_or_membership() -> None:
+    artist = uuid4()
+    deep = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="d",
+        title="D",
+        url="https://example.com/d",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    house = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="h",
+        title="H",
+        url="https://example.com/h",
+        duration_seconds=60,
+        tags=["house"],
+    )
+    other = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="o",
+        title="O",
+        url="https://example.com/o",
+        duration_seconds=60,
+        tags=["techno"],
+    )
+    both = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="b",
+        title="B",
+        url="https://example.com/b",
+        duration_seconds=60,
+        tags=["deep", "house"],
+    )
+    intent_tags = ["deep", "house"]
+    assert matches_filter(deep, intent_tags) is True
+    assert matches_filter(house, intent_tags) is True
+    assert matches_filter(both, intent_tags) is True
+    assert matches_filter(other, intent_tags) is False
+
+
 def test_build_sequence_empty_tags_with_artist_fills_tagged_and_untagged() -> None:
     artist_a = uuid4()
     artist_b = uuid4()

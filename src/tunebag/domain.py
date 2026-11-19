@@ -164,7 +164,7 @@ class Intent(BaseModel):
 
     id: UUID = Field(default_factory=new_id)
     name: str
-    tags: list[str] = Field(default_factory=list)  # AND; empty+no artists = untagged only
+    tags: list[str] = Field(default_factory=list)  # OR; empty+no artists = untagged only
     artist_ids: list[UUID] = Field(default_factory=list)  # OR; empty = no artist filter
     platforms: list[Platform] = Field(default_factory=default_intent_platforms)
     distribution: StarDistribution = Field(default_factory=StarDistribution)
