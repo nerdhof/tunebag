@@ -1115,6 +1115,22 @@ button:disabled {
   min-width: 0;
 }
 
+#intent-list .intent-meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+#intent-list .intent-meta-tags .tag-chip,
+#intent-list .intent-meta-tags .tag-chip-label {
+  color: var(--fg);
+}
+
+#intent-list .intent-meta-tags .tag-chips {
+  display: inline-flex;
+}
+
 .intent-composer {
   display: flex;
   flex-direction: column;

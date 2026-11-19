@@ -245,6 +245,42 @@ function tagChipColors(tag, allTags) {
 }
 
 /**
+ * Read-only colored chips (no add/remove). Colors match the tag editor.
+ * @param {string[]} tags
+ * @param {Iterable<string>} [allTags]
+ * @returns {HTMLElement}
+ */
+function renderTagChipsDisplay(tags, allTags) {
+  const cleaned = (tags || []).map(normalizeTag).filter(Boolean);
+  const chipsEl = document.createElement("div");
+  chipsEl.className = "tag-chips";
+  if (!cleaned.length) {
+    const empty = document.createElement("span");
+    empty.className = "intent-meta-empty";
+    empty.textContent = "-";
+    chipsEl.appendChild(empty);
+    return chipsEl;
+  }
+  const context = allTags != null ? [...allTags, ...cleaned] : cleaned;
+  const slots = assignTagChipSlots(context);
+  for (const tag of cleaned) {
+    const slot = slots.get(tag) ?? tagChipHash(tag) % TAG_CHIP_PALETTE.length;
+    const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.style.setProperty("--tag-chip-border", border);
+    chip.style.setProperty("--tag-chip-fill", fill);
+    chip.dataset.tag = tag;
+    const label = document.createElement("span");
+    label.className = "tag-chip-label";
+    label.textContent = tag;
+    chip.appendChild(label);
+    chipsEl.appendChild(chip);
+  }
+  return chipsEl;
+}
+
+/**
  * Chip tag editor: thin colored chips, confirm-to-remove, + picker.
  * @param {HTMLElement} root
  * @param {{
@@ -4432,7 +4468,12 @@ async function refreshIntents({ force = false } = {}) {
       meta.className = "intent-meta muted";
       const tagsEl = document.createElement("span");
       tagsEl.className = "intent-meta-tags";
-      tagsEl.textContent = `Tags: ${intent.tags.length ? intent.tags.join(", ") : "-"}`;
+      const tagsLabel = document.createElement("span");
+      tagsLabel.textContent = "Tags:";
+      tagsEl.appendChild(tagsLabel);
+      tagsEl.appendChild(
+        renderTagChipsDisplay(intent.tags || [], catalogTagsCache),
+      );
       const artistsEl = document.createElement("span");
       artistsEl.className = "intent-meta-artists";
       const artistIds = intent.artist_ids || [];
