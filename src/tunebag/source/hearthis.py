@@ -124,7 +124,8 @@ def _hearthis_upload(
 
 
 def _hearthis_cover_url(item: dict) -> str | None:
-    for key in ("thumb", "artwork_url", "artwork_url_retina"):
+    # Prefer larger art; CoverCache retries sibling wNNN_hNNN sizes on 403.
+    for key in ("artwork_url_retina", "artwork_url", "thumb_hires", "thumb"):
         raw = item.get(key)
         if isinstance(raw, str) and raw.startswith("http"):
             return raw

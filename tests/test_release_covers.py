@@ -9,11 +9,15 @@ import httpx
 from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
-from tunebag.cover_cache import cover_media_type, cover_path
+from tunebag.cover_cache import (
+    cover_media_type,
+    cover_path,
+    hearthis_cover_fallback_urls,
+)
 from tunebag.domain import Platform
 from tunebag.reject import UNDO_SECONDS
 from tunebag.source import ArtistListing, FakeSource, Upload
-from tunebag.source.hearthis import _hearthis_upload
+from tunebag.source.hearthis import _hearthis_cover_url, _hearthis_upload
 from tunebag.source.youtube import _youtube_cover_url
 from tunebag.web import create_app
 
@@ -51,6 +55,35 @@ def test_hearthis_upload_reads_thumb() -> None:
     )
     assert upload is not None
     assert upload.cover_url == "https://hearthis.at/thumb/7.jpg"
+
+
+def test_hearthis_cover_url_prefers_retina() -> None:
+    url = _hearthis_cover_url(
+        {
+            "thumb": "https://img.hearthis.at/x/w200_h200_q70.jpg",
+            "thumb_hires": "https://img.hearthis.at/x/w400_h400_q70.jpg",
+            "artwork_url": "https://img.hearthis.at/x/w500_h500_q70.jpg",
+            "artwork_url_retina": "https://img.hearthis.at/x/w800_h800_q70.jpg",
+        }
+    )
+    assert url == "https://img.hearthis.at/x/w800_h800_q70.jpg"
+
+
+def test_hearthis_cover_fallback_urls_rewrites_sizes() -> None:
+    primary = (
+        "https://img.hearthis.at/0/2/7/_/uploads/8338/image_track/14724007/"
+        "w200_h200_q70_ptrue_v2_m1792104379----cropped_1792104376720.jpg"
+        "?m=1792104379"
+    )
+    alts = hearthis_cover_fallback_urls(primary)
+    assert alts[0].startswith(
+        "https://img.hearthis.at/0/2/7/_/uploads/8338/image_track/14724007/w800_h800_"
+    )
+    assert any("w500_h500" in u for u in alts)
+    assert any("w400_h400" in u for u in alts)
+    assert all("w200_h200" not in u for u in alts)
+    assert all(u.endswith("?m=1792104379") for u in alts)
+    assert hearthis_cover_fallback_urls("https://hearthis.at/thumb/7.jpg") == []
 
 
 def test_youtube_cover_url_prefers_largest_thumbnail() -> None:
@@ -135,6 +168,41 @@ def test_cover_cache_falls_back_from_maxresdefault(tmp_path: Path) -> None:
     assert cache.has(mix_id)
     assert attempted[0].endswith("maxresdefault.jpg")
     assert any(u.endswith("sddefault.jpg") for u in attempted)
+
+
+def test_cover_cache_falls_back_hearthis_size_on_403(tmp_path: Path) -> None:
+    from uuid import uuid4
+
+    from tunebag.cover_cache import CoverCache
+
+    primary = (
+        "https://img.hearthis.at/0/2/7/_/uploads/8338/image_track/1/"
+        "w200_h200_q70_ptrue.jpg?m=1"
+    )
+    attempted: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        attempted.append(url)
+        if "w200_h200" in url:
+            raise httpx.HTTPStatusError(
+                "403",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(403),
+            )
+        if "w500_h500" in url:
+            return JPEG_BYTES
+        raise httpx.HTTPStatusError(
+            "403",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(403),
+        )
+
+    cache = CoverCache(tmp_path, fetch=fetch)
+    mix_id = uuid4()
+    assert cache.ensure(mix_id, primary)
+    assert cache.has(mix_id)
+    assert attempted[0] == primary
+    assert any("w500_h500" in u for u in attempted)
 
 
 def test_add_artists_caches_cover_and_player_api(tmp_path: Path) -> None:
@@ -315,20 +383,25 @@ def test_player_ui_has_cover_slot() -> None:
     assert ".player-cover" in css
     assert "renderPlayerCover" in js
     assert "has_cover" in js
-    # Intent + cover/meta share .player-now-row above seek controls.
-    # DOM keeps intent before cover (narrow stack); wide CSS order puts intent right.
+    # Intent on Player heading row; cover + title in .player-now-row above seek.
+    assert 'class="player-heading-row"' in html
     assert 'class="player-now-row"' in html
+    assert "player-heading-row" in css
     assert "player-now-row" in css
+    assert "syncPlayerNowStack" in js
+    assert "syncPlayerIntentWrap" in js
+    assert "is-stacked" in css
+    assert "intent-wrapped" in css
+    assert "white-space: nowrap" in css  # title single-line beside cover
     intent_at = html.index('id="player-intent"')
-    below_at = html.index('class="player-below"')
+    cover_at = html.index('id="player-cover"')
+    text_at = html.index('class="player-below-text"')
     clip_at = html.index('class="player-clip"')
-    assert intent_at < below_at < clip_at
+    assert intent_at < cover_at < text_at < clip_at
     assert 'id="player-seekbar"' in html[clip_at:]
-    assert "order: 2" in css or "order:2" in css.replace(" ", "")
     # Seek labels clip via raised .player-clip; tags stay outside that clip.
     assert "--player-seek-clip-rise" in css
     assert "syncPlayerSeekClipRise" in js
-    assert "overflow: visible" in css or "overflow:visible" in css.replace(" ", "")
 
 
 def test_cover_endpoint_404_without_art(tmp_path: Path) -> None:

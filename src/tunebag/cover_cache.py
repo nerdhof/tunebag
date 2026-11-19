@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 from uuid import UUID
@@ -23,6 +24,15 @@ _YOUTUBE_THUMB_VARIANTS = (
     "mqdefault",
     "default",
 )
+
+# img.hearthis.at often 403s one size while sibling sizes still 200.
+_HEARTHIS_SIZE_VARIANTS = (
+    "w800_h800",
+    "w500_h500",
+    "w400_h400",
+    "w200_h200",
+)
+_HEARTHIS_SIZE_RE = re.compile(r"w\d+_h\d+")
 
 
 def cover_path(data_dir: Path, mix_id: UUID) -> Path:
@@ -57,6 +67,22 @@ def youtube_cover_fallback_urls(url: str) -> list[str]:
         if alt == found:
             continue
         candidate = url.replace(found, alt, 1)
+        if candidate != url and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def hearthis_cover_fallback_urls(url: str) -> list[str]:
+    """Alternate hearthis artwork sizes when the primary URL 403s."""
+    match = _HEARTHIS_SIZE_RE.search(url)
+    if match is None:
+        return []
+    found = match.group(0)
+    out: list[str] = []
+    for alt in _HEARTHIS_SIZE_VARIANTS:
+        if alt == found:
+            continue
+        candidate = url[: match.start()] + alt + url[match.end() :]
         if candidate != url and candidate not in out:
             out.append(candidate)
     return out
@@ -113,7 +139,13 @@ class CoverCache:
         return True
 
     def _fetch_with_fallbacks(self, mix_id: UUID, url: str) -> bytes | None:
-        candidates = [url, *youtube_cover_fallback_urls(url)]
+        candidates: list[str] = [url]
+        for candidate in (
+            *youtube_cover_fallback_urls(url),
+            *hearthis_cover_fallback_urls(url),
+        ):
+            if candidate not in candidates:
+                candidates.append(candidate)
         last_exc: Exception | None = None
         for candidate in candidates:
             try:
