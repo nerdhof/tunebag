@@ -53,6 +53,7 @@ from tunebag.domain import (
     default_intent_platforms,
     new_id,
 )
+from tunebag.catalog_journal import CatalogJournal
 from tunebag.events import Event, EventLog, EventType
 from tunebag.pairing import (
     PIN_MAX_ATTEMPTS,
@@ -83,11 +84,7 @@ from tunebag.playback import (
     clamp_seek_position,
 )
 from tunebag.event_payloads import encode_intent, encode_mix_added
-from tunebag.projection import (
-    CatalogState,
-    LocalEffects,
-    apply as apply_catalog_event,
-)
+from tunebag.projection import CatalogState, LocalEffects
 from tunebag.maintenance import BoundMaintenance, CatalogChange, CatalogChangeReason
 from tunebag.reject import RejectBuffer
 from tunebag.release_cache import OriginFetch, ReleaseCache
@@ -216,7 +213,6 @@ class DeviceAgent:
             load_locator_hints(self._locator_hints_path) if persist else {}
         )
         self._pair_candidates: dict[str, dict[str, Any]] = {}
-        self._seen_event_ids: set[UUID] = set()
         # Ephemeral pairing session (host and/or guest view); never persisted.
         self._pairing_session: dict[str, Any] | None = None
         self._cache = ReleaseCache(
@@ -224,18 +220,23 @@ class DeviceAgent:
             self.catalog,
             on_changed=lambda: self._mark_view_sections(UIViewSection.CACHE),
         )
-        self._event_seq = 0
-        # Serialize append/ingest/apply against background sync threads.
-        # RLock so a multi-event local write (intent upsert + sequence +
-        # assignments) can hold the lock across nested _append_and_apply calls
-        # while export_events waits for a consistent snapshot.
-        self._event_lock = threading.RLock()
         # Local-only (not events): simulated link mode, reject undo, skip delay, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
         self._clock: Callable[[], datetime] = clock or datetime.utcnow
         self._rejects = RejectBuffer()
         self._skips = SkipBuffer()
+        # Event log spine: lock, seq, dedupe, sign/verify, live apply / boot replay.
+        self._journal = CatalogJournal(
+            catalog=self.catalog,
+            log=self._log,
+            local_device_id=self.device.id,
+            local_public_key_pem=self.public_key_pem,
+            clock=self._clock,
+            sign=self._sign,
+            verify=self._verify,
+            on_applied=self._on_journal_applied,
+        )
         # Local player supervision (browser is remote control; closing it does not stop).
         self._player: AudioPlayer = player if player is not None else default_player()
         self._playback = PlaybackSupervisor(
@@ -264,7 +265,7 @@ class DeviceAgent:
         self._auto_sync_defer_depth = 0
         self._auto_sync_deferred = False
         if persist:
-            self._replay_event_log()
+            self._journal.replay()
             # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
             self._prune_stale_locator_hints()
         self._start_discovery()
@@ -2410,8 +2411,7 @@ class DeviceAgent:
         return self.catalog.mixes[mix.id]
 
     def export_events(self) -> list[Event]:
-        with self._event_lock:
-            return list(self._log.all())
+        return self._journal.export()
 
     def sync(self, *, fill: bool = True) -> None:
         self.commit_pending_rejects()
@@ -2425,10 +2425,10 @@ class DeviceAgent:
                     continue
                 if not self._ensure_agent_proved(agent):
                     continue
-                before = len(self._seen_event_ids)
+                before = len(self._journal._seen_event_ids)
                 for event in agent.export_events():
                     self._ingest(event)
-                ingested = len(self._seen_event_ids) - before
+                ingested = len(self._journal._seen_event_ids) - before
                 self.note(f"sync peer {agent.name}: {ingested} new event(s)")
             trusted_ids = {peer.id for peer in self.peers()}
             for peer_id, url in list(self._peer_urls.items()):
@@ -2444,10 +2444,10 @@ class DeviceAgent:
                 if not self._ensure_http_peer_proved(url, peer.public_key_pem):
                     continue
                 label = peer.name
-                before = len(self._seen_event_ids)
+                before = len(self._journal._seen_event_ids)
                 # rebuild=False: sync finishes one rebuild/fill pass after all peers.
                 self.ingest_events(self._http_fetch_events(url), rebuild=False)
-                ingested = len(self._seen_event_ids) - before
+                ingested = len(self._journal._seen_event_ids) - before
                 self.note(f"sync peer {label} ({url}): {ingested} new event(s)")
         # Peer may have applied our expiry; drop exclusive locals after ingest.
         self.apply_expired_hours()
@@ -2701,39 +2701,8 @@ class DeviceAgent:
             return False
         return True
 
-    def _replay_event_log(self) -> None:
-        """Rebuild Catalog from the durable Event log (cold start; no re-append)."""
-        with self._event_lock:
-            for event in self._log.all():
-                if event.device_id == self.device.id:
-                    if not self._verify(event, self.public_key_pem):
-                        raise InvalidSignature("event signature mismatch")
-                    self._event_seq = max(self._event_seq, int(event.seq))
-                else:
-                    if event.device_id in self.catalog.unpaired_device_ids:
-                        self._seen_event_ids.add(event.id)
-                        continue
-                    author = self.catalog.devices.get(event.device_id)
-                    # Unknown author: still apply; event was verified when ingested to this log.
-                    if author is not None and not self._verify(event, author.public_key_pem):
-                        raise InvalidSignature("event signature mismatch")
-                self._seen_event_ids.add(event.id)
-                self._apply(event)
-
     def _append_and_apply(self, event_type: EventType, payload: dict[str, Any]) -> Event:
-        with self._event_lock:
-            self._event_seq += 1
-            event = Event(
-                type=event_type,
-                device_id=self.device.id,
-                created_at=self._clock(),
-                seq=self._event_seq,
-                payload=payload,
-            )
-            event.signature = self._sign(event)
-            self._log.append(event)
-            self._seen_event_ids.add(event.id)
-            self._apply(event)
+        event = self._journal.append_local(event_type, payload)
         self._mark_view_sections_for_event(event_type)
         self._schedule_auto_sync()
         return event
@@ -2822,8 +2791,8 @@ class DeviceAgent:
             )
 
     def _ingest(self, event: Event) -> None:
-        with self._event_lock:
-            if event.id in self._seen_event_ids:
+        with self._journal.hold():
+            if event.id in self._journal._seen_event_ids:
                 return
             if event.device_id == self.device.id:
                 return
@@ -2837,18 +2806,18 @@ class DeviceAgent:
             self._commit_foreign_event(event, author.public_key_pem)
 
     def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
-        """Verify, append, and apply a peer event. Caller must hold ``_event_lock``."""
+        """Verify, append, and apply a peer event. Caller must hold journal lock."""
         if not self._verify(event, public_key_pem):
             raise InvalidSignature("event signature mismatch")
-        self._seen_event_ids.add(event.id)
+        self._journal._seen_event_ids.add(event.id)
         self._log.append(event)
-        self._apply(event)
+        self._journal._apply_live(event)
         self._record_view_sections_for_event(event.type)
 
     def _flush_buffered_events_for(self, author_id: UUID) -> None:
         """Verify and apply buffered events for a newly known author.
 
-        Caller must hold ``_event_lock``. Applying a buffered ``DEVICE_PAIRED``
+        Caller must hold journal lock. Applying a buffered ``DEVICE_PAIRED``
         may flush further authors. Order follows signed author time then seq.
         """
         pending = sorted(
@@ -2861,7 +2830,7 @@ class DeviceAgent:
         )
         for event in pending:
             self.catalog.unknown_author_buffer.pop(event.id, None)
-            if event.id in self._seen_event_ids:
+            if event.id in self._journal._seen_event_ids:
                 continue
             author = self.catalog.devices.get(event.device_id)
             if author is None:
@@ -2878,14 +2847,14 @@ class DeviceAgent:
     ) -> None:
         with self._defer_auto_sync():
             with self._view_notice_batch():
-                with self._event_lock:
+                with self._journal.hold():
                     self._append_and_apply(
                         EventType.INTENT_UPSERTED,
                         encode_intent(intent, cleared_device_ids=cleared_device_ids),
                     )
                     # Catalog may have merged peer device_hours; rebuild from that.
-                    # INTENT_UPSERT rebuild+prune must stay under the event lock so
-                    # export_events never sees a half-written intent; request_fill
+                    # INTENT_UPSERT rebuild+prune must stay under journal.hold() so
+                    # export never sees a half-written intent; request_fill
                     # only starts a thread (safe under the lock).
                     merged = self.catalog.intents[intent.id]
                     self._maintenance.after_catalog_change(
@@ -2899,7 +2868,7 @@ class DeviceAgent:
     def _rebuild_all_sequences(self) -> None:
         with self._defer_auto_sync():
             with self._view_notice_batch():
-                with self._event_lock:
+                with self._journal.hold():
                     for intent in self.intents():
                         self._rebuild_sequence_for_intent(intent)
                     self._prune_unassigned_files()
@@ -2973,7 +2942,7 @@ class DeviceAgent:
             return False
         with self._defer_auto_sync():
             with self._view_notice_batch():
-                with self._event_lock:
+                with self._journal.hold():
                     rebuilt = False
                     for intent in to_rebuild:
                         # Re-check under the lock; a peer may have filled gaps.
@@ -3056,14 +3025,11 @@ class DeviceAgent:
         if replacement_local:
             self.remove_local_file(retired_mix_id)
 
-    def _apply(self, event: Event) -> None:
-        """Project Event into CatalogState, then run device-local File/folder effects."""
-        _, effects = apply_catalog_event(
-            self.catalog,
-            event,
-            local_device_id=self.device.id,
-            now=self._clock(),
-        )
+    def _on_journal_applied(self, event: Event, effects: LocalEffects) -> None:
+        """Live apply side effects: LocalEffects, unpair cleanup, and pair buffer flush.
+
+        Buffer flush stays here until CatalogJournal owns foreign ingest (ticket 03).
+        """
         self._run_local_effects(effects)
         if event.type is EventType.DEVICE_PAIRED:
             device_id = UUID(event.payload["id"])
