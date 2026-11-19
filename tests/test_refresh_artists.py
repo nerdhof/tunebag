@@ -9,7 +9,6 @@ import pytest
 
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform
-from tunebag.reject import UNDO_SECONDS
 from tunebag.source import ArtistListing, FakeSource, Upload
 
 
@@ -225,8 +224,6 @@ def test_committed_reject_not_resurrected() -> None:
     platform_id = mix.platform_id
 
     laptop.reject_mix(mix.id)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
     assert laptop.catalog.mixes[mix.id].rejected is True
 
     source.add_listing(

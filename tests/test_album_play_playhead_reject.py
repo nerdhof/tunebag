@@ -9,7 +9,7 @@ from uuid import UUID
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, ReleaseKind, Stars
 from tunebag.player import NullPlayer
-from tunebag.reject import UNDO_SECONDS
+from tunebag.reject import SOFT_REJECT_SECONDS
 from tunebag.source import ArtistListing, FakeSource, Track, Upload
 
 
@@ -401,8 +401,8 @@ def test_tag_skip_reject_apply_to_whole_album_only(tmp_path: Path) -> None:
     assert next(m for m in laptop.mixes() if m.id == album.id).tags == ["soundtrack"]
 
     laptop.reject_mix(album.id)
-    assert any(p.mix_id == album.id for p in laptop.pending_rejects())
-    assert laptop.catalog.mixes[album.id].rejected is False
+    assert laptop.catalog.mixes[album.id].rejected is True
+    assert laptop.catalog.mixes[album.id].rejected_at is not None
 
 
 def test_committed_reject_deletes_album_track_dir_on_every_device(
@@ -435,9 +435,11 @@ def test_committed_reject_deletes_album_track_dir_on_every_device(
     assert phone_dir.is_dir()
 
     laptop.reject_mix(album_id)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
+    assert album_id in {m.id for m in laptop.files()}
+    clock.advance(SOFT_REJECT_SECONDS)
+    laptop.commit_reject_file_deletes()
     phone.sync()
+    phone.commit_reject_file_deletes()
 
     assert laptop.catalog.mixes[album_id].rejected is True
     assert phone.catalog.mixes[album_id].rejected is True

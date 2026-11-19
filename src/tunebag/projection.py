@@ -61,6 +61,8 @@ class CatalogState:
         self.merge_wins: dict[MergeKey, MergeWin] = {}
         self.deleted_artists: set[UUID] = set()
         self.rejected_mix_ids: set[UUID] = set()
+        # Winning Reject Event author time (for Soft window / API snapshots).
+        self.rejected_at_by_mix: dict[UUID, datetime] = {}
         self.played_mix_ids: set[UUID] = set()
         self.skipped_mix_ids: set[UUID] = set()
         self.pending_tag_presence: dict[UUID, dict[str, bool]] = {}
@@ -220,19 +222,27 @@ def apply(
         if not _merge_beats(state, ("reject", str(mix_id)), event):
             return state, effects
         state.rejected_mix_ids.add(mix_id)
+        state.rejected_at_by_mix[mix_id] = event.created_at
         mix = state.mixes.get(mix_id)
         if mix is not None:
-            state.add_mix(mix.model_copy(update={"rejected": True}))
-        effects.delete_files.append(mix_id)
+            state.add_mix(
+                mix.model_copy(
+                    update={"rejected": True, "rejected_at": event.created_at}
+                )
+            )
+        # File byte deletion waits for Soft → Hard (agent-local schedule).
         return state, effects
     if event.type is EventType.MIX_UNREJECTED:
         mix_id = UUID(payload["mix_id"])
         if not _merge_beats(state, ("reject", str(mix_id)), event):
             return state, effects
         state.rejected_mix_ids.discard(mix_id)
+        state.rejected_at_by_mix.pop(mix_id, None)
         mix = state.mixes.get(mix_id)
         if mix is not None:
-            state.add_mix(mix.model_copy(update={"rejected": False}))
+            state.add_mix(
+                mix.model_copy(update={"rejected": False, "rejected_at": None})
+            )
         return state, effects
     if event.type is EventType.INTENT_UPSERTED:
         _apply_intent_upserted(state, event, payload)
@@ -531,6 +541,15 @@ def _apply_mix_added(state: CatalogState, payload: dict[str, Any]) -> None:
                 True
                 if mix_id in state.rejected_mix_ids
                 else (existing.rejected if existing is not None else False)
+            ),
+            "rejected_at": (
+                state.rejected_at_by_mix.get(mix_id)
+                if mix_id in state.rejected_mix_ids
+                else (
+                    existing.rejected_at
+                    if existing is not None and existing.rejected
+                    else None
+                )
             ),
             "played": (
                 True

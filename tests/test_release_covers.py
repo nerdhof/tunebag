@@ -15,7 +15,7 @@ from tunebag.cover_cache import (
     hearthis_cover_fallback_urls,
 )
 from tunebag.domain import Platform
-from tunebag.reject import UNDO_SECONDS
+from tunebag.reject import SOFT_REJECT_SECONDS
 from tunebag.source import ArtistListing, FakeSource, Upload
 from tunebag.source.hearthis import _hearthis_cover_url, _hearthis_upload
 from tunebag.source.youtube import _youtube_cover_url
@@ -366,10 +366,10 @@ def test_reject_deletes_local_cover(tmp_path: Path) -> None:
     assert agent.has_local_cover(mix.id)
 
     agent.reject_mix(mix.id)
-    # Pending undo window — cover still present until commit.
+    # Soft window — cover still present until Soft → Hard File delete.
     assert agent.has_local_cover(mix.id)
-    clock.advance(UNDO_SECONDS)
-    agent.commit_pending_rejects()
+    clock.advance(SOFT_REJECT_SECONDS)
+    agent.commit_reject_file_deletes()
     assert not agent.has_local_cover(mix.id)
 
 

@@ -76,6 +76,9 @@ class Mix(BaseModel):
     tags: list[str] = Field(default_factory=list)
     stars: Stars | None = None
     rejected: bool = False
+    # Author time of the winning Reject Event; None when not Rejected.
+    # Soft vs Hard UI visibility and deferred File delete use this + 5 minutes.
+    rejected_at: datetime | None = None
     played: bool = False
     skipped: bool = False
     last_heard_at: datetime | None = None
@@ -231,15 +234,6 @@ class Playhead(BaseModel):
     device_id: UUID
     position_seconds: float
     updated_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-class RejectPending(BaseModel):
-    """Local-only reject during the 20s undo window. Not synced until committed."""
-
-    mix_id: UUID
-    device_id: UUID
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    undo_until: datetime
 
 
 class SkipPending(BaseModel):

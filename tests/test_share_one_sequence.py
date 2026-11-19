@@ -9,7 +9,6 @@ import pytest
 
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, StarDistribution, Stars
-from tunebag.reject import UNDO_SECONDS
 
 
 class _FakeClock:
@@ -215,8 +214,6 @@ def test_rejected_excluded_and_empty_bucket_skipped() -> None:
         stars=Stars.FIVE,
     )
     laptop.reject_mix(rejected)
-    clock.advance(UNDO_SECONDS)
-    laptop.commit_pending_rejects()
 
     # No five-star candidates left; draw must still fill from other buckets.
     intent = laptop.create_intent(

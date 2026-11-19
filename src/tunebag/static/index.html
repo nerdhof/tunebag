@@ -76,15 +76,6 @@
               </div>
               <div class="player-reject-tags">
                 <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
-                <button
-                  type="button"
-                  id="player-undo-reject"
-                  hidden
-                  aria-label="Undo reject"
-                  data-tip="Undo reject"
-                >
-                  ↺
-                </button>
                 <div class="player-tags-field" title="Tags for the current release">
                   <span class="player-tags-row">
                     <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
@@ -143,9 +134,9 @@
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              Heard releases, newest first. Rate, tag, reject (20s undo) or Un-reject, and
-              resume at the Catalog Playhead from each row. Rejected releases stay hidden unless the
-              Rejected filter is on (muted when shown).
+              Heard releases, newest first. Rate, tag, Reject (confirm-click) or Un-reject, and
+              resume at the Catalog Playhead from each row. Soft Rejected stay visible (muted) for
+              5 minutes; Hard Rejected only with the Rejected filter on.
             </span>
           </span>
         </h2>
@@ -274,8 +265,8 @@
             </button>
             <span class="section-info-tip" role="tooltip">
               Browse and filter the full Catalog; manage Artists (ingest/refresh/delete). Annotate any
-              Release: Rate, tag, reject (20s undo) or Un-reject. Rejected releases stay hidden unless the
-              Rejected filter is on (muted when shown).
+              Release: Rate, tag, Reject (confirm-click) or Un-reject. Soft Rejected stay visible (muted)
+              for 5 minutes; Hard Rejected only with the Rejected filter on.
             </span>
           </span>
         </h2>
