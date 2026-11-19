@@ -714,18 +714,20 @@ function mountTagEditor(root, options) {
 }
 
 /**
- * Chip artist picker: plain chips, confirm-to-remove, + search (catalog only).
+ * Chip artist picker: plain chips, confirm-to-remove (optional), + search (catalog only).
  * @param {HTMLElement} root
  * @param {{
  *   artists?: {id: string, name: string}[],
  *   onAdd: (artist: {id: string, name: string}) => Promise<void> | void,
  *   onRemove: (artist: {id: string, name: string}) => Promise<void> | void,
  *   getCatalogArtists?: () => {id: string, name: string}[],
+ *   confirmRemove?: boolean,
  * }} options
  */
 function mountArtistEditor(root, options) {
   const getCatalogArtists =
     options.getCatalogArtists || (() => catalogArtistsCache);
+  const confirmRemove = options.confirmRemove !== false;
   /** @type {{id: string, name: string}[]} */
   let artists = [...(options.artists || [])];
   let confirming = null;
@@ -932,7 +934,7 @@ function mountArtistEditor(root, options) {
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "tag-chip-x";
-      if (confirming === artist.id) {
+      if (confirmRemove && confirming === artist.id) {
         remove.classList.add("confirm-pending", "is-armed");
         remove.textContent = BTN.confirmDelete;
         remove.setAttribute("aria-label", `Really remove “${artist.name}”?`);
@@ -948,7 +950,8 @@ function mountArtistEditor(root, options) {
         remove.addEventListener("pointerdown", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          armConfirm(artist.id);
+          if (confirmRemove) armConfirm(artist.id);
+          else void removeArtist(artist.id);
         });
       }
       chip.appendChild(remove);
@@ -1810,11 +1813,13 @@ function mountIntentComposer(root, options) {
 
   const tagEditor = mountTagEditor(tagsMount, {
     tags: initial.tags || [],
+    confirmRemove: false,
     async onAdd() {},
     async onRemove() {},
   });
   const artistEditor = mountArtistEditor(artistsMount, {
     artists: [],
+    confirmRemove: false,
     async onAdd() {},
     async onRemove() {},
   });
