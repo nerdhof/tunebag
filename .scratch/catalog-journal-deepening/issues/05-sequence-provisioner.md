@@ -4,10 +4,14 @@
 
 **Blocked by:** 02 — CatalogJournal for local append, hold, export, and boot replay
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] SequenceProvisioner exposes need-rebuild and provision → Event drafts (does not append itself)
-- [ ] DeviceAgent / Catalog maintenance append drafts under `hold` where Intent upsert + rebuild must stay atomic
-- [ ] Explore empty-assignment and under-budget rebuild rules still behave as today
-- [ ] Fill and prune remain outside the provisioner
-- [ ] Pure tests cover need-rebuild and draft contents; at least one path shows drafts committed to the Event log
+- [x] SequenceProvisioner exposes need-rebuild and provision → Event drafts (does not append itself)
+- [x] DeviceAgent / Catalog maintenance append drafts under `hold` where Intent upsert + rebuild must stay atomic
+- [x] Explore empty-assignment and under-budget rebuild rules still behave as today
+- [x] Fill and prune remain outside the provisioner
+- [x] Pure tests cover need-rebuild and draft contents; at least one path shows drafts committed to the Event log
+
+## Comments
+
+- Added `SequenceProvisioner` in `src/tunebag/sequence_provision.py` (`needs_rebuild` + `provision` → `EventDraft`). DeviceAgent appends drafts under existing `journal.hold()` paths; fill/prune stay in Catalog maintenance. Pure helpers remain in `sequence.py`. Tests in `tests/test_sequence_provision.py`.

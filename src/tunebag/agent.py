@@ -89,7 +89,7 @@ from tunebag.maintenance import BoundMaintenance, CatalogChange, CatalogChangeRe
 from tunebag.reject import RejectBuffer
 from tunebag.release_cache import OriginFetch, ReleaseCache
 from tunebag.release_layout import album_timeline_location
-from tunebag.sequence import assign_by_budget, build_sequence
+from tunebag.sequence_provision import SequenceProvisioner
 from tunebag.skip import SkipBuffer
 from tunebag.source import (
     DEFAULT_MIN_DURATION_SECONDS,
@@ -269,6 +269,7 @@ class DeviceAgent:
             # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
             self._prune_stale_locator_hints()
         self._start_discovery()
+        self._sequence_provisioner = SequenceProvisioner()
         # Catalog maintenance ports (rebuild / fill / prune) — after methods exist.
         self._maintenance = BoundMaintenance(
             rebuild_all_sequences=self._rebuild_all_sequences,
@@ -2791,52 +2792,8 @@ class DeviceAgent:
             )
 
     def _ingest(self, event: Event) -> None:
-        with self._journal.hold():
-            if event.id in self._journal._seen_event_ids:
-                return
-            if event.device_id == self.device.id:
-                return
-            if event.device_id in self.catalog.unpaired_device_ids:
-                return
-            author = self.catalog.devices.get(event.device_id)
-            if author is None:
-                self.catalog.unknown_author_buffer[event.id] = event
-                return
-            self.catalog.unknown_author_buffer.pop(event.id, None)
-            self._commit_foreign_event(event, author.public_key_pem)
-
-    def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
-        """Verify, append, and apply a peer event. Caller must hold journal lock."""
-        if not self._verify(event, public_key_pem):
-            raise InvalidSignature("event signature mismatch")
-        self._journal._seen_event_ids.add(event.id)
-        self._log.append(event)
-        self._journal._apply_live(event)
-        self._record_view_sections_for_event(event.type)
-
-    def _flush_buffered_events_for(self, author_id: UUID) -> None:
-        """Verify and apply buffered events for a newly known author.
-
-        Caller must hold journal lock. Applying a buffered ``DEVICE_PAIRED``
-        may flush further authors. Order follows signed author time then seq.
-        """
-        pending = sorted(
-            (
-                event
-                for event in self.catalog.unknown_author_buffer.values()
-                if event.device_id == author_id
-            ),
-            key=lambda e: (e.created_at, int(e.seq), e.id),
-        )
-        for event in pending:
-            self.catalog.unknown_author_buffer.pop(event.id, None)
-            if event.id in self._journal._seen_event_ids:
-                continue
-            author = self.catalog.devices.get(event.device_id)
-            if author is None:
-                self.catalog.unknown_author_buffer[event.id] = event
-                continue
-            self._commit_foreign_event(event, author.public_key_pem)
+        """Peer Event ingest via CatalogJournal (dedupe / buffer / verify / apply)."""
+        self._journal.ingest_foreign(event)
 
     def _upsert_intent_and_rebuild(
         self,
@@ -2873,52 +2830,6 @@ class DeviceAgent:
                         self._rebuild_sequence_for_intent(intent)
                     self._prune_unassigned_files()
 
-    def _sequence_duration_seconds(self, intent: Intent) -> int:
-        """Cumulative duration of the current Sequence for ``intent`` (0 if none)."""
-        sequence = self.sequence(intent.id)
-        if sequence is None:
-            return 0
-        total = 0
-        for entry in sequence.entries:
-            mix = self.catalog.mixes.get(entry.mix_id)
-            if mix is not None:
-                total += mix.duration_seconds
-        return total
-
-    def _intent_needs_sequence_rebuild(
-        self, intent: Intent, *, include_underfilled: bool
-    ) -> bool:
-        """True when a device_hours row lacks a usable assignment, or under budget.
-
-        Explore seed writes ``ASSIGNMENT_SET`` with ``mix_ids=[]``. After pair, a
-        peer's filled Sequence may win LWW while that empty assignment remains —
-        treat empty ``mix_ids`` as needing rebuild when the Sequence has entries.
-
-        Under-budget rebuilds only run when a fresh ``build_sequence`` would change
-        the mix id list (new eligible Catalog mixes). Otherwise an empty/short
-        Sequence with no further eligible mixes would rebuild on every sync.
-        """
-        if intent.max_budget_seconds <= 0:
-            return False
-        sequence = self.sequence(intent.id)
-        sequence_has_entries = sequence is not None and bool(sequence.entries)
-        for device_hours in intent.device_hours:
-            assignment = self.assignment(intent.id, device_hours.device_id)
-            if assignment is None:
-                return True
-            if sequence_has_entries and not assignment.mix_ids:
-                return True
-        if not include_underfilled:
-            return False
-        if self._sequence_duration_seconds(intent) >= intent.max_budget_seconds:
-            return False
-        current_ids = [entry.mix_id for entry in sequence.entries] if sequence else []
-        rebuilt_ids = [
-            entry.mix_id
-            for entry in build_sequence(intent, self.catalog.mixes_list()).entries
-        ]
-        return rebuilt_ids != current_ids
-
     def _rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool:
         """Rebuild intents missing a device assignment and/or still under budget.
 
@@ -2934,8 +2845,8 @@ class DeviceAgent:
         to_rebuild = [
             intent
             for intent in self.intents()
-            if self._intent_needs_sequence_rebuild(
-                intent, include_underfilled=include_underfilled
+            if self._sequence_provisioner.needs_rebuild(
+                intent, self.catalog, include_underfilled=include_underfilled
             )
         ]
         if not to_rebuild:
@@ -2946,8 +2857,10 @@ class DeviceAgent:
                     rebuilt = False
                     for intent in to_rebuild:
                         # Re-check under the lock; a peer may have filled gaps.
-                        if not self._intent_needs_sequence_rebuild(
-                            intent, include_underfilled=include_underfilled
+                        if not self._sequence_provisioner.needs_rebuild(
+                            intent,
+                            self.catalog,
+                            include_underfilled=include_underfilled,
                         ):
                             continue
                         self._rebuild_sequence_for_intent(intent)
@@ -2957,50 +2870,9 @@ class DeviceAgent:
                     return rebuilt
 
     def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
-        active_devices = {dh.device_id for dh in intent.device_hours}
-        for iid, device_id in list(self.catalog.assignments):
-            if iid == intent.id and device_id not in active_devices:
-                self._append_and_apply(
-                    EventType.ASSIGNMENT_CLEARED,
-                    {
-                        "intent_id": str(intent.id),
-                        "device_id": str(device_id),
-                    },
-                )
-        sequence = build_sequence(intent, self.catalog.mixes_list())
-        self._append_and_apply(
-            EventType.SEQUENCE_BUILT,
-            {
-                "intent_id": str(sequence.intent_id),
-                "entries": [
-                    {
-                        "mix_id": str(entry.mix_id),
-                        "position": entry.position,
-                        "bucket": entry.bucket.value,
-                    }
-                    for entry in sequence.entries
-                ],
-            },
-        )
-        duration_by_mix = {
-            mix_id: mix.duration_seconds for mix_id, mix in self.catalog.mixes.items()
-        }
-        for device_hours in intent.device_hours:
-            mix_ids = assign_by_budget(
-                sequence,
-                device_hours.device_id,
-                device_hours.budget_seconds,
-                duration_by_mix,
-            )
-            self._append_and_apply(
-                EventType.ASSIGNMENT_SET,
-                {
-                    "intent_id": str(intent.id),
-                    "device_id": str(device_hours.device_id),
-                    "mix_ids": [str(mix_id) for mix_id in mix_ids],
-                    "budget_seconds": device_hours.budget_seconds,
-                },
-            )
+        """Append SequenceProvisioner drafts for ``intent`` (caller holds journal)."""
+        for draft in self._sequence_provisioner.provision(intent, self.catalog):
+            self._append_and_apply(draft.type, draft.payload)
 
     def _delete_retired_file_if_replaced(self, retired_mix_id: UUID) -> None:
         """Drop a played/skipped mix's bytes once another assigned mix is local.
@@ -3026,16 +2898,14 @@ class DeviceAgent:
             self.remove_local_file(retired_mix_id)
 
     def _on_journal_applied(self, event: Event, effects: LocalEffects) -> None:
-        """Live apply side effects: LocalEffects, unpair cleanup, and pair buffer flush.
+        """Live apply side effects: LocalEffects, UI notices, and unpair cleanup.
 
-        Buffer flush stays here until CatalogJournal owns foreign ingest (ticket 03).
+        Unknown-author buffer flush is CatalogJournal policy (before this callback).
         """
         self._run_local_effects(effects)
-        if event.type is EventType.DEVICE_PAIRED:
-            device_id = UUID(event.payload["id"])
-            if device_id != self.device.id and device_id in self.catalog.devices:
-                self._flush_buffered_events_for(device_id)
-        elif event.type is EventType.DEVICE_UNPAIRED:
+        if event.device_id != self.device.id:
+            self._record_view_sections_for_event(event.type)
+        if event.type is EventType.DEVICE_UNPAIRED:
             device_id = UUID(event.payload["id"])
             if device_id != self.device.id:
                 self._cleanup_revoked_peer_session(device_id)
