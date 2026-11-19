@@ -1250,9 +1250,10 @@ button:disabled {
 
 #intent-list .intent-meta {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
   margin: 0;
 }
 
@@ -1264,7 +1265,7 @@ button:disabled {
 }
 
 #intent-list .intent-meta-tags {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
@@ -1277,6 +1278,13 @@ button:disabled {
 
 #intent-list .intent-meta-tags .tag-chips {
   display: inline-flex;
+}
+
+.intent-meta-sep {
+  flex: 0 0 auto;
+  color: var(--muted);
+  line-height: var(--control-height);
+  user-select: none;
 }
 
 .intent-composer {
@@ -1321,15 +1329,16 @@ button:disabled {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.15rem;
+  gap: 0.35rem;
   margin: 0;
+  width: 100%;
   color: var(--muted);
 }
 
-.intent-form-meta-row {
+.intent-form-filter-line {
   display: flex;
   flex-direction: row;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   width: max-content;
@@ -1337,14 +1346,7 @@ button:disabled {
   min-width: 0;
 }
 
-.intent-form-meta-label {
-  flex: 0 0 auto;
-  color: var(--muted);
-  line-height: var(--control-height);
-  white-space: nowrap;
-}
-
-.intent-form-meta-row .tag-editor {
+.intent-form-filter-line .tag-editor {
   display: inline-flex;
   flex: 0 1 auto;
   width: auto;
@@ -1352,7 +1354,7 @@ button:disabled {
   min-width: 0;
 }
 
-.intent-form-meta-row .source-toggles {
+.intent-form-filter-line .source-toggles {
   display: inline-flex;
   flex: 0 0 auto;
   flex-wrap: nowrap;
@@ -1367,19 +1369,30 @@ button:disabled {
   color: var(--fg);
 }
 
-.intent-composer .intent-chances {
+.intent-composer .intent-chances-toggle {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  line-height: var(--control-height);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.intent-composer .intent-chances-toggle:hover,
+.intent-composer .intent-chances-toggle[aria-expanded="true"] {
+  color: var(--fg);
+}
+
+.intent-composer .intent-chances-panel {
   width: 100%;
   margin: 0;
-}
-
-.intent-composer .intent-chances > summary {
-  cursor: pointer;
-  color: var(--muted);
-  list-style: none;
-}
-
-.intent-composer .intent-chances > summary::-webkit-details-marker {
-  display: none;
 }
 
 .intent-composer .artist-editor .tag-picker-input {
