@@ -128,8 +128,31 @@ def test_reject_commit_emits_mixes_and_play_history(tmp_path: Path) -> None:
     assert UIViewSection.PLAY_HISTORY in sections
 
 
-def test_playhead_burst_coalesces_mixes_and_play_history(tmp_path: Path) -> None:
-    """Playhead + Last heard in one report emit each section at most once."""
+def test_playhead_tick_emits_no_catalog_notice(tmp_path: Path) -> None:
+    """Pure PLAYHEAD ticks must not remount Catalog / Play history."""
+    agent, source = _agent(tmp_path)
+    mix = _add_mix(agent, source, duration_seconds=1000)
+    agent.rate_mix(mix.id, Stars.FIVE)
+    intent = agent.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(agent.device_id, 1000)],
+    )
+    agent.fill_caches()
+    agent.play(intent.id, mix.id)
+    # Seed a playhead below Last heard so the next tick is PLAYHEAD-only.
+    agent.report_playhead(5)
+    agent.drain_view_notices()
+
+    agent.report_playhead(6)
+
+    assert _catalog_sections(agent) == []
+
+
+def test_last_heard_rising_edge_still_notifies_mixes_and_history(
+    tmp_path: Path,
+) -> None:
+    """Last heard (with playhead) still coalesces Catalog sections once."""
     agent, source = _agent(tmp_path)
     mix = _add_mix(agent, source, duration_seconds=1000)
     agent.rate_mix(mix.id, Stars.FIVE)

@@ -77,10 +77,12 @@ from tunebag.playback import (
     ContinueTo,
     EmitLastHeard,
     MarkPlayed,
+    PLAYED_THRESHOLD,
     PlaybackIntent,
     PlaybackSupervisor,
     ReportPlayhead,
     clamp_seek_position,
+    last_heard_threshold,
 )
 from tunebag.event_payloads import encode_intent, encode_mix_added
 from tunebag.projection import CatalogState, LocalEffects
@@ -135,7 +137,8 @@ _VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
     EventType.MIX_RATED: _MIXES_AND_HISTORY,
     EventType.MIX_REJECTED: _MIXES_AND_HISTORY,
     EventType.MIX_UNREJECTED: _MIXES_AND_HISTORY,
-    EventType.PLAYHEAD: _MIXES_AND_HISTORY,
+    # PLAYHEAD: no Catalog UI notice — live position is Player poll; remounting
+    # mixes/history every tick freezes the companion.
     EventType.PLAYED: _MIXES_AND_HISTORY,
     EventType.SKIPPED: _MIXES_AND_HISTORY,
     EventType.LAST_HEARD: _MIXES_AND_HISTORY,
@@ -836,15 +839,29 @@ class DeviceAgent:
             continue_next_id=continue_next,
         )
         self.set_current_mix(target)
+        # Resume/play boundary: flush prior pause playhead to peers. Do not
+        # re-append PLAYHEAD at ``start`` — equal-position ticks refresh
+        # updated_at and block near-window seek-backs (Last heard tests).
+        self._schedule_auto_sync()
         # Last play wins: ask reachable Peers to pause so only one Device is audible.
         self._request_peers_yield()
         return mix
 
-    def stop(self) -> None:
-        """Stop local playback without marking the mix played."""
+    def stop(self, position_seconds: float | None = None) -> None:
+        """Stop local playback without marking the mix played.
+
+        When ``position_seconds`` is provided (companion stop), commit that
+        playhead. Omitting it only flushes prior PLAYHEAD Events — avoids
+        freeze() clock drift overwriting an exact tick in tests/API callers.
+        """
+        if position_seconds is not None and self._current_mix_id is not None:
+            if self.is_playing():
+                self._playback.freeze()
+            self.report_playhead(float(position_seconds))
         self._playback.stop()
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
+        self._schedule_auto_sync()
 
     def yield_playback(self) -> bool:
         """Pause if locally playing so a Peer can take over audio.
@@ -873,6 +890,8 @@ class DeviceAgent:
             self.report_playhead(pos)
         if self.is_playing():
             self._playback.pause_audio()
+        # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
+        self._schedule_auto_sync()
 
     def skip(self, intent_id: UUID | None = None) -> Mix:
         """Advance to the next local assigned mix without marking the current played.
@@ -899,7 +918,12 @@ class DeviceAgent:
             if not mix.played and not mix.skipped:
                 self._skips.start(current, self.device.id, now=self._clock())
         self._playback.freeze()
-        return self.play(resolved, next_id)
+        if current is not None:
+            self.report_playhead(self._playback.position)
+        result = self.play(resolved, next_id)
+        # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
+        self._schedule_auto_sync()
+        return result
 
     def _next_local_assigned(
         self, intent_id: UUID, current: UUID | None, *, wrap: bool
@@ -934,7 +958,33 @@ class DeviceAgent:
             if self._current_mix_id is not None
             else None
         )
+        pos = self._playback.live_position(mix)
+        # Player poll reads this often; commit when live clock crosses Last heard
+        # or Played so Play history / Played do not wait for the 5‑minute heartbeat.
+        self._maybe_commit_threshold_playhead(mix, pos)
         return self._playback.live_position(mix)
+
+    def _maybe_commit_threshold_playhead(
+        self, mix: Mix | None, position_seconds: float
+    ) -> None:
+        """Append playhead when live position crosses Last heard or Played."""
+        if mix is None or not self.is_playing():
+            return
+        previous = 0.0
+        existing = self.catalog.playheads.get(mix.id)
+        if existing is not None:
+            previous = float(existing.position_seconds)
+        pos = float(position_seconds)
+        heard_at = last_heard_threshold(mix.duration_seconds)
+        need = previous < heard_at <= pos
+        if (
+            not mix.played
+            and mix.duration_seconds > 0
+            and previous < PLAYED_THRESHOLD * float(mix.duration_seconds) <= pos
+        ):
+            need = True
+        if need:
+            self.report_playhead(pos)
 
     def playing_intent_id(self) -> UUID | None:
         return self._playback.intent_id
@@ -981,6 +1031,8 @@ class DeviceAgent:
             was_playing=was_playing,
             keep_playing=self.is_playing(),
         )
+        # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
+        self._schedule_auto_sync()
         return head
 
     def _locate_audio(self, mix: Mix, timeline_seconds: float) -> tuple[Path, float]:
@@ -1044,6 +1096,9 @@ class DeviceAgent:
                 fallback_next_id=fallback_next,
             )
             self._apply_playback_intents(intents)
+        if intents:
+            # Track advance / release end: flush playhead (and ContinueTo) to peers.
+            self._schedule_auto_sync()
 
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
         """Mark a mix played (explicit control or auto at 75%).
@@ -2889,7 +2944,10 @@ class DeviceAgent:
     def _append_and_apply(self, event_type: EventType, payload: dict[str, Any]) -> Event:
         event = self._journal.append_local(event_type, payload)
         self._mark_view_sections_for_event(event_type)
-        self._schedule_auto_sync()
+        # Mid-play PLAYHEAD ticks stay local for crash/resume; peers get them on
+        # pause/stop/seek/skip/supervise boundaries (and other Event types).
+        if event_type is not EventType.PLAYHEAD:
+            self._schedule_auto_sync()
         return event
 
     def _schedule_auto_sync(self) -> None:

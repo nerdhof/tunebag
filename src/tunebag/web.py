@@ -143,6 +143,10 @@ class PauseBody(BaseModel):
     position_seconds: float | None = Field(default=None, ge=0)
 
 
+class StopBody(BaseModel):
+    position_seconds: float | None = Field(default=None, ge=0)
+
+
 class PlayheadBody(BaseModel):
     position_seconds: float = Field(ge=0)
 
@@ -710,8 +714,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         }
 
     @app.post("/api/player/stop")
-    def player_stop() -> dict:
-        agent.stop()
+    def player_stop(body: StopBody = StopBody()) -> dict:
+        try:
+            agent.stop(body.position_seconds)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "playing": agent.is_playing()}
 
     @app.post("/api/player/yield")

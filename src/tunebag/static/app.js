@@ -33,7 +33,8 @@ const FILES_REFRESH_MIN_MS = 1000;
 let lastPlayheadCommitAt = 0;
 let lastKnownPositionSeconds = 0;
 let playheadCommitInFlight = false;
-const PLAYHEAD_COMMIT_MS = 10000;
+/** Heartbeat only; pause/stop/seek/skip/track boundaries commit immediately. */
+const PLAYHEAD_COMMIT_MS = 5 * 60 * 1000;
 /** Mix id already announced as marked played during this play session. */
 let playheadPlayedNotifiedForMix = null;
 /** Last player poll: used so intent-list play buttons stay in sync. */
@@ -5691,9 +5692,15 @@ document.getElementById("player-skip").addEventListener("click", async () => {
 document.getElementById("player-stop").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   try {
-    await fetch("/api/player/stop", { method: "POST" });
+    await fetch("/api/player/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        position_seconds: Math.max(0, lastKnownPositionSeconds),
+      }),
+    });
     status.textContent = "Stopped (release left in place if under 75%)";
-    lastPlayheadCommitAt = 0;
+    lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
     await refreshPlayer();
   } catch (err) {

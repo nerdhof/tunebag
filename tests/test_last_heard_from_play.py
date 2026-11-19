@@ -131,6 +131,32 @@ def test_crossing_meaningful_listen_threshold_records_last_heard(
     assert mix.last_heard_at == first_heard
 
 
+def test_live_position_crossing_threshold_commits_last_heard(
+    tmp_path: Path,
+) -> None:
+    """Player-position reads commit playhead when live clock crosses Last heard."""
+    laptop, _phone, source, clock = _pair(tmp_path)
+    mix_id = _play_ready(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=1000,
+        platform_id="live-heard",
+    )
+    # Seed below threshold so the live crossing is the rising edge.
+    laptop.report_playhead(1)
+    assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
+
+    clock.advance(10)
+    laptop.playback_position()
+
+    mix = next(m for m in laptop.mixes() if m.id == mix_id)
+    assert mix.last_heard_at == clock()
+    head = laptop.playhead(mix_id)
+    assert head is not None
+    assert head.position_seconds >= 10
+
+
 def test_last_heard_threshold_uses_two_percent_when_lower(
     tmp_path: Path,
 ) -> None:
