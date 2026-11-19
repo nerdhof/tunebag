@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
@@ -62,6 +63,78 @@ def test_youtube_cover_url_prefers_largest_thumbnail() -> None:
         }
     )
     assert url == "https://i.ytimg.com/vi/a/hqdefault.jpg"
+
+
+def test_youtube_cover_url_skips_olak_maxresdefault() -> None:
+    """OLAK playlists advertise a 1200×1200 maxresdefault that often 404s."""
+    url = _youtube_cover_url(
+        {
+            "thumbnails": [
+                {
+                    "url": "https://i9.ytimg.com/s_p/OLAK/mqdefault.jpg",
+                    "width": 180,
+                    "height": 180,
+                },
+                {
+                    "url": "https://i9.ytimg.com/s_p/OLAK/sddefault.jpg",
+                    "width": 640,
+                    "height": 640,
+                },
+                {
+                    "url": "https://i9.ytimg.com/s_p/OLAK/maxresdefault.jpg",
+                    "width": 1200,
+                    "height": 1200,
+                },
+            ]
+        }
+    )
+    assert url == "https://i9.ytimg.com/s_p/OLAK/sddefault.jpg"
+
+
+def test_youtube_cover_url_normalizes_protocol_relative() -> None:
+    url = _youtube_cover_url(
+        {
+            "entries": [
+                {
+                    "thumbnails": [
+                        {
+                            "url": "//i.ytimg.com/vi/abc/hqdefault.jpg",
+                            "width": 480,
+                            "height": 360,
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+    assert url == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+def test_cover_cache_falls_back_from_maxresdefault(tmp_path: Path) -> None:
+    from uuid import uuid4
+
+    from tunebag.cover_cache import CoverCache
+
+    attempted: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        attempted.append(url)
+        if "maxresdefault" in url:
+            raise httpx.HTTPStatusError(
+                "404",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(404),
+            )
+        return JPEG_BYTES
+
+    cache = CoverCache(tmp_path, fetch=fetch)
+    mix_id = uuid4()
+    assert cache.ensure(
+        mix_id, "https://i9.ytimg.com/s_p/OLAK/maxresdefault.jpg"
+    )
+    assert cache.has(mix_id)
+    assert attempted[0].endswith("maxresdefault.jpg")
+    assert any(u.endswith("sddefault.jpg") for u in attempted)
 
 
 def test_add_artists_caches_cover_and_player_api(tmp_path: Path) -> None:

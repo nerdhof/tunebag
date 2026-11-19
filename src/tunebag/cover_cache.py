@@ -15,6 +15,15 @@ CoverFetcher = Callable[[str], bytes]
 
 _HTTP_TIMEOUT = 15.0
 
+# OLAK / video thumbs often advertise maxresdefault that 404s; try smaller sizes.
+_YOUTUBE_THUMB_VARIANTS = (
+    "maxresdefault",
+    "sddefault",
+    "hqdefault",
+    "mqdefault",
+    "default",
+)
+
 
 def cover_path(data_dir: Path, mix_id: UUID) -> Path:
     """On-disk path for a Release cover image (extensionless)."""
@@ -32,6 +41,25 @@ def cover_media_type(data: bytes) -> str:
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
     return "application/octet-stream"
+
+
+def youtube_cover_fallback_urls(url: str) -> list[str]:
+    """Alternate YouTube thumb filenames when the primary URL 404s."""
+    found: str | None = None
+    for name in _YOUTUBE_THUMB_VARIANTS:
+        if name in url:
+            found = name
+            break
+    if found is None:
+        return []
+    out: list[str] = []
+    for alt in _YOUTUBE_THUMB_VARIANTS:
+        if alt == found:
+            continue
+        candidate = url.replace(found, alt, 1)
+        if candidate != url and candidate not in out:
+            out.append(candidate)
+    return out
 
 
 def default_cover_fetcher(url: str) -> bytes:
@@ -74,15 +102,8 @@ class CoverCache:
             return True
         if not url:
             return False
-        try:
-            data = self._fetch(url)
-        except Exception as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
-            logger.warning("cover fetch failed for %s (%s): %s", mix_id, url, exc)
-            return False
+        data = self._fetch_with_fallbacks(mix_id, url)
         if not data:
-            logger.warning("cover fetch empty for %s (%s)", mix_id, url)
             return False
         path = self.path(mix_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,3 +111,26 @@ class CoverCache:
         tmp.write_bytes(data)
         tmp.replace(path)
         return True
+
+    def _fetch_with_fallbacks(self, mix_id: UUID, url: str) -> bytes | None:
+        candidates = [url, *youtube_cover_fallback_urls(url)]
+        last_exc: Exception | None = None
+        for candidate in candidates:
+            try:
+                data = self._fetch(candidate)
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                last_exc = exc
+                logger.warning(
+                    "cover fetch failed for %s (%s): %s", mix_id, candidate, exc
+                )
+                continue
+            if data:
+                return data
+            logger.warning("cover fetch empty for %s (%s)", mix_id, candidate)
+        if last_exc is not None:
+            logger.warning(
+                "cover fetch exhausted fallbacks for %s (started %s)", mix_id, url
+            )
+        return None

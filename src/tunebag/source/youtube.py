@@ -361,31 +361,55 @@ def _youtube_playlist_index(item: dict[str, Any], *, fallback: int) -> int:
         return fallback
 
 
+def _youtube_normalize_thumb_url(url: str) -> str | None:
+    cleaned = url.strip()
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    if not cleaned.startswith("http"):
+        return None
+    return cleaned
+
+
+def _youtube_thumb_is_maxres(url: str) -> bool:
+    # OLAK album playlists often advertise a 1200×1200 maxresdefault that 404s.
+    return "maxresdefault" in url
+
+
 def _youtube_cover_url(info: dict[str, Any]) -> str | None:
+    """Pick a fetchable cover URL from yt-dlp playlist/video info.
+
+    Prefer the largest non-maxres thumbnail: OLAK ``s_p`` maxresdefault often
+    404s while sddefault/hqdefault succeed.
+    """
+    candidates: list[tuple[int, int, str]] = []
+
+    def add(url: object, *, width: int = 0, height: int = 0) -> None:
+        if not isinstance(url, str):
+            return
+        normalized = _youtube_normalize_thumb_url(url)
+        if normalized is None:
+            return
+        candidates.append((width * height, 0 if _youtube_thumb_is_maxres(normalized) else 1, normalized))
+
     thumb = info.get("thumbnail")
-    if isinstance(thumb, str) and thumb.startswith("http"):
-        return thumb
+    add(thumb)
     thumbs = info.get("thumbnails")
-    if isinstance(thumbs, list) and thumbs:
-        best: str | None = None
-        best_area = -1
+    if isinstance(thumbs, list):
         for item in thumbs:
             if not isinstance(item, dict):
-                continue
-            url = item.get("url")
-            if not isinstance(url, str) or not url.startswith("http"):
                 continue
             try:
                 width = int(item.get("width") or 0)
                 height = int(item.get("height") or 0)
             except (TypeError, ValueError):
                 width, height = 0, 0
-            area = width * height
-            if area >= best_area:
-                best_area = area
-                best = url
-        if best is not None:
-            return best
+            add(item.get("url"), width=width, height=height)
+
+    if candidates:
+        # Prefer non-maxres (second key), then largest area.
+        candidates.sort(key=lambda row: (row[1], row[0]), reverse=True)
+        return candidates[0][2]
+
     entries = info.get("entries") or []
     if isinstance(entries, list):
         for entry in entries:
