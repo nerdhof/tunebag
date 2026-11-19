@@ -57,6 +57,11 @@ def _sections(agent: DeviceAgent) -> list[UIViewSection]:
     return [n.section for n in agent.drain_view_notices()]
 
 
+def _catalog_sections(agent: DeviceAgent) -> list[UIViewSection]:
+    """Catalog/cache notice sections only (sync notes also emit activity)."""
+    return [s for s in _sections(agent) if s != UIViewSection.ACTIVITY]
+
+
 def test_peer_mix_ingest_emits_coalesced_mixes(tmp_path: Path) -> None:
     """One sync pass ingesting Artist+Mix emits a single mixes notice on the receiver."""
     laptop, phone, source, _clock = _pair(tmp_path)
@@ -83,7 +88,7 @@ def test_peer_mix_ingest_emits_coalesced_mixes(tmp_path: Path) -> None:
     phone.wait_for_sync()
 
     assert mix.id in {m.id for m in phone.mixes()}
-    assert _sections(phone) == [UIViewSection.MIXES]
+    assert _catalog_sections(phone) == [UIViewSection.MIXES]
 
 
 def test_peer_rate_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
@@ -113,7 +118,10 @@ def test_peer_rate_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
     laptop.wait_for_sync()
     phone.wait_for_sync()
 
-    assert _sections(phone) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+    assert _catalog_sections(phone) == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
 
 
 def test_peer_last_heard_ingest_emits_mixes_and_play_history(
@@ -162,7 +170,10 @@ def test_peer_last_heard_ingest_emits_mixes_and_play_history(
     phone.wait_for_sync()
 
     assert next(m for m in phone.mixes() if m.id == mix.id).last_heard_at == heard_at
-    assert _sections(phone) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+    assert _catalog_sections(phone) == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
 
 
 def test_peer_tag_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
@@ -192,7 +203,10 @@ def test_peer_tag_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
     laptop.wait_for_sync()
     phone.wait_for_sync()
 
-    assert _sections(phone) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+    assert _catalog_sections(phone) == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
 
 
 def test_peer_intent_ingest_emits_single_coalesced_intents(tmp_path: Path) -> None:
@@ -228,7 +242,7 @@ def test_peer_intent_ingest_emits_single_coalesced_intents(tmp_path: Path) -> No
     phone.wait_for_sync()
 
     assert intent.id in {i.id for i in phone.intents()}
-    assert _sections(phone) == [UIViewSection.INTENTS]
+    assert _catalog_sections(phone) == [UIViewSection.INTENTS]
 
 
 def test_ingested_device_paired_and_unpaired_emit_peers(tmp_path: Path) -> None:
@@ -305,8 +319,7 @@ def test_full_log_catch_up_coalesces_per_section(tmp_path: Path) -> None:
     laptop.wait_for_sync()
     phone.wait_for_sync()
 
-    sections = _sections(phone)
-    assert sections == [
+    assert _catalog_sections(phone) == [
         UIViewSection.MIXES,
         UIViewSection.PLAY_HISTORY,
         UIViewSection.INTENTS,

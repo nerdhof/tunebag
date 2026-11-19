@@ -92,15 +92,15 @@ flowchart LR
 ```
 
 - **Mutations and reads**: HTTP REST (`/api/*`). UI never consumes the raw Event log.
-- **Catalog freshness**: coalesced **View notices** (`GET /api/view-notices`) with section ids such as `mixes`, `play_history`, `intents`, `peers`, `cache`. Local append and foreign ingest both mark sections; the UI refetches the matching snapshots.
-- **Peer path**: Peer Sync / ingest → Catalog apply → View notices → UI refetch (same notice bus as local writes).
+- **Catalog freshness**: coalesced **View notices** (`GET /api/view-notices`) with section ids `mixes`, `play_history`, `intents`, `peers`, `cache`, `activity`, `pairing_session`. Local append and foreign ingest both mark Catalog sections; Activity notes and pairing-session transitions mark their sections; the UI refetches the matching snapshots.
+- **Peer path**: Peer Sync / ingest → Catalog apply → View notices → UI refetch (same notice bus as local writes). Sync notes also mark `activity`.
 
 ## Reactivity rules
 
-1. **After a user mutation**, refresh affected surfaces from the response and/or a forced refetch (`force` where an open editor would otherwise skip DOM rebuild).
+1. **After a user mutation**, refresh affected surfaces via the shared `refreshAffectedSurfaces` path with `force` where an open editor would otherwise skip DOM rebuild.
 2. **View notices** refetch listed sections **without** `force` so in-progress editors (`focusInside`) are preserved.
 3. **Non-Catalog pending** must be API-visible if the UI shows it. Reject no longer uses a pre-commit undo buffer; Soft/Hard use Reject author time on Catalog/API snapshots.
-4. **Target push coverage**: extend View notices (or equivalent) so **Activity** and **pairing session** are notice-driven. **Player** transport/position may remain a lightweight poll/tick until a cheap push exists. High-churn local chrome must stay correct under the smallest refresh mechanism that works.
+4. **Activity** and **pairing session** are notice-driven (pairing may keep a short poll only while `pending_confirm` waits on the other device). **Player** transport/position may remain a lightweight poll/tick until a cheap push exists.
 
 ## Out of product UI
 
@@ -120,7 +120,7 @@ Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. As of the doc
 - Player lacks Un-reject (aligned) but still shows Undo, not confirm-click
 - Intent row still labeled/acts like Play rather than **Switch to intent**; sequence control tip may say Refresh
 - Cache still exposes global Fill and related chrome
-- Activity and pairing still poll; Player polls while playing
+- Player still polls while playing (transport/position)
 - Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording, rate/reject undo wording)
 
 Follow-up implementation should close these gaps against this contract.

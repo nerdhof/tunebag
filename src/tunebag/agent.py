@@ -217,6 +217,7 @@ class DeviceAgent:
         self._pair_candidates: dict[str, dict[str, Any]] = {}
         # Ephemeral pairing session (host and/or guest view); never persisted.
         self._pairing_session: dict[str, Any] | None = None
+        self._pairing_expiry_timer: threading.Timer | None = None
         self._cache = ReleaseCache(
             self.data_dir,
             self.catalog,
@@ -304,6 +305,7 @@ class DeviceAgent:
     def note(self, message: str, *, level: int = logging.INFO) -> None:
         """Record an operational progress line (terminal + UI activity feed)."""
         self._activity.note(message, level=level)
+        self._mark_view_sections(UIViewSection.ACTIVITY)
 
     def activity(self) -> list[ActivityEntry]:
         return self._activity.entries()
@@ -354,6 +356,41 @@ class DeviceAgent:
 
     def _mark_view_sections(self, *sections: UIViewSection) -> None:
         self._view_notices.mark(*sections)
+
+    def _mark_pairing_session(self) -> None:
+        self._mark_view_sections(UIViewSection.PAIRING_SESSION)
+
+    def _cancel_pairing_expiry_notice(self) -> None:
+        timer = self._pairing_expiry_timer
+        if timer is not None:
+            timer.cancel()
+            self._pairing_expiry_timer = None
+
+    def _arm_pairing_expiry_notice(self) -> None:
+        """Push a pairing_session notice when the ephemeral session TTL elapses."""
+        self._cancel_pairing_expiry_notice()
+        session = self._pairing_session
+        if session is None:
+            return
+        session_id = session["session_id"]
+        delay = max(0.0, float(session["expires_at"]) - time.monotonic()) + 0.05
+
+        def _fire() -> None:
+            sess = self._pairing_session
+            if sess is None or sess.get("session_id") != session_id:
+                return
+            if sess["state"] in {"complete", "cancelled"}:
+                return
+            if not self._pairing_session_expired(sess):
+                return
+            sess["state"] = "cancelled"
+            self._refresh_advertisement()
+            self._mark_pairing_session()
+
+        timer = threading.Timer(delay, _fire)
+        timer.daemon = True
+        self._pairing_expiry_timer = timer
+        timer.start()
 
     def _mark_view_sections_for_event(self, event_type: EventType) -> None:
         sections = _VIEW_SECTIONS_FOR_EVENT.get(event_type)
@@ -1503,6 +1540,8 @@ class DeviceAgent:
             "peer_url": None,
         }
         self._refresh_advertisement()
+        self._arm_pairing_expiry_notice()
+        self._mark_pairing_session()
         return self.pairing_session_status(include_pin=True)
 
     def pairing_session_status(self, *, include_pin: bool = False) -> dict[str, Any]:
@@ -1515,6 +1554,8 @@ class DeviceAgent:
             "cancelled",
         }:
             session["state"] = "cancelled"
+            self._cancel_pairing_expiry_notice()
+            self._mark_pairing_session()
         out: dict[str, Any] = {
             "active": session["state"] not in {"complete", "cancelled"},
             "role": session["role"],
@@ -1556,14 +1597,18 @@ class DeviceAgent:
         elif session["role"] == "host":
             pass
         session["state"] = "cancelled"
+        self._cancel_pairing_expiry_notice()
         self._refresh_advertisement()
+        self._mark_pairing_session()
         return self.pairing_session_status()
 
     def receive_pair_cancel(self, session_id: str) -> dict[str, Any]:
         """Host: guest cancelled; burn the session."""
         session = self._require_host_session(session_id)
         session["state"] = "cancelled"
+        self._cancel_pairing_expiry_notice()
         self._refresh_advertisement()
+        self._mark_pairing_session()
         return self.pairing_session_status()
 
     def join_pairing_session(
@@ -1623,6 +1668,8 @@ class DeviceAgent:
             }
             if host_agent not in self._reachable:
                 self.connect(host_agent)
+            self._arm_pairing_expiry_notice()
+            self._mark_pairing_session()
             return self.pairing_session_status()
 
         if not peer_url:
@@ -1670,6 +1717,8 @@ class DeviceAgent:
             "host_url": peer_url.rstrip("/"),
             "guest_nonce": guest_nonce,
         }
+        self._arm_pairing_expiry_notice()
+        self._mark_pairing_session()
         return self.pairing_session_status()
 
     def receive_pair_join(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -1679,14 +1728,18 @@ class DeviceAgent:
             raise ValueError("pairing session is not accepting joins")
         if self._pairing_session_expired(session):
             session["state"] = "cancelled"
+            self._cancel_pairing_expiry_notice()
             self._refresh_advertisement()
+            self._mark_pairing_session()
             raise ValueError("pairing session expired")
         pin = body.get("pin") or ""
         if not pins_equal(pin, session["pin"]):
             session["attempts"] = int(session["attempts"]) + 1
             if session["attempts"] >= PIN_MAX_ATTEMPTS:
                 session["state"] = "cancelled"
+                self._cancel_pairing_expiry_notice()
                 self._refresh_advertisement()
+                self._mark_pairing_session()
                 raise ValueError("too many PIN attempts")
             raise ValueError("invalid PIN")
         guest_payload = body.get("payload")
@@ -1712,7 +1765,9 @@ class DeviceAgent:
             session["attempts"] = int(session["attempts"]) + 1
             if session["attempts"] >= PIN_MAX_ATTEMPTS:
                 session["state"] = "cancelled"
+                self._cancel_pairing_expiry_notice()
                 self._refresh_advertisement()
+                self._mark_pairing_session()
             raise ValueError("invalid join signature") from exc
         sas = sas_for_session(
             session_id=session["session_id"],
@@ -1725,6 +1780,7 @@ class DeviceAgent:
         session["sas"] = sas
         session["state"] = "pending_confirm"
         self._refresh_advertisement()
+        self._mark_pairing_session()
         return {"ok": True, "sas": sas, "peer_name": self.name}
 
     def confirm_pairing_session(self) -> Device | None:
@@ -1738,6 +1794,8 @@ class DeviceAgent:
             raise ValueError("no active pairing session")
         if self._pairing_session_expired(session) and session["state"] != "complete":
             session["state"] = "cancelled"
+            self._cancel_pairing_expiry_notice()
+            self._mark_pairing_session()
             raise ValueError("pairing session expired")
         if session["state"] == "complete":
             return self.refresh_pairing_session_trust()
@@ -1766,6 +1824,8 @@ class DeviceAgent:
                 session["state"] = "complete"
                 session["host_confirmed"] = True
                 session["guest_confirmed"] = True
+                self._cancel_pairing_expiry_notice()
+                self._mark_pairing_session()
                 host_payload = session.get("host_payload")
                 assert isinstance(host_payload, dict)
                 return self._trust_payload(host_payload)
@@ -1779,6 +1839,8 @@ class DeviceAgent:
         session["state"] = "complete"
         session["host_confirmed"] = True
         session["guest_confirmed"] = True
+        self._cancel_pairing_expiry_notice()
+        self._mark_pairing_session()
         host_payload = session.get("host_payload")
         assert isinstance(host_payload, dict)
         return self._trust_payload(host_payload)
@@ -1811,6 +1873,8 @@ class DeviceAgent:
         peer: Device | None = None
         if session["host_confirmed"]:
             peer = self._finalize_host_pairing()
+        else:
+            self._mark_pairing_session()
         return {
             "ok": True,
             "complete": session["state"] == "complete",
@@ -1825,6 +1889,7 @@ class DeviceAgent:
         if not isinstance(guest_payload, dict):
             raise ValueError("no guest bound to session")
         session["host_confirmed"] = True
+        self._mark_pairing_session()
         if not session["guest_confirmed"]:
             return None
         return self._finalize_host_pairing()
@@ -1849,9 +1914,12 @@ class DeviceAgent:
             )
             session["guest_confirmed"] = True
             if not result.get("complete"):
+                self._mark_pairing_session()
                 return None
             session["host_confirmed"] = True
             session["state"] = "complete"
+            self._cancel_pairing_expiry_notice()
+            self._mark_pairing_session()
             return self._trust_payload(host_payload)
         host_url = session.get("host_url")
         if not isinstance(host_url, str):
@@ -1862,6 +1930,7 @@ class DeviceAgent:
         )
         session["guest_confirmed"] = True
         if not result.get("complete"):
+            self._mark_pairing_session()
             return None
         remote_host = result.get("host_payload") or host_payload
         if isinstance(remote_host, dict) and "url" not in remote_host:
@@ -1869,6 +1938,8 @@ class DeviceAgent:
         peer = self._trust_payload(remote_host)
         session["state"] = "complete"
         session["host_confirmed"] = True
+        self._cancel_pairing_expiry_notice()
+        self._mark_pairing_session()
         return peer
 
     def _finalize_host_pairing(self) -> Device:
@@ -1878,7 +1949,9 @@ class DeviceAgent:
         assert isinstance(guest_payload, dict)
         peer = self._trust_payload(guest_payload)
         session["state"] = "complete"
+        self._cancel_pairing_expiry_notice()
         self._refresh_advertisement()
+        self._mark_pairing_session()
         # Connect in-process guest if present on discovery.
         if url := guest_payload.get("url"):
             peer_agent = self._discovery_agent_at(str(url))

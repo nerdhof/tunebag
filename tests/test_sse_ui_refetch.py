@@ -109,7 +109,15 @@ def test_view_notices_ui_contract_eventsource_and_section_refetch() -> None:
     assert "await refreshPeers()" in assign_chunk
     assert "refreshIntents({ force: true })" in assign_chunk
     # Section keys from the notice taxonomy
-    for section in ("mixes", "play_history", "intents", "peers", "cache"):
+    for section in (
+        "mixes",
+        "play_history",
+        "intents",
+        "peers",
+        "cache",
+        "activity",
+        "pairing_session",
+    ):
         assert f'"{section}"' in js or f"'{section}'" in js
 
 

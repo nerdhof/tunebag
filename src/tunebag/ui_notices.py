@@ -18,6 +18,8 @@ class UIViewSection(StrEnum):
     INTENTS = "intents"
     PEERS = "peers"
     CACHE = "cache"
+    ACTIVITY = "activity"
+    PAIRING_SESSION = "pairing_session"
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ _SECTION_ORDER = (
     UIViewSection.INTENTS,
     UIViewSection.PEERS,
     UIViewSection.CACHE,
+    UIViewSection.ACTIVITY,
+    UIViewSection.PAIRING_SESSION,
 )
 
 

@@ -2199,6 +2199,13 @@ function renderPairSession(session) {
   }
   pairCollapsible?.expand();
   cancelBtn.hidden = false;
+  // Only poll while waiting on the other device's Confirm; host waiting
+  // and other local transitions are pushed via pairing_session notices.
+  if (session.state === "pending_confirm") {
+    startPairPoll();
+  } else {
+    stopPairPoll();
+  }
   if (session.role === "host" && session.state === "waiting") {
     hostPanel.hidden = false;
     confirmPanel.hidden = true;
@@ -2550,8 +2557,7 @@ function mountRowAnnotateKit({
       if (!rateRes.ok) {
         throw new Error("Rate failed");
       }
-      await refreshMixes({ force: true });
-      await refreshPlayer();
+      await refreshAfterAnnotateMutation();
     },
   });
 
@@ -2586,8 +2592,7 @@ function mountRowAnnotateKit({
     event.stopPropagation();
     const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
     if (res.ok) {
-      await refreshMixes({ force: true });
-      await refreshPlayer();
+      await refreshAfterAnnotateMutation();
     }
   });
   undoBtn.addEventListener("click", async (event) => {
@@ -2597,8 +2602,7 @@ function mountRowAnnotateKit({
     });
     if (res.ok) {
       clearCatalogRejectTimer(mix.id);
-      await refreshMixes({ force: true });
-      await refreshPlayer();
+      await refreshAfterAnnotateMutation();
     }
   });
   if (allowUnreject) {
@@ -2608,9 +2612,7 @@ function mountRowAnnotateKit({
         method: "POST",
       });
       if (res.ok) {
-        await refreshMixes({ force: true });
-        await refreshPlayer();
-        await refreshIntents();
+        await refreshAfterAnnotateMutation({ intents: true });
       }
     });
   } else {
@@ -2631,15 +2633,13 @@ function mountRowAnnotateKit({
     async onAdd(tag) {
       await handlers.onAdd(tag);
       if (refreshAfterTag) {
-        await refreshMixes({ force: true });
-        await refreshPlayer();
+        await refreshAfterAnnotateMutation();
       }
     },
     async onRemove(tag) {
       await handlers.onRemove(tag);
       if (refreshAfterTag) {
-        await refreshMixes({ force: true });
-        await refreshPlayer();
+        await refreshAfterAnnotateMutation();
       }
     },
   });
@@ -2735,8 +2735,7 @@ function mountPlayerAnnotateKit({
         return;
       }
       if (status) status.textContent = "Reject started — undo available briefly";
-      await refreshPlayer();
-      await refreshMixes();
+      await refreshAfterAnnotateMutation();
     } catch (err) {
       if (status) status.textContent = "Reject request failed";
       console.error(err);
@@ -2762,8 +2761,7 @@ function mountPlayerAnnotateKit({
       if (status) {
         status.textContent = data.undone ? "Reject undone" : "Nothing to undo";
       }
-      await refreshPlayer();
-      await refreshMixes();
+      await refreshAfterAnnotateMutation();
     } catch (err) {
       if (status) status.textContent = "Undo reject request failed";
       console.error(err);
@@ -3631,8 +3629,7 @@ function scheduleCatalogRejectRefresh(mixId, untilIso) {
   const delay = Math.max(0, untilMs - Date.now()) + 50;
   const handle = setTimeout(async () => {
     catalogRejectTimers.delete(mixId);
-    await refreshMixes({ force: true });
-    await refreshPlayer();
+    await refreshAfterAnnotateMutation();
   }, delay);
   catalogRejectTimers.set(mixId, handle);
 }
@@ -3755,7 +3752,7 @@ function mountCatalogFilters() {
       const pressed = btn.getAttribute("aria-pressed") === "true";
       btn.setAttribute("aria-pressed", pressed ? "false" : "true");
       catalogFilterPlatforms = readPlatforms();
-      await refreshMixes({ force: true });
+      await refreshAffectedSurfaces(["mixes"], { force: true });
     });
   }
 
@@ -3767,7 +3764,7 @@ function mountCatalogFilters() {
       floor: null,
       async onChange(floor) {
         catalogFilterMinStars = floor;
-        await refreshMixes({ force: true });
+        await refreshAffectedSurfaces(["mixes"], { force: true });
       },
     });
   }
@@ -3782,11 +3779,11 @@ function mountCatalogFilters() {
       getCatalogTags: () => catalogTagsCache,
       async onAdd(tag) {
         catalogFilterTags = [...catalogFilterTags, tag];
-        await refreshMixes({ force: true });
+        await refreshAffectedSurfaces(["mixes"], { force: true });
       },
       async onRemove(tag) {
         catalogFilterTags = catalogFilterTags.filter((t) => t !== tag);
-        await refreshMixes({ force: true });
+        await refreshAffectedSurfaces(["mixes"], { force: true });
       },
     });
     tagsRoot.setAttribute("aria-label", "Catalog filter tags");
@@ -5277,7 +5274,6 @@ async function startPairSession() {
     }
     status.textContent = "Share the PIN (or QR) with the other device";
     renderPairSession(data);
-    startPairPoll();
   } catch (err) {
     status.textContent = "Could not start pairing";
     console.error(err);
@@ -5327,7 +5323,6 @@ async function confirmPairSession() {
     if (data.session) {
       renderPairSession(data.session);
     }
-    startPairPoll();
   } catch (err) {
     status.textContent = "Confirm failed";
     console.error(err);
@@ -5350,7 +5345,6 @@ async function joinPairSession({ peer_url, pin, session_id }) {
     }
     status.textContent = "Compare the confirm code, then Confirm on both devices";
     renderPairSession(data);
-    startPairPoll();
     return true;
   } catch (err) {
     status.textContent = "Join failed";
@@ -5874,15 +5868,14 @@ async function rateCurrentPlayerMix(stars) {
     throw new Error(data.detail || "Rate failed");
   }
   status.textContent = "";
-  await refreshMixes();
-  await refreshPlayer();
+  await refreshAfterAnnotateMutation();
 }
 
 document.getElementById("catalog-show-rejected")?.addEventListener("click", async (event) => {
   const btn = event.currentTarget;
   showRejectedCatalog = btn.getAttribute("aria-pressed") !== "true";
   syncRejectedToggle(btn, showRejectedCatalog);
-  await refreshMixes({ force: true });
+  await refreshAffectedSurfaces(["mixes"], { force: true });
 });
 
 document.getElementById("play-history-show-rejected")?.addEventListener("click", async (event) => {
@@ -5893,41 +5886,66 @@ document.getElementById("play-history-show-rejected")?.addEventListener("click",
 });
 
 /** Notice section taxonomy mirrored from DeviceAgent UI view notices. */
-const VIEW_NOTICE_SECTIONS = ["mixes", "play_history", "intents", "peers", "cache"];
+const VIEW_NOTICE_SECTIONS = [
+  "mixes",
+  "play_history",
+  "intents",
+  "peers",
+  "cache",
+  "activity",
+  "pairing_session",
+];
 
-async function refreshAllViewSurfaces() {
-  await refreshPeers();
-  // No force: respect focusInside so tag/hours editors are not remounted mid-edit.
-  await refreshMixes();
-  await refreshPlayHistory();
-  await refreshIntents();
-  await refreshFiles();
-}
-
-async function refreshViewSections(sections) {
+/**
+ * Shared surface refresh. User mutations pass `{ force: true }` so open editors
+ * remount; View notices omit force so focusInside editors are preserved.
+ */
+async function refreshAffectedSurfaces(sections, { force = false } = {}) {
   const wanted = new Set(sections);
-  // Independent branches: a burst may name both mixes and play_history.
-  // Live notices must not force-rebuild while a tag input has focus.
   if (wanted.has("mixes")) {
-    await refreshMixes();
+    await refreshMixes({ force });
   }
   if (wanted.has("play_history") && !wanted.has("mixes")) {
     // refreshMixes already refreshes Play history when mixes are included.
     await refreshPlayHistory();
   }
   if (wanted.has("intents")) {
-    await refreshIntents();
+    await refreshIntents({ force });
   }
   if (wanted.has("peers")) {
     await refreshPeers();
     // Device picker for Assign hours is derived from peersCache.
     if (hoursEditorState.size) {
-      await refreshIntents();
+      await refreshIntents({ force });
     }
   }
   if (wanted.has("cache")) {
-    await refreshFiles();
+    await refreshFiles({ force });
   }
+  if (wanted.has("activity")) {
+    await refreshActivity();
+  }
+  if (wanted.has("pairing_session")) {
+    await refreshPairingSession();
+  }
+}
+
+async function refreshAllViewSurfaces() {
+  // No force: respect focusInside so tag/hours editors are not remounted mid-edit.
+  await refreshAffectedSurfaces(VIEW_NOTICE_SECTIONS);
+}
+
+async function refreshViewSections(sections) {
+  // Live notices must not force-rebuild while a tag input has focus.
+  await refreshAffectedSurfaces(sections);
+}
+
+/** After annotate mutations: force Catalog/history so editors remount with new state. */
+async function refreshAfterAnnotateMutation({ intents = false } = {}) {
+  const sections = ["mixes", "play_history"];
+  if (intents) sections.push("intents");
+  await refreshAffectedSurfaces(sections, { force: true });
+  await refreshPlayer();
 }
 
 function connectViewNotices() {
@@ -6009,5 +6027,4 @@ function connectViewNotices() {
     if (playerHeading) chromeObserver.observe(playerHeading);
   }
   connectViewNotices();
-  setInterval(refreshActivity, 1000);
 })();

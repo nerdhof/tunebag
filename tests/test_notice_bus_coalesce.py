@@ -74,6 +74,11 @@ def _sections(agent: DeviceAgent) -> list[UIViewSection]:
     return [n.section for n in agent.drain_view_notices()]
 
 
+def _catalog_sections(agent: DeviceAgent) -> list[UIViewSection]:
+    """Catalog/cache sections only (auto-sync notes also emit activity)."""
+    return [s for s in _sections(agent) if s != UIViewSection.ACTIVITY]
+
+
 def test_tag_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None:
     """Tagging a Mix notifies mixes + play_history once (not per Event)."""
     agent, source = _agent(tmp_path)
@@ -82,7 +87,10 @@ def test_tag_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None:
 
     agent.tag_mix(mix.id, ["deep"])
 
-    assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+    assert _catalog_sections(agent) == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
 
 
 def test_rate_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None:
@@ -92,7 +100,10 @@ def test_rate_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None
 
     agent.rate_mix(mix.id, Stars.FIVE)
 
-    assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+    assert _catalog_sections(agent) == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
 
 
 def test_add_mix_emits_single_mixes_notice(tmp_path: Path) -> None:
@@ -102,7 +113,7 @@ def test_add_mix_emits_single_mixes_notice(tmp_path: Path) -> None:
 
     _add_mix(agent, source)
 
-    assert _sections(agent) == [UIViewSection.MIXES]
+    assert _catalog_sections(agent) == [UIViewSection.MIXES]
 
 
 def test_reject_commit_emits_mixes_and_play_history(tmp_path: Path) -> None:
@@ -112,12 +123,12 @@ def test_reject_commit_emits_mixes_and_play_history(tmp_path: Path) -> None:
     agent.drain_view_notices()
 
     agent.reject_mix(mix.id)
-    assert _sections(agent) == []
+    assert _catalog_sections(agent) == []
 
     clock.advance(UNDO_SECONDS + 1)
     agent.commit_pending_rejects()
 
-    sections = set(_sections(agent))
+    sections = set(_catalog_sections(agent))
     assert UIViewSection.MIXES in sections
     assert UIViewSection.PLAY_HISTORY in sections
 
@@ -138,7 +149,10 @@ def test_playhead_burst_coalesces_mixes_and_play_history(tmp_path: Path) -> None
 
     agent.report_playhead(10)
 
-    assert _sections(agent) == [UIViewSection.MIXES, UIViewSection.PLAY_HISTORY]
+    assert _catalog_sections(agent) == [
+        UIViewSection.MIXES,
+        UIViewSection.PLAY_HISTORY,
+    ]
 
 
 def test_create_intent_emits_single_coalesced_intents_notice(tmp_path: Path) -> None:
@@ -154,7 +168,7 @@ def test_create_intent_emits_single_coalesced_intents_notice(tmp_path: Path) -> 
         device_hours=[(agent.device_id, 3600)],
     )
 
-    assert _sections(agent) == [UIViewSection.INTENTS]
+    assert _catalog_sections(agent) == [UIViewSection.INTENTS]
 
 
 def test_cache_file_add_and_remove_emit_cache(tmp_path: Path) -> None:
@@ -173,7 +187,7 @@ def test_cache_file_add_and_remove_emit_cache(tmp_path: Path) -> None:
 
     agent.drain_view_notices()
     agent.remove_local_file(mix.id)
-    assert _sections(agent) == [UIViewSection.CACHE]
+    assert _catalog_sections(agent) == [UIViewSection.CACHE]
 
 
 def test_pair_and_unpair_emit_peers(tmp_path: Path) -> None:
@@ -218,7 +232,7 @@ def test_pair_candidate_discovery_emits_peers(tmp_path: Path) -> None:
 
     phone.refresh_discovery()
 
-    assert _sections(phone) == [UIViewSection.PEERS]
+    assert _catalog_sections(phone) == [UIViewSection.PEERS]
     assert len(phone.pair_candidates()) == 1
 
 
@@ -234,14 +248,18 @@ def test_two_subscribers_observe_same_coalesced_notices(tmp_path: Path) -> None:
 
     agent.tag_mix(mix.id, ["deep"])
 
-    assert [n.section for n in seen_a] == [
+    def catalog_only(notices: list[UIViewNotice]) -> list[UIViewSection]:
+        return [n.section for n in notices if n.section != UIViewSection.ACTIVITY]
+
+    assert catalog_only(seen_a) == [
         UIViewSection.MIXES,
         UIViewSection.PLAY_HISTORY,
     ]
-    assert [n.section for n in seen_b] == [
+    assert catalog_only(seen_b) == [
         UIViewSection.MIXES,
         UIViewSection.PLAY_HISTORY,
     ]
+    assert seen_a == seen_b
     unsub_a()
     unsub_b()
 
