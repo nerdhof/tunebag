@@ -2792,8 +2792,392 @@ class DeviceAgent:
             )
 
     def _ingest(self, event: Event) -> None:
-        """Peer Event ingest via CatalogJournal (dedupe / buffer / verify / apply)."""
-        self._journal.ingest_foreign(event)
+        with self._journal.hold():
+            if event.id in self._journal._seen_event_ids:
+                return
+            if event.device_id == self.device.id:
+                return
+            if event.device_id in self.catalog.unpaired_device_ids:
+                return
+            author = self.catalog.devices.get(event.device_id)
+            if author is None:
+                self.catalog.unknown_author_buffer[event.id] = event
+                return
+            self.catalog.unknown_author_buffer.pop(event.id, None)
+            self._commit_foreign_event(event, author.public_key_pem)
+
+    def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
+        """Verify, append, and apply a peer event. Caller must hold journal lock."""
+        if not self._verify(event, public_key_pem):
+            raise InvalidSignature("event signature mismatch")
+        self._journal._seen_event_ids.add(event.id)
+        self._log.append(event)
+        self._journal._apply_live(event)
+        self._record_view_sections_for_event(event.type)
+
+    def _flush_buffered_events_for(self, author_id: UUID) -> None:
+        """Verify and apply buffered events for a newly known author.
+
+        Caller must hold journal lock. Applying a buffered ``DEVICE_PAIRED``
+        may flush further authors. Order follows signed author time then seq.
+        """
+        pending = sorted(
+            (
+                event
+                for event in self.catalog.unknown_author_buffer.values()
+                if event.device_id == author_id
+            ),
+            key=lambda e: (e.created_at, int(e.seq), e.id),
+        )
+        for event in pending:
+            self.catalog.unknown_author_buffer.pop(event.id, None)
+            if event.id in self._journal._seen_event_ids:
+                continue
+            author = self.catalog.devices.get(event.device_id)
+            if author is None:
+                self.catalog.unknown_author_buffer[event.id] = event
+                continue
+            self._commit_foreign_event(event, author.public_key_pem)
+
+    def _upsert_intent_and_rebuild(
+        self,
+        intent: Intent,
+        *,
+        cleared_device_ids: list[UUID] | None = None,
+        fill: bool = False,
+    ) -> None:
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._journal.hold():
+                    self._append_and_apply(
+                        EventType.INTENT_UPSERTED,
+                        encode_intent(intent, cleared_device_ids=cleared_device_ids),
+                    )
+                    # Catalog may have merged peer device_hours; rebuild from that.
+                    # INTENT_UPSERT rebuild+prune must stay under journal.hold() so
+                    # export never sees a half-written intent; request_fill
+                    # only starts a thread (safe under the lock).
+                    merged = self.catalog.intents[intent.id]
+                    self._maintenance.after_catalog_change(
+                        CatalogChange(
+                            CatalogChangeReason.INTENT_UPSERT,
+                            intent=merged,
+                            fill_async=fill,
+                        )
+                    )
+
+    def _rebuild_all_sequences(self) -> None:
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._journal.hold():
+                    for intent in self.intents():
+                        self._rebuild_sequence_for_intent(intent)
+                    self._prune_unassigned_files()
+
+    def _rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool:
+        """Rebuild intents missing a device assignment and/or still under budget.
+
+        ``include_underfilled`` should be True after local mix adds/refreshes (and
+        after peer ingest that added mixes). On a routine sync with no new mixes,
+        only missing assignments are rebuilt — otherwise an under-budget Explore
+        with too few Catalog mixes would rebuild forever.
+
+        Skip the view-notice batch when nothing needs rebuild so a concurrent
+        auto-sync cannot nest an empty batch under a local write and delay its
+        flush (notices would stay pending until sync ended).
+        """
+        to_rebuild = [
+            intent
+            for intent in self.intents()
+            if self._sequence_provisioner.needs_rebuild(
+                intent, self.catalog, include_underfilled=include_underfilled
+            )
+        ]
+        if not to_rebuild:
+            return False
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._journal.hold():
+                    rebuilt = False
+                    for intent in to_rebuild:
+                        # Re-check under the lock; a peer may have filled gaps.
+                        if not self._sequence_provisioner.needs_rebuild(
+                            intent,
+                            self.catalog,
+                            include_underfilled=include_underfilled,
+                        ):
+                            continue
+                        self._rebuild_sequence_for_intent(intent)
+                        rebuilt = True
+                    if rebuilt:
+                        self._prune_unassigned_files()
+                    return rebuilt
+
+    def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
+        """Append SequenceProvisioner drafts for ``intent`` (caller holds journal)."""
+        for draft in self._sequence_provisioner.provision(intent, self.catalog):
+            self._append_and_apply(draft.type, draft.payload)
+
+    def _delete_retired_file_if_replaced(self, retired_mix_id: UUID) -> None:
+        """Drop a played/skipped mix's bytes once another assigned mix is local.
+
+        Keeps the blob while it is still the current mix so playback can continue.
+        """
+        if not self._has_local_file(retired_mix_id):
+            return
+        if retired_mix_id == self._current_mix_id:
+            return
+        replacement_local = False
+        for intent in self.intents():
+            assignment = self.assignment(intent.id)
+            if assignment is None:
+                continue
+            for mix_id in assignment.mix_ids:
+                if mix_id != retired_mix_id and self._has_local_file(mix_id):
+                    replacement_local = True
+                    break
+            if replacement_local:
+                break
+        if replacement_local:
+            self.remove_local_file(retired_mix_id)
+
+    def _cleanup_revoked_peer_session(self, device_id: UUID) -> None:
+        """Drop Locator hints and in-process meet state after Catalog unpair."""
+        if device_id in self._peer_urls:
+            self._peer_urls.pop(device_id, None)
+            self._persist_locator_hints()
+        for agent in list(self._reachable):
+            if agent.device_id == device_id:
+                self._proved_agents.discard(id(agent))
+
+    def _trust_payload(self, payload: dict[str, Any]) -> Device:
+        if payload.get("v") != 1:
+            raise ValueError("unsupported pairing payload version")
+        name = payload["name"]
+        public_key_pem = payload["public_key_pem"]
+        if "device_id" not in payload:
+            raise ValueError("pairing payload missing device_id")
+        peer_id = UUID(payload["device_id"])
+        priority = int(payload.get("priority", 100))
+        expected = fingerprint_from_key(public_key_pem)
+        claimed = payload.get("fingerprint") or payload.get("short_code")
+        if claimed and str(claimed).upper() != expected:
+            raise ValueError("fingerprint does not match public key")
+        existing = self.catalog.devices.get(peer_id)
+        if existing is None:
+            existing = next(
+                (d for d in self.catalog.devices.values() if d.public_key_pem == public_key_pem),
+                None,
+            )
+        self.catalog.unpaired_device_ids.discard(peer_id)
+        if existing is not None:
+            peer = existing
+        else:
+            peer = Device(
+                id=peer_id,
+                name=name,
+                public_key_pem=public_key_pem,
+                priority=priority,
+            )
+            self._append_and_apply(
+                EventType.DEVICE_PAIRED,
+                {
+                    "id": str(peer.id),
+                    "name": peer.name,
+                    "public_key_pem": peer.public_key_pem,
+                    "priority": peer.priority,
+                },
+            )
+            peer = self.catalog.devices[peer.id]
+        if url := payload.get("url"):
+            self.remember_peer_url(peer.id, url)
+        return peer
+
+    def _trusts_public_key(self, public_key_pem: str) -> bool:
+        return any(d.public_key_pem == public_key_pem for d in self.peers())
+
+    def _verify_possession(self, nonce: str, signature: str, public_key_pem: str) -> bool:
+        try:
+            _load_public_key(public_key_pem).verify(
+                base64.b64decode(signature),
+                nonce.encode("utf-8"),
+            )
+        except (InvalidSignature, ValueError, TypeError):
+            return False
+        return True
+
+    def _ensure_agent_proved(self, peer: DeviceAgent) -> bool:
+        """Challenge an in-process Peer; proof lasts until disconnect."""
+        key = id(peer)
+        if key in self._proved_agents:
+            return True
+        if not self._trusts_public_key(peer.public_key_pem):
+            return False
+        nonce = secrets.token_urlsafe(32)
+        try:
+            signature = peer.prove_possession(nonce)
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(f"meet proof failed for {peer.name}: {exc}", level=logging.WARNING)
+            return False
+        if not self._verify_possession(nonce, signature, peer.public_key_pem):
+            self.note(f"meet proof failed for {peer.name}", level=logging.WARNING)
+            return False
+        self._proved_agents.add(key)
+        return True
+
+    def _ensure_http_peer_proved(self, url: str, public_key_pem: str) -> bool:
+        """Challenge an HTTP Locator before Event log sync (every pull)."""
+        nonce = secrets.token_urlsafe(32)
+        try:
+            signature = self._http_prove(url, nonce)
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(f"meet proof failed ({url}): {exc}", level=logging.WARNING)
+            return False
+        if not self._verify_possession(nonce, signature, public_key_pem):
+            self.note(f"meet proof failed ({url})", level=logging.WARNING)
+            return False
+        return True
+
+    def _append_and_apply(self, event_type: EventType, payload: dict[str, Any]) -> Event:
+        event = self._journal.append_local(event_type, payload)
+        self._mark_view_sections_for_event(event_type)
+        self._schedule_auto_sync()
+        return event
+
+    def _schedule_auto_sync(self) -> None:
+        """Pull on this device and nudge trusted reachable peers to pull too.
+
+        Each side's ``sync`` still runs the key-proof meet gate before ingest.
+        Nested under ``_defer_auto_sync``, only the outermost exit schedules once.
+        """
+        if self._auto_sync_defer_depth > 0:
+            self._auto_sync_deferred = True
+            return
+        self.request_sync()
+        for peer in list(self._reachable):
+            if not self._trusts_public_key(peer.public_key_pem):
+                continue
+            if not peer._trusts_public_key(self.public_key_pem):
+                continue
+            peer.request_sync()
+        trusted_ids = {p.id for p in self.peers()}
+        for peer_id, url in list(self._peer_urls.items()):
+            if peer_id not in trusted_ids:
+                continue
+            if str(url).startswith("inproc://"):
+                continue
+            self._http_nudge_sync(url)
+
+    def _http_nudge_sync(self, peer_url: str) -> None:
+        """Best-effort: ask the HTTP peer to run its own pull sync."""
+        try:
+            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+                response = client.post(f"{peer_url.rstrip('/')}/api/sync")
+                response.raise_for_status()
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(f"auto-sync nudge failed ({peer_url}): {exc}", level=logging.WARNING)
+
+    def _request_peers_yield(self) -> None:
+        """Best-effort: ask reachable trusted Peers to pause local playback.
+
+        Playing stays local (not Event log). Unreachable Peers are left alone.
+        Failures never fail local play.
+        """
+        for peer in list(self._reachable):
+            if not self._trusts_public_key(peer.public_key_pem):
+                continue
+            if not self._ensure_agent_proved(peer):
+                continue
+            try:
+                if peer.yield_playback():
+                    self.note(f"peer {peer.name} yielded playback")
+            except Exception as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                self.note(
+                    f"peer yield failed for {peer.name}: {exc}",
+                    level=logging.WARNING,
+                )
+        trusted_ids = {p.id for p in self.peers()}
+        for peer_id, url in list(self._peer_urls.items()):
+            if peer_id not in trusted_ids:
+                continue
+            if str(url).startswith("inproc://"):
+                continue
+            peer = self.catalog.devices.get(peer_id)
+            label = peer.name if peer is not None else str(peer_id)
+            self._http_request_yield(url, label=label)
+
+    def _http_request_yield(self, peer_url: str, *, label: str) -> None:
+        """Best-effort: POST /api/player/yield on an HTTP Peer Locator."""
+        try:
+            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+                response = client.post(f"{peer_url.rstrip('/')}/api/player/yield")
+                response.raise_for_status()
+                yielded = bool(response.json().get("yielded"))
+            if yielded:
+                self.note(f"peer {label} yielded playback")
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.note(
+                f"peer yield failed ({peer_url}): {exc}",
+                level=logging.WARNING,
+            )
+
+    def _ingest(self, event: Event) -> None:
+        with self._journal.hold():
+            if event.id in self._journal._seen_event_ids:
+                return
+            if event.device_id == self.device.id:
+                return
+            if event.device_id in self.catalog.unpaired_device_ids:
+                return
+            author = self.catalog.devices.get(event.device_id)
+            if author is None:
+                self.catalog.unknown_author_buffer[event.id] = event
+                return
+            self.catalog.unknown_author_buffer.pop(event.id, None)
+            self._commit_foreign_event(event, author.public_key_pem)
+
+    def _commit_foreign_event(self, event: Event, public_key_pem: str) -> None:
+        """Verify, append, and apply a peer event. Caller must hold journal lock."""
+        if not self._verify(event, public_key_pem):
+            raise InvalidSignature("event signature mismatch")
+        self._journal._seen_event_ids.add(event.id)
+        self._log.append(event)
+        self._journal._apply_live(event)
+        self._record_view_sections_for_event(event.type)
+
+    def _flush_buffered_events_for(self, author_id: UUID) -> None:
+        """Verify and apply buffered events for a newly known author.
+
+        Caller must hold journal lock. Applying a buffered ``DEVICE_PAIRED``
+        may flush further authors. Order follows signed author time then seq.
+        """
+        pending = sorted(
+            (
+                event
+                for event in self.catalog.unknown_author_buffer.values()
+                if event.device_id == author_id
+            ),
+            key=lambda e: (e.created_at, int(e.seq), e.id),
+        )
+        for event in pending:
+            self.catalog.unknown_author_buffer.pop(event.id, None)
+            if event.id in self._journal._seen_event_ids:
+                continue
+            author = self.catalog.devices.get(event.device_id)
+            if author is None:
+                self.catalog.unknown_author_buffer[event.id] = event
+                continue
+            self._commit_foreign_event(event, author.public_key_pem)
 
     def _upsert_intent_and_rebuild(
         self,
