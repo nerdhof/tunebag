@@ -2665,7 +2665,7 @@ function seekLabelHeadroomRem(tracks, artist) {
   }
   // 0.7rem labels at −60°: vertical rise ≈ chars * charWidth * sin(60°) + gap.
   const rise = Math.min(16, Math.max(3.5, maxChars * 0.28 + 0.7));
-  // Player heading + transport top margin sit inside #player's clip; reuse that
+  // Player heading + transport top margin sit inside .player-clip; reuse that
   // band so long titles can extend into the caption instead of padding only.
   const captionCredit = 2.5;
   return Math.max(2.75, rise - captionCredit);

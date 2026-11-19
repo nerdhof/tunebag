@@ -356,11 +356,14 @@ form.add-form-open .add-form-fields-inline {
 }
 
 /*
- * Hard-clip angled seek titles at the player card edge (heading + transport +
- * below). Clipping only the transport cut titles off under the Player caption;
- * clip-margin reintroduced page scroll.
+ * Hard-clip angled seek titles at heading + transport (no clip-margin — that
+ * reintroduced page scroll). Tags live in .player-below, outside this clip.
  */
 #player {
+  overflow: visible;
+}
+
+.player-clip {
   overflow: clip;
 }
 
@@ -462,7 +465,7 @@ form.add-form-open .add-form-fields-inline {
 .player-seek.has-track-labels .player-seek-main {
   padding-top: var(--seek-label-headroom, 5.5rem);
   box-sizing: content-box;
-  overflow: visible; /* #player hard-clips overhang; headroom + caption share the band */
+  overflow: visible; /* .player-clip hard-clips overhang; headroom + caption share the band */
 }
 
 .player-below {

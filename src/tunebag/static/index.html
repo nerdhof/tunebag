@@ -7,7 +7,7 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=84" />
+    <link rel="stylesheet" href="/static/app.css?v=85" />
   </head>
   <body>
     <nav class="section-nav" aria-label="Jump to section">
@@ -33,58 +33,61 @@
         <p class="status-right"><span class="status-label">Cached audio:</span> <strong id="cache-count">…</strong></p>
       </section>
       <section id="player">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">▶</span> Player
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Player"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
-              stop playback. Rate and tag here or from the catalog list.
+        <!-- Clip seek-label overhang here; keep .player-below outside so tag suggest can paint out. -->
+        <div class="player-clip">
+          <h2 class="section-heading">
+            <span class="section-symbol" aria-hidden="true">▶</span> Player
+            <span class="section-info">
+              <button
+                type="button"
+                class="section-info-btn"
+                aria-label="About Player"
+                aria-expanded="false"
+              >
+                ⓘ
+              </button>
+              <span class="section-info-tip" role="tooltip">
+                The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
+                stop playback. Rate and tag here or from the catalog list.
+              </span>
             </span>
-          </span>
-        </h2>
-        <div class="player-transport" aria-label="Player controls">
-          <div class="player-top form-row">
-            <select
-              id="player-intent"
-              title="Which intent sequence to play"
-              aria-label="Intent"
-            ></select>
-          </div>
-          <div class="player-seek form-row">
-            <div class="player-symbols player-symbols-prev" role="group" aria-label="Playback">
-              <button type="button" id="player-skip" aria-label="Skip" data-tip="Skip">⏭</button>
-              <button type="button" id="player-play" aria-label="Play" data-tip="Play">▶</button>
+          </h2>
+          <div class="player-transport" aria-label="Player controls">
+            <div class="player-top form-row">
+              <select
+                id="player-intent"
+                title="Which intent sequence to play"
+                aria-label="Intent"
+              ></select>
             </div>
-            <div class="player-seek-main">
-              <div class="player-seek-rail">
-                <div id="player-seek-marks" class="player-seek-marks" aria-hidden="true"></div>
-                <input
-                  id="player-seekbar"
-                  type="range"
-                  min="0"
-                  max="0"
-                  step="1"
-                  value="0"
-                  disabled
-                  aria-label="Seek within the current release"
-                />
+            <div class="player-seek form-row">
+              <div class="player-symbols player-symbols-prev" role="group" aria-label="Playback">
+                <button type="button" id="player-skip" aria-label="Skip" data-tip="Skip">⏭</button>
+                <button type="button" id="player-play" aria-label="Play" data-tip="Play">▶</button>
               </div>
-            </div>
-            <div class="player-symbols player-symbols-next" role="group" aria-label="Stop and mark">
-              <button type="button" id="player-mark" aria-label="Mark played" data-tip="Mark played">✓</button>
-              <button type="button" id="player-stop" aria-label="Stop" data-tip="Stop">⏹</button>
-            </div>
-            <div class="player-seek-times">
-              <span id="player-time-current" class="seek-time">0:00</span>
-              <span id="player-time-total" class="seek-time">0:00</span>
+              <div class="player-seek-main">
+                <div class="player-seek-rail">
+                  <div id="player-seek-marks" class="player-seek-marks" aria-hidden="true"></div>
+                  <input
+                    id="player-seekbar"
+                    type="range"
+                    min="0"
+                    max="0"
+                    step="1"
+                    value="0"
+                    disabled
+                    aria-label="Seek within the current release"
+                  />
+                </div>
+              </div>
+              <div class="player-symbols player-symbols-next" role="group" aria-label="Stop and mark">
+                <button type="button" id="player-mark" aria-label="Mark played" data-tip="Mark played">✓</button>
+                <button type="button" id="player-stop" aria-label="Stop" data-tip="Stop">⏹</button>
+              </div>
+              <div class="player-seek-times">
+                <span id="player-time-current" class="seek-time">0:00</span>
+                <span id="player-time-total" class="seek-time">0:00</span>
+              </div>
             </div>
           </div>
         </div>
