@@ -4148,7 +4148,17 @@ function buildHoursEditor(intent, editor) {
   return wrap;
 }
 
-function renderDeviceHoursPanel(intent, assignments = []) {
+function assignmentOutcomeText(asg, durationByMixId) {
+  if (!asg) return "";
+  const mixIds = asg.mix_ids || [];
+  let durationSeconds = 0;
+  for (const mixId of mixIds) {
+    durationSeconds += Number(durationByMixId.get(String(mixId))) || 0;
+  }
+  return ` (${mixIds.length}→${formatDuration(durationSeconds)})`;
+}
+
+function renderDeviceHoursPanel(intent, assignments = [], durationByMixId = new Map()) {
   const panel = document.createElement("div");
   panel.className = "device-hours";
 
@@ -4178,10 +4188,10 @@ function renderDeviceHoursPanel(intent, assignments = []) {
             : ` · expires in ${until}h`;
       }
       const asg = assignmentByDevice.get(String(dh.device_id));
-      const mixText = asg ? ` · ${asg.mix_ids.length} releases` : "";
+      const outcomeText = assignmentOutcomeText(asg, durationByMixId);
       label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
         dh.budget_seconds,
-      )}${mixText}${expiryText}`;
+      )}${outcomeText}${expiryText}`;
       item.appendChild(label);
 
       if (!editor) {
@@ -4467,13 +4477,22 @@ async function refreshIntents({ force = false } = {}) {
 
     let assignments = [];
     let seq = null;
+    const durationByMixId = new Map();
     const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
     if (seqRes.ok) {
       seq = await seqRes.json();
       assignments = seq.assignments || [];
+      for (const entry of seq.entries || []) {
+        if (entry.mix_id != null && entry.duration_seconds != null) {
+          durationByMixId.set(
+            String(entry.mix_id),
+            Number(entry.duration_seconds) || 0,
+          );
+        }
+      }
     }
 
-    li.appendChild(renderDeviceHoursPanel(intent, assignments));
+    li.appendChild(renderDeviceHoursPanel(intent, assignments, durationByMixId));
 
     const footer = document.createElement("div");
     footer.className = "intent-footer";
@@ -4481,13 +4500,15 @@ async function refreshIntents({ force = false } = {}) {
     if (seq) {
       const seqKey = `${intent.id}:sequence`;
       const seqExpanded = expandedIntentPanes.has(seqKey);
+      const seqFoldLabel = (open) =>
+        `${open ? "▾" : "▸"} Shared sequence`;
       const seqPane = document.createElement("div");
       seqPane.className = "intent-pane intent-pane-sequence";
       const seqToggle = document.createElement("button");
       seqToggle.type = "button";
       seqToggle.className = "intent-pane-toggle";
       seqToggle.setAttribute("aria-expanded", seqExpanded ? "true" : "false");
-      seqToggle.textContent = `${seqExpanded ? "▾" : "▸"} Shared sequence (${seq.entries.length})`;
+      seqToggle.textContent = seqFoldLabel(seqExpanded);
       const seqBody = document.createElement("div");
       seqBody.className = "intent-pane-body";
       seqBody.hidden = !seqExpanded;
@@ -4536,7 +4557,7 @@ async function refreshIntents({ force = false } = {}) {
         const open = seqBody.hidden;
         seqBody.hidden = !open;
         seqToggle.setAttribute("aria-expanded", open ? "true" : "false");
-        seqToggle.textContent = `${open ? "▾" : "▸"} Shared sequence (${seq.entries.length})`;
+        seqToggle.textContent = seqFoldLabel(open);
         if (open) expandedIntentPanes.add(seqKey);
         else expandedIntentPanes.delete(seqKey);
       });
