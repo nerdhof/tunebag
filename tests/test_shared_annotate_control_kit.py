@@ -17,14 +17,13 @@ def test_shared_annotate_kit_mounts_on_player_history_and_catalog() -> None:
     assert 'surface: "player"' in js
     assert 'surface: "catalog"' in js
     assert 'surface: "history"' in js
-    # Catalog stays display-only for Rate until ticket 03.
+    # Catalog Rate is interactive via the shared kit (ui-actions 03).
     catalog_start = js.index('tr.className = "mix-row"')
     catalog_end = js.index("async function refreshPlayHistory")
     catalog_block = js[catalog_start:catalog_end]
     assert "mountAnnotateKit" in catalog_block
-    assert "rateInteractive: false" in catalog_block
-    assert "interactive: false" in catalog_block
-    assert "/rate" not in catalog_block
+    assert "rateInteractive: true" in catalog_block
+    assert "refreshAfterTag: true" in catalog_block
     # History keeps interactive Rate + tag refresh via the kit.
     history_start = js.index("async function refreshPlayHistory")
     history_end = js.index("async function refreshPlayerIntents")

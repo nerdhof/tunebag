@@ -2020,7 +2020,8 @@ button.artist-suggest:hover {
   flex-shrink: 0;
 }
 
-#play-history-table .history-stars {
+#play-history-table .history-stars,
+#catalog-table .catalog-stars {
   width: auto;
   max-width: none;
 }

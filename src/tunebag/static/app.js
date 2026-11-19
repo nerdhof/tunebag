@@ -3963,16 +3963,15 @@ async function refreshMixes({ force = false } = {}) {
         const tagsCell = document.createElement("td");
         const tagRow = document.createElement("div");
         tagRow.className = "tag-cell";
-        // Catalog stars stay display-only (interactive: false) until ui-actions 03.
         mountAnnotateKit({
           surface: "catalog",
           mix,
           starsRoot,
           actionsRoot: tagRow,
-          rateInteractive: false,
+          rateInteractive: true,
           allowUnreject: true,
-          refreshAfterTag: false,
-          starsClass: "stars-display",
+          refreshAfterTag: true,
+          starsClass: "catalog-stars",
           tagEditorClass: "tag-editor catalog-tag-editor",
         });
         tagsCell.appendChild(tagRow);
