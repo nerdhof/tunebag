@@ -33,61 +33,62 @@
         <p class="status-right"><span class="status-label">Cached audio:</span> <strong id="cache-count">…</strong></p>
       </section>
       <section id="player">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">▶</span> Player
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Player"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
-              stop playback. Rate and tag here or from the catalog list.
+        <!-- Intent shares the Player heading row; wraps below if it collides. -->
+        <div class="player-heading-row">
+          <h2 class="section-heading">
+            <span class="section-symbol" aria-hidden="true">▶</span> Player
+            <span class="section-info">
+              <button
+                type="button"
+                class="section-info-btn"
+                aria-label="About Player"
+                aria-expanded="false"
+              >
+                ⓘ
+              </button>
+              <span class="section-info-tip" role="tooltip">
+                The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
+                stop playback. Rate and tag here or from the catalog list.
+              </span>
             </span>
-          </span>
-        </h2>
-        <!-- Wide: cover/meta left, intent right. Narrow: intent above cover/meta. -->
-        <div class="player-now-row">
-          <div class="player-top form-row">
+          </h2>
+          <div class="player-top">
             <select
               id="player-intent"
               title="Which intent sequence to play"
               aria-label="Intent"
             ></select>
           </div>
-          <div class="player-below">
-            <img id="player-cover" class="player-cover" alt="" hidden width="100" height="100" />
-            <div class="player-below-text">
-              <p id="player-now">Nothing playing</p>
-              <div class="form-row player-meta" aria-label="Rate and tag">
-                <div class="inline-field" title="Rate the current release from 1 to 5">
-                  <div
-                    id="player-stars"
-                    class="star-rating"
-                    role="radiogroup"
-                    aria-label="Rate the current release from 1 to 5"
-                  ></div>
-                </div>
-                <div class="player-reject-tags">
-                  <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
-                  <button
-                    type="button"
-                    id="player-undo-reject"
-                    hidden
-                    aria-label="Undo reject"
-                    data-tip="Undo reject"
-                  >
-                    ↺
-                  </button>
-                  <div class="player-tags-field" title="Tags for the current release">
-                    <span class="player-tags-row">
-                      <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
-                    </span>
-                  </div>
+        </div>
+        <!-- Cover | title+meta; JS stacks title under cover when the title won't fit on one line. -->
+        <div class="player-now-row">
+          <img id="player-cover" class="player-cover" alt="" hidden width="224" height="224" />
+          <div class="player-below-text">
+            <p id="player-now">Nothing playing</p>
+            <div class="form-row player-meta" aria-label="Rate and tag">
+              <div class="inline-field" title="Rate the current release from 1 to 5">
+                <div
+                  id="player-stars"
+                  class="star-rating"
+                  role="radiogroup"
+                  aria-label="Rate the current release from 1 to 5"
+                ></div>
+              </div>
+              <div class="player-reject-tags">
+                <button type="button" id="player-reject" aria-label="Reject release" data-tip="Reject release">✕</button>
+                <button
+                  type="button"
+                  id="player-undo-reject"
+                  hidden
+                  aria-label="Undo reject"
+                  data-tip="Undo reject"
+                >
+                  ↺
+                </button>
+                <div class="player-tags-field" title="Tags for the current release">
+                  <span class="player-tags-row">
+                    <div id="player-tag-editor" class="tag-editor" aria-label="Release tags"></div>
+                  </span>
                 </div>
               </div>
             </div>
@@ -493,6 +494,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=64"></script>
+    <script src="/static/app.js?v=65"></script>
   </body>
 </html>

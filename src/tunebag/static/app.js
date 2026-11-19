@@ -667,6 +667,7 @@ function mountTagEditor(root, options) {
     addBtn.className = "tag-chip-add";
     addBtn.textContent = "+";
     addBtn.setAttribute("aria-label", "Add tag");
+    addBtn.dataset.tip = "Add tag";
     addBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1036,6 +1037,7 @@ function mountArtistEditor(root, options) {
     addBtn.className = "tag-chip-add";
     addBtn.textContent = "+";
     addBtn.setAttribute("aria-label", "Add artist");
+    addBtn.dataset.tip = "Add artist";
     addBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1248,7 +1250,8 @@ let actionTipActive = null;
 
 function actionTipLabel(el) {
   if (!(el instanceof Element)) return "";
-  // Tag chip × / + keep aria-label for a11y but only tip when armed (data-tip set).
+  // Tag chip ×: aria-label always; tip only when armed (data-tip set).
+  // Tag chip +: tip via data-tip (same as other symbol actions).
   if (el.classList.contains("tag-chip-x") || el.classList.contains("tag-chip-add")) {
     return el.dataset.tip || "";
   }
@@ -2684,12 +2687,110 @@ function syncPlayerSeekClipRise() {
   clip.style.setProperty("--player-seek-clip-rise", `${rise}px`);
 }
 
+const PLAYER_COVER_MIN_REM = 4.5;
+const PLAYER_COVER_MAX_REM = 14;
+/** Target share of now-row width when title stays beside the cover. */
+const PLAYER_COVER_SIDE_FRACTION = 0.35;
+/** Target share when stacked (title under cover). */
+const PLAYER_COVER_STACK_FRACTION = 0.45;
+
+/**
+ * Intrinsic one-line width of #player-now.
+ * The title is a block that fills .player-below-text, so scrollWidth equals the
+ * flex leftover (≈ current cover) and locks sizing. Range measures the text
+ * without mutating layout (avoids ResizeObserver re-entry).
+ */
+function measurePlayerTitleIntrinsicWidth(title) {
+  const range = document.createRange();
+  range.selectNodeContents(title);
+  return range.getBoundingClientRect().width;
+}
+
+/**
+ * Layout-aware cover size + stack: grow with the now-row, shrink to keep the
+ * title beside the cover when possible, otherwise stack and allow a larger cover.
+ * Side-by-side uses the same max as stacked so large clients grow again when
+ * the title still fits.
+ * Always measures in the side-by-side state to avoid oscillation.
+ */
+function syncPlayerNowStack() {
+  const row = document.querySelector("#player .player-now-row");
+  const cover = document.getElementById("player-cover");
+  const title = document.getElementById("player-now");
+  if (!row || !title) return;
+  row.classList.remove("is-stacked");
+  const coverVisible = Boolean(cover && !cover.hidden);
+  if (!coverVisible) {
+    row.style.removeProperty("--player-cover-size");
+    return;
+  }
+  const rootFont =
+    Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const pxToRem = (px) => px / rootFont;
+  const remToPx = (rem) => rem * rootFont;
+  const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+
+  const styles = getComputedStyle(row);
+  const gap = Number.parseFloat(styles.columnGap || styles.gap) || 0;
+  const rowWidth = row.clientWidth;
+  const titleNeeds = measurePlayerTitleIntrinsicWidth(title);
+  const desiredRem = clamp(
+    pxToRem(rowWidth * PLAYER_COVER_SIDE_FRACTION),
+    PLAYER_COVER_MIN_REM,
+    PLAYER_COVER_MAX_REM,
+  );
+  const maxSidePx = rowWidth - gap - titleNeeds;
+  const minPx = remToPx(PLAYER_COVER_MIN_REM);
+
+  if (maxSidePx >= minPx - 0.5) {
+    const sizeRem = clamp(
+      Math.min(desiredRem, pxToRem(maxSidePx)),
+      PLAYER_COVER_MIN_REM,
+      PLAYER_COVER_MAX_REM,
+    );
+    row.style.setProperty("--player-cover-size", `${sizeRem}rem`);
+    return;
+  }
+
+  const stackedRem = clamp(
+    pxToRem(rowWidth * PLAYER_COVER_STACK_FRACTION),
+    PLAYER_COVER_MIN_REM,
+    PLAYER_COVER_MAX_REM,
+  );
+  row.style.setProperty("--player-cover-size", `${stackedRem}rem`);
+  row.classList.add("is-stacked");
+}
+
+/**
+ * When intent wraps under ▶ Player ⓘ, stretch the select to full width.
+ * Use heading bottom vs intent top — offsetTop alone false-positives when
+ * align-items:center makes the taller select sit lower on the same row.
+ */
+function syncPlayerIntentWrap() {
+  const row = document.querySelector("#player .player-heading-row");
+  const heading = row?.querySelector(".section-heading");
+  const top = row?.querySelector(".player-top");
+  if (!row || !heading || !top) return;
+  // Measure without the wrapped styles so flex wrap decides naturally.
+  row.classList.remove("intent-wrapped");
+  const headingBottom = heading.getBoundingClientRect().bottom;
+  const topTop = top.getBoundingClientRect().top;
+  const wrapped = topTop >= headingBottom - 1;
+  row.classList.toggle("intent-wrapped", wrapped);
+}
+
+function syncPlayerChrome() {
+  syncPlayerIntentWrap();
+  syncPlayerNowStack();
+  syncPlayerSeekClipRise();
+}
+
 function setSeekLabelHeadroom(seekRow, tracks, artist) {
   if (!seekRow) return;
   if (!tracks || tracks.length < 2) {
     seekRow.classList.remove("has-track-labels");
     seekRow.style.removeProperty("--seek-label-headroom");
-    syncPlayerSeekClipRise();
+    syncPlayerChrome();
     return;
   }
   seekRow.classList.add("has-track-labels");
@@ -2697,7 +2798,7 @@ function setSeekLabelHeadroom(seekRow, tracks, artist) {
     "--seek-label-headroom",
     `${seekLabelHeadroomRem(tracks, artist)}rem`,
   );
-  syncPlayerSeekClipRise();
+  syncPlayerChrome();
 }
 
 function renderSeekMarks(tracks, duration, artist) {
@@ -4034,20 +4135,21 @@ function renderPlayerCover(data) {
       cover.removeAttribute("src");
       cover.alt = "";
       playerCoverMixId = null;
-      syncPlayerSeekClipRise();
+      syncPlayerChrome();
     }
     return;
   }
   if (playerCoverMixId === mixId) {
     cover.hidden = false;
+    requestAnimationFrame(() => syncPlayerNowStack());
     return;
   }
   playerCoverMixId = mixId;
   cover.alt = data.title ? `Cover art for ${data.title}` : "Release cover art";
   cover.src = `/api/mixes/${mixId}/cover`;
   cover.hidden = false;
-  // Cover size changes now-row height; refresh raised clip after paint.
-  requestAnimationFrame(() => syncPlayerSeekClipRise());
+  // Cover size changes now-row height; refresh stack + raised clip after paint.
+  requestAnimationFrame(() => syncPlayerChrome());
 }
 
 function renderPlayerNow(data) {
@@ -4084,6 +4186,7 @@ function renderPlayerNow(data) {
     now.appendChild(document.createTextNode(" "));
     now.appendChild(link);
   }
+  requestAnimationFrame(() => syncPlayerNowStack());
 }
 
 async function refreshPlayer() {
@@ -5769,11 +5872,14 @@ function connectViewNotices() {
   await refreshIntents();
   await refreshPlayerIntents();
   await refreshPlayer();
-  syncPlayerSeekClipRise();
-  window.addEventListener("resize", () => syncPlayerSeekClipRise());
-  const playerNowRow = document.querySelector("#player .player-now-row");
-  if (playerNowRow && typeof ResizeObserver === "function") {
-    new ResizeObserver(() => syncPlayerSeekClipRise()).observe(playerNowRow);
+  syncPlayerChrome();
+  window.addEventListener("resize", () => syncPlayerChrome());
+  if (typeof ResizeObserver === "function") {
+    const chromeObserver = new ResizeObserver(() => syncPlayerChrome());
+    const playerNowRow = document.querySelector("#player .player-now-row");
+    const playerHeading = document.querySelector("#player .player-heading-row");
+    if (playerNowRow) chromeObserver.observe(playerNowRow);
+    if (playerHeading) chromeObserver.observe(playerHeading);
   }
   connectViewNotices();
   setInterval(refreshActivity, 1000);

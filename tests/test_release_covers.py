@@ -389,6 +389,11 @@ def test_player_ui_has_cover_slot() -> None:
     assert "player-heading-row" in css
     assert "player-now-row" in css
     assert "syncPlayerNowStack" in js
+    assert "measurePlayerTitleIntrinsicWidth" in js
+    assert "selectNodeContents" in js
+    assert "--player-cover-size" in css
+    assert 'setProperty("--player-cover-size"' in js
+    assert "PLAYER_COVER_MIN_REM" in js
     assert "syncPlayerIntentWrap" in js
     assert "is-stacked" in css
     assert "intent-wrapped" in css
