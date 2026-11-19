@@ -222,8 +222,9 @@ def test_bandcamp_skips_locked_album_without_aborting_artist() -> None:
 
     listing = source.list_uploads("https://example.bandcamp.com/music")
 
-    assert [u.platform_id for u in listing.uploads] == ["2"]
-    assert listing.uploads[0].title == "Free"
+    # Partial/locked skipped; paid-but-fully-streamable kept with free.
+    assert [u.platform_id for u in listing.uploads] == ["3", "2"]
+    assert [u.title for u in listing.uploads] == ["Paid Streams", "Free"]
 
 
 def test_bandcamp_fetch_bytes_uses_injected_fetcher() -> None:

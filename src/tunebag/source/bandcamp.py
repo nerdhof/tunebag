@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class BandcampSource:
-    """List full albums from a Bandcamp artist page; fetch free/streamable audio."""
+    """List full albums from a Bandcamp artist page; fetch anonymously streamable audio."""
 
     def __init__(
         self,
@@ -162,11 +162,9 @@ def _bandcamp_upload_from_tralbum(
     raw_tracks = tralbum.get("trackinfo") or []
     if not isinstance(raw_tracks, list) or not raw_tracks:
         return None
-    if not _bandcamp_is_free_downloadable(tralbum):
-        return None
 
-    # Free/downloadable only, and every track must expose a stream file so
-    # origin fetch can proceed without purchase/login. Partial discs skipped.
+    # Keep albums where every track exposes an anonymous stream `file`
+    # (paid-but-fully-streamable OK). Partial/locked discs are skipped.
     tracks: list[Track] = []
     parsed = urlparse(album_url)
     base = f"{parsed.scheme}://{parsed.netloc}"
@@ -211,17 +209,3 @@ def _bandcamp_upload_from_tralbum(
         size_bytes=size_bytes,
         tracks=tuple(tracks),
     )
-
-
-def _bandcamp_is_free_downloadable(tralbum: dict) -> bool:
-    """True when the album is free to download or name-your-price at $0."""
-    if tralbum.get("freeDownloadPage"):
-        return True
-    current = tralbum.get("current") or {}
-    price = current.get("minimum_price")
-    if price is None:
-        return False
-    try:
-        return float(price) == 0.0
-    except (TypeError, ValueError):
-        return False

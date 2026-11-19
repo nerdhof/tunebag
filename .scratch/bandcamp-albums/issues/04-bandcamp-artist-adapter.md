@@ -1,6 +1,6 @@
 # 04: Bandcamp Artist adapter
 
-**What to build:** Listeners can add a Bandcamp artist (`https://<artist>.bandcamp.com` or `…/music`) and get real full albums end-to-end through the Album Release path (catalog, fill, play). Bare album URLs are rejected with a clear error. Only free/downloadable audio. Refresh does not duplicate album ids. Planned/about copy matches this adapter.
+**What to build:** Listeners can add a Bandcamp artist (`https://<artist>.bandcamp.com` or `…/music`) and get real full albums end-to-end through the Album Release path (catalog, fill, play). Bare album URLs are rejected with a clear error. Only anonymously streamable audio (paid OK if every track has a stream `file`). Refresh does not duplicate album ids. Planned/about copy matches this adapter.
 
 **Blocked by:** 03: Album play, Playhead, Played, Reject cleanup
 
@@ -10,10 +10,10 @@
 - [x] Pasting a Bandcamp album page URL fails with an actionable error (add the artist `/music` page).
 - [x] Listing ingests only full albums (≥2 tracks, summed duration ≥ minimum); singles/one-track releases are skipped.
 - [x] Album identity uses `(bandcamp, album id)` when available; refresh does not create duplicates.
-- [x] Origin fetch uses free/downloadable audio only; locked/purchased-only releases are skipped or soft-failed without aborting the whole artist when avoidable.
+- [x] Origin fetch uses anonymously streamable audio only; locked/partial discs are skipped or soft-failed without aborting the whole artist when avoidable.
 - [x] One bad album/track does not abort fill for unrelated Releases when avoidable (same spirit as existing fill resilience).
 - [x] About/planned (and LATER if needed) describe Bandcamp as this Artist → Album adapter, not an undefined later primitive.
 
 ## Comments
 
-- `BandcampSource` scrapes artist `/music` + album `data-tralbum`; keeps albums where every track has an anonymous stream `file` (paid-but-fully-streamable OK; partial/locked skipped). Root and `/music` canonicalize to `/music`. Album page URLs raise actionable errors. Tests: `tests/test_bandcamp_source.py`, routing in `tests/test_source_routing.py`. Follow-up: Isis (`isistheband.bandcamp.com`) was 0 albums under a too-strict `$0`/`freeDownloadPage` gate; relaxed to streamability.
+- `BandcampSource` scrapes artist `/music` + album `data-tralbum`; keeps albums where every track has an anonymous stream `file` (paid-but-fully-streamable OK; partial/locked skipped). Root and `/music` canonicalize to `/music`. Album page URLs raise actionable errors. Tests: `tests/test_bandcamp_source.py`, routing in `tests/test_source_routing.py`. The old `$0`/`freeDownloadPage` gate was removed after Isis/Venetian Snares left almost nothing in Catalog despite fully streamable discs.

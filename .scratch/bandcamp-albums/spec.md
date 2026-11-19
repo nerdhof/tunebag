@@ -47,7 +47,7 @@ Domain language: **Release** = **Mix** | **Album** (`CONTEXT.md`, ADR 0005). Cod
 31. As a listener, I want UI copy to be allowed to say Release / Album where easy, while APIs may still say mix, so that glossary-first rename does not block the feature.
 32. As a listener, I want about/planned docs to describe Bandcamp as an Artist adapter producing Album Releases (not a vague “later primitive”), so that demo messaging matches the model.
 33. As a paired listener, I want Album add events from one Device to appear on the other after sync, including track metadata, so that both Devices share the same Catalog.
-34. As a listener, I want free/downloadable Bandcamp audio only in this pass, so that we do not build login/cookie purchase flows yet.
+34. As a listener, I want anonymously streamable Bandcamp audio only in this pass (paid OK when every track has a stream file), so that we do not build login/cookie purchase flows yet.
 35. As a developer-agent, I want FakeSource to describe album-shaped listings and per-track bytes, so that DeviceAgent tests do not hit the network.
 36. As a developer-agent, I want CompositeSource to route `*.bandcamp.com` artist URLs to the Bandcamp adapter, so that serve mode accepts Bandcamp the same way as SoundCloud/hearthis.
 
@@ -61,7 +61,7 @@ Domain language: **Release** = **Mix** | **Album** (`CONTEXT.md`, ADR 0005). Cod
 - Identity: `(Platform.BANDCAMP, bandcamp album id)` when available; one normalization used by add and refresh; Album `url` = album page.
 - Catalog/Event: Album upsert carries ordered track metadata (stable track ids, titles, durations, permalinks). Bytes never go in the Event log.
 - File/Cache: polymorphic — Mix = one blob; Album = directory of ordered track files for that release id. Album absent from Cache until all tracks local; incomplete dirs must not satisfy “has file.”
-- Origin fetch: download tracks individually (yt-dlp or Bandcamp-capable fetcher); free/anonymous audio only; one bad album must not abort fill/list for the whole artist when avoidable.
+- Origin fetch: download tracks individually (yt-dlp or Bandcamp-capable fetcher); anonymous stream audio only; one bad album must not abort fill/list for the whole artist when avoidable.
 - Player: sequential play of Album track files; Playhead remains one `position_seconds` on the Release timeline; derive track index locally from Catalog durations.
 - Intent folders: Mix → single file; Album → subfolder with ordered track files (names stable enough for dumb external players).
 - Reject / Skip / Rate / Tag / Played / Last heard: whole Release only; no per-track events.
