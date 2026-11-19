@@ -82,10 +82,10 @@ from tunebag.playback import (
     ReportPlayhead,
     clamp_seek_position,
 )
+from tunebag.event_payloads import encode_intent, encode_mix_added
 from tunebag.projection import (
     CatalogState,
     LocalEffects,
-    _intent_from_payload,
     apply as apply_catalog_event,
 )
 from tunebag.maintenance import BoundMaintenance, CatalogChange, CatalogChangeReason
@@ -1282,7 +1282,7 @@ class DeviceAgent:
                     key = (mix.platform, mix.platform_id)
                     if key in known:
                         continue
-                    self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
+                    self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
                     known.add(key)
                     added.append(self.catalog.mixes[mix.id])
                     kept += 1
@@ -1340,7 +1340,7 @@ class DeviceAgent:
                     key = (mix.platform, mix.platform_id)
                     if key in known:
                         continue
-                    self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
+                    self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
                     known.add(key)
                     added.append(self.catalog.mixes[mix.id])
                     kept += 1
@@ -2406,7 +2406,7 @@ class DeviceAgent:
                     "url": artist.url,
                 },
             )
-            self._append_and_apply(EventType.MIX_ADDED, _mix_added_payload(mix))
+            self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
         return self.catalog.mixes[mix.id]
 
     def export_events(self) -> list[Event]:
@@ -2881,7 +2881,7 @@ class DeviceAgent:
                 with self._event_lock:
                     self._append_and_apply(
                         EventType.INTENT_UPSERTED,
-                        _intent_payload(intent, cleared_device_ids=cleared_device_ids),
+                        encode_intent(intent, cleared_device_ids=cleared_device_ids),
                     )
                     # Catalog may have merged peer device_hours; rebuild from that.
                     # INTENT_UPSERT rebuild+prune must stay under the event lock so
@@ -3195,71 +3195,6 @@ def _device_hours_from_spec(entries: list[DeviceHoursSpec]) -> list[DeviceHours]
                 "or (device_id, budget, expires_at)"
             )
     return hours
-
-
-def _mix_added_payload(mix: Mix) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "id": str(mix.id),
-        "artist_id": str(mix.artist_id),
-        "platform": mix.platform.value,
-        "platform_id": mix.platform_id,
-        "title": mix.title,
-        "url": mix.url,
-        "duration_seconds": mix.duration_seconds,
-        "kind": mix.kind.value,
-    }
-    if mix.size_bytes is not None:
-        payload["size_bytes"] = int(mix.size_bytes)
-    if mix.tracks:
-        payload["tracks"] = [
-            {
-                "platform_id": t.platform_id,
-                "title": t.title,
-                "url": t.url,
-                "duration_seconds": t.duration_seconds,
-                **(
-                    {"size_bytes": int(t.size_bytes)}
-                    if t.size_bytes is not None
-                    else {}
-                ),
-            }
-            for t in mix.tracks
-        ]
-    return payload
-
-
-def _intent_payload(
-    intent: Intent,
-    *,
-    cleared_device_ids: list[UUID] | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "id": str(intent.id),
-        "name": intent.name,
-        "tags": list(intent.tags),
-        "artist_ids": [str(artist_id) for artist_id in intent.artist_ids],
-        "platforms": [platform.value for platform in intent.platforms],
-        "distribution": {
-            "five": intent.distribution.five,
-            "four": intent.distribution.four,
-            "three": intent.distribution.three,
-            "two": intent.distribution.two,
-            "one": intent.distribution.one,
-            "unrated": intent.distribution.unrated,
-        },
-        "device_hours": [
-            {
-                "device_id": str(dh.device_id),
-                "budget_seconds": dh.budget_seconds,
-                "expires_at": dh.expires_at.isoformat() if dh.expires_at else None,
-            }
-            for dh in intent.device_hours
-        ],
-        "seed": intent.seed,
-    }
-    if cleared_device_ids:
-        payload["cleared_device_ids"] = [str(device_id) for device_id in cleared_device_ids]
-    return payload
 
 
 def _event_bytes(event: Event) -> bytes:

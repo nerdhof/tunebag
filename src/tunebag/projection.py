@@ -13,7 +13,6 @@ from typing import Any
 from uuid import UUID
 
 from tunebag.domain import (
-    AlbumTrack,
     Artist,
     Assignment,
     Device,
@@ -22,14 +21,12 @@ from tunebag.domain import (
     Mix,
     Platform,
     Playhead,
-    ReleaseKind,
     Sequence,
     SequenceEntry,
     StarBucket,
-    StarDistribution,
     Stars,
-    default_intent_platforms,
 )
+from tunebag.event_payloads import decode_intent, decode_mix_added
 from tunebag.events import Event, EventType
 
 PLAYHEAD_NEAR_SECONDS = 120.0
@@ -516,12 +513,10 @@ def _revoke_peer_in_catalog(state: CatalogState, device_id: UUID) -> None:
 
 
 def _apply_mix_added(state: CatalogState, payload: dict[str, Any]) -> None:
-    mix_id = UUID(payload["id"])
-    artist_id = UUID(payload["artist_id"])
-    if artist_id in state.deleted_artists:
+    decoded = decode_mix_added(payload)
+    if decoded.artist_id in state.deleted_artists:
         return
-    raw_size = payload.get("size_bytes")
-    size_bytes = None if raw_size is None else int(raw_size)
+    mix_id = decoded.id
     existing = state.mixes.get(mix_id)
     tags = list(existing.tags) if existing is not None else []
     stars = existing.stars if existing is not None else None
@@ -530,51 +525,31 @@ def _apply_mix_added(state: CatalogState, payload: dict[str, Any]) -> None:
         tags = Mix.normalize_tags(sorted(t for t, present in pending.items() if present))
     if mix_id in state.pending_stars:
         stars = state.pending_stars[mix_id]
-    kind_raw = payload.get("kind", ReleaseKind.MIX.value)
-    kind = ReleaseKind(kind_raw)
-    tracks = [
-        AlbumTrack(
-            platform_id=str(t["platform_id"]),
-            title=str(t["title"]),
-            url=str(t["url"]),
-            duration_seconds=int(t["duration_seconds"]),
-            size_bytes=(None if t.get("size_bytes") is None else int(t["size_bytes"])),
-        )
-        for t in payload.get("tracks", [])
-    ]
-    mix = Mix(
-        id=mix_id,
-        artist_id=artist_id,
-        platform=Platform(payload["platform"]),
-        platform_id=payload["platform_id"],
-        title=payload["title"],
-        url=payload["url"],
-        duration_seconds=int(payload["duration_seconds"]),
-        size_bytes=size_bytes,
-        kind=kind,
-        tracks=tracks,
-        tags=tags,
-        stars=stars,
-        rejected=(
-            True
-            if mix_id in state.rejected_mix_ids
-            else (existing.rejected if existing is not None else False)
-        ),
-        played=(
-            True
-            if mix_id in state.played_mix_ids
-            else (existing.played if existing is not None else False)
-        ),
-        skipped=(
-            True
-            if mix_id in state.skipped_mix_ids
-            else (existing.skipped if existing is not None else False)
-        ),
-        last_heard_at=(
-            state.pending_last_heard.get(mix_id)
-            if mix_id in state.pending_last_heard
-            else (existing.last_heard_at if existing is not None else None)
-        ),
+    mix = decoded.model_copy(
+        update={
+            "tags": tags,
+            "stars": stars,
+            "rejected": (
+                True
+                if mix_id in state.rejected_mix_ids
+                else (existing.rejected if existing is not None else False)
+            ),
+            "played": (
+                True
+                if mix_id in state.played_mix_ids
+                else (existing.played if existing is not None else False)
+            ),
+            "skipped": (
+                True
+                if mix_id in state.skipped_mix_ids
+                else (existing.skipped if existing is not None else False)
+            ),
+            "last_heard_at": (
+                state.pending_last_heard.get(mix_id)
+                if mix_id in state.pending_last_heard
+                else (existing.last_heard_at if existing is not None else None)
+            ),
+        }
     )
     state.add_mix(mix)
 
@@ -621,7 +596,7 @@ def _apply_intent_upserted(
             hours_changed = True
     merged_hours = list(hours_map.values())
     if meta_wins:
-        intent = _intent_from_payload(payload).model_copy(
+        intent = decode_intent(payload).model_copy(
             update={"device_hours": merged_hours}
         )
         state.upsert_intent(intent)
@@ -644,55 +619,3 @@ def _bucket_from_payload(raw: str) -> StarBucket:
     if raw == "rest":
         return StarBucket.UNRATED
     return StarBucket(raw)
-
-
-def _distribution_from_payload(dist: dict[str, Any]) -> StarDistribution:
-    if "unrated" not in dist and "rest" in dist:
-        return StarDistribution(
-            five=float(dist.get("five", 0.3)),
-            four=float(dist.get("four", 0.2)),
-            three=float(dist.get("three", 0.1)),
-            two=0.0,
-            one=0.0,
-            unrated=float(dist["rest"]),
-        )
-    return StarDistribution(
-        five=float(dist.get("five", 0.3)),
-        four=float(dist.get("four", 0.2)),
-        three=float(dist.get("three", 0.1)),
-        two=float(dist.get("two", 0.05)),
-        one=float(dist.get("one", 0.05)),
-        unrated=float(dist.get("unrated", 0.3)),
-    )
-
-
-def _platforms_from_payload(payload: dict[str, Any]) -> list[Platform]:
-    raw = payload.get("platforms")
-    if raw is None:
-        return default_intent_platforms()
-    return [Platform(value) for value in raw]
-
-
-def _intent_from_payload(payload: dict[str, Any]) -> Intent:
-    dist = payload.get("distribution") or {}
-    return Intent(
-        id=UUID(payload["id"]),
-        name=payload["name"],
-        tags=list(payload.get("tags") or []),
-        artist_ids=[UUID(artist_id) for artist_id in payload.get("artist_ids") or []],
-        platforms=_platforms_from_payload(payload),
-        distribution=_distribution_from_payload(dist),
-        device_hours=[
-            DeviceHours(
-                device_id=UUID(dh["device_id"]),
-                budget_seconds=int(dh["budget_seconds"]),
-                expires_at=(
-                    _as_naive_utc(datetime.fromisoformat(dh["expires_at"]))
-                    if dh.get("expires_at")
-                    else None
-                ),
-            )
-            for dh in payload.get("device_hours") or []
-        ],
-        seed=int(payload["seed"]),
-    )

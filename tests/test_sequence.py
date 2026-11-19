@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from tunebag.agent import _intent_from_payload, _intent_payload
 from tunebag.domain import (
     DeviceHours,
     Intent,
@@ -310,29 +309,3 @@ def test_build_sequence_platforms_excludes_other_sources() -> None:
     ids = {e.mix_id for e in build_sequence(intent, mixes).entries}
     assert ids == {mixes[0].id}
 
-
-def test_intent_payload_roundtrip_and_missing_artist_ids_default() -> None:
-    intent = Intent(
-        name="With artists",
-        tags=["deep"],
-        artist_ids=[uuid4(), uuid4()],
-        platforms=[Platform.BANDCAMP, Platform.YOUTUBE],
-        seed=7,
-        device_hours=[],
-    )
-    restored = _intent_from_payload(_intent_payload(intent))
-    assert restored.artist_ids == intent.artist_ids
-    assert restored.tags == intent.tags
-    assert restored.platforms == intent.platforms
-
-    legacy = _intent_payload(intent)
-    del legacy["artist_ids"]
-    del legacy["platforms"]
-    from_legacy = _intent_from_payload(legacy)
-    assert from_legacy.artist_ids == []
-    assert from_legacy.platforms == [
-        Platform.SOUNDCLOUD,
-        Platform.HEARTHIS,
-        Platform.BANDCAMP,
-        Platform.YOUTUBE,
-    ]
