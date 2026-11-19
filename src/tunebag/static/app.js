@@ -10,6 +10,12 @@ const expandedIntentPanes = new Set();
 const hoursEditorState = new Map();
 /** Catalog Rejected filter (default off). */
 let showRejectedCatalog = false;
+/** Catalog source filter (OR); default all platforms once mounted. */
+let catalogFilterPlatforms = [];
+/** Catalog tag filter (AND); empty = no tag constraint. */
+let catalogFilterTags = [];
+/** @type {ReturnType<typeof mountTagEditor> | null} */
+let catalogTagFilterEditor = null;
 /** Play history Rejected filter (default off). */
 let showRejectedHistory = false;
 let rejectUndoTimer = null;
@@ -3104,6 +3110,102 @@ function scheduleCatalogRejectRefresh(mixId, untilIso) {
   catalogRejectTimers.set(mixId, handle);
 }
 
+function mixMatchesCatalogFilters(mix) {
+  if (!showRejectedCatalog && mix.rejected) return false;
+  if (
+    catalogFilterPlatforms.length &&
+    !catalogFilterPlatforms.includes(mix.platform)
+  ) {
+    return false;
+  }
+  if (
+    catalogFilterTags.length &&
+    !catalogFilterTags.every((t) => (mix.tags || []).includes(t))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function mountCatalogFilters() {
+  const sourcesRoot = document.getElementById("catalog-source-filters");
+  if (sourcesRoot) {
+    sourcesRoot.replaceChildren();
+    const platformsRoot = document.createElement("div");
+    platformsRoot.className = "source-toggles";
+    platformsRoot.setAttribute("role", "group");
+    platformsRoot.setAttribute("aria-label", "Catalog sources");
+    for (const platform of DEFAULT_INTENT_PLATFORMS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "source-toggle";
+      btn.dataset.platform = platform;
+      btn.setAttribute("aria-pressed", "true");
+      btn.title = PLATFORM_LABELS[platform] || platform;
+      btn.setAttribute("aria-label", PLATFORM_LABELS[platform] || platform);
+      btn.innerHTML = PLATFORM_SVG[platform] || "";
+      platformsRoot.appendChild(btn);
+    }
+    sourcesRoot.appendChild(platformsRoot);
+    catalogFilterPlatforms = [...DEFAULT_INTENT_PLATFORMS];
+
+    function readPlatforms() {
+      return Array.from(platformsRoot.querySelectorAll(".source-toggle"))
+        .filter((btn) => btn.getAttribute("aria-pressed") === "true")
+        .map((btn) => btn.dataset.platform)
+        .filter(Boolean);
+    }
+
+    platformsRoot.addEventListener("click", async (event) => {
+      const btn = event.target.closest(".source-toggle");
+      if (!btn || !platformsRoot.contains(btn)) return;
+      const pressed = btn.getAttribute("aria-pressed") === "true";
+      if (pressed) {
+        if (readPlatforms().length <= 1) return;
+        btn.setAttribute("aria-pressed", "false");
+      } else {
+        btn.setAttribute("aria-pressed", "true");
+      }
+      catalogFilterPlatforms = readPlatforms();
+      await refreshMixes({ force: true });
+    });
+  }
+
+  const tagsRoot = document.getElementById("catalog-tag-filters");
+  if (tagsRoot) {
+    tagsRoot.replaceChildren();
+    catalogFilterTags = [];
+    catalogTagFilterEditor = mountTagEditor(tagsRoot, {
+      tags: [],
+      getCatalogTags: () => catalogTagsCache,
+      async onAdd(tag) {
+        catalogFilterTags = [...catalogFilterTags, tag];
+        await refreshMixes({ force: true });
+      },
+      async onRemove(tag) {
+        catalogFilterTags = catalogFilterTags.filter((t) => t !== tag);
+        await refreshMixes({ force: true });
+      },
+    });
+    tagsRoot.setAttribute("aria-label", "Catalog filter tags");
+  }
+}
+
+function resetCatalogFilters() {
+  catalogFilterPlatforms = [...DEFAULT_INTENT_PLATFORMS];
+  catalogFilterTags = [];
+  const sourcesRoot = document.getElementById("catalog-source-filters");
+  if (sourcesRoot) {
+    for (const btn of sourcesRoot.querySelectorAll(".source-toggle")) {
+      btn.setAttribute(
+        "aria-pressed",
+        catalogFilterPlatforms.includes(btn.dataset.platform) ? "true" : "false",
+      );
+    }
+  }
+  catalogTagFilterEditor?.setTags([]);
+}
+
 async function refreshMixes({ force = false } = {}) {
   const body = document.getElementById("catalog-body");
   const res = await fetch("/api/mixes");
@@ -3126,9 +3228,8 @@ async function refreshMixes({ force = false } = {}) {
     }
 
     for (const group of groupMixesByArtist(data.mixes)) {
-      const visibleMixes = showRejectedCatalog
-        ? group.mixes
-        : group.mixes.filter((mix) => !mix.rejected);
+      const visibleMixes = group.mixes.filter(mixMatchesCatalogFilters);
+      if (!visibleMixes.length) continue;
       const expanded = expandedCatalogArtists.has(group.artistId);
       const header = document.createElement("tr");
       header.className = "artist-row";
@@ -3346,6 +3447,15 @@ async function refreshMixes({ force = false } = {}) {
         tr.appendChild(tagsCell);
         body.appendChild(tr);
       }
+    }
+    if (!body.children.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 4;
+      td.className = "muted";
+      td.textContent = "No releases match these filters";
+      tr.appendChild(td);
+      body.appendChild(tr);
     }
     await refreshTagSuggestions();
   }
@@ -5450,6 +5560,8 @@ function connectViewNotices() {
     rejectedFilter.checked = false;
     showRejectedCatalog = false;
   }
+  mountCatalogFilters();
+  resetCatalogFilters();
   const historyRejectedFilter = document.getElementById("play-history-show-rejected");
   if (historyRejectedFilter) {
     historyRejectedFilter.checked = false;

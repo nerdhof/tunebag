@@ -515,6 +515,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                         if mix.artist_id in artists_by_id
                         else None
                     ),
+                    "platform": mix.platform.value,
                     "title": mix.title,
                     "url": mix.url,
                     "duration_seconds": mix.duration_seconds,

@@ -38,6 +38,7 @@ def test_mixes_api_includes_artist_fields(tmp_path: Path) -> None:
     assert row["artist_id"] == str(mix.artist_id)
     assert row["artist"] == "DJ Example"
     assert row["artist_url"] == "https://example.com/a"
+    assert row["platform"] == Platform.SOUNDCLOUD.value
     assert row["title"] == "Set A"
     assert row["size_bytes"] == 4_000_000
 
