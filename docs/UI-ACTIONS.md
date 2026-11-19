@@ -9,7 +9,7 @@ Implementation may lag; see **Gaps vs current code** at the end.
 | Surface | Job |
 |---------|-----|
 | **Player** | Transport + annotate the *now-playing* Release |
-| **Play history** | Browse by Last heard; annotate; resume at Playhead |
+| **Play history** | Browse by Last heard (newest 50); annotate; resume at Playhead |
 | **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release |
 | **Intents** | Define plans; assign device hours; rebuild Sequence; Switch to intent (start/stop that Intent’s playback); Fill now |
 | **Cache** | Inspect File completeness; Metered |

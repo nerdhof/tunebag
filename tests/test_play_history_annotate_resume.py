@@ -158,10 +158,10 @@ def test_play_history_ui_contract_rejected_filter_and_reject_pipeline() -> None:
     assert "undo-reject" not in js
     assert "/api/mixes/${mix.id}/un-reject" in js
     assert "mix-rejected" in js
-    assert "isHardRejected" in js
-    # Default filter hides Hard Rejected when showRejectedHistory is false
+    # Rejected filter is sent to GET /api/play-history (server applies Soft/Hard).
     assert "showRejectedHistory" in js
-    assert "isHardRejected(mix)" in js
+    assert "/api/play-history" in js
+    assert "include_rejected=true" in js
 
 
 def test_play_history_ui_contract_rate_tag_and_resume() -> None:

@@ -157,4 +157,4 @@ def test_companion_playhead_heartbeat_is_five_minutes() -> None:
     assert "PLAYER_POLL_MS" not in js
     assert "setPlayerLocalClock" in js
     assert "position_seconds: Math.max(0, lastKnownPositionSeconds)" in js
-    assert "/static/app.js?v=70" in html
+    assert "/static/app.js?v=71" in html

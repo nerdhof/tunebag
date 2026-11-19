@@ -19,13 +19,40 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from tunebag import __version__
-from tunebag.agent import DeviceAgent, DeviceHoursSpec
-from tunebag.domain import Platform, ReleaseKind, StarDistribution, Stars
+from tunebag.agent import PLAY_HISTORY_LIMIT, DeviceAgent, DeviceHoursSpec
+from tunebag.domain import Artist, Mix, Platform, ReleaseKind, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 from tunebag.ui_notices import UIViewNotice
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _mix_row(mix: Mix, artists_by_id: dict[UUID, Artist]) -> dict[str, Any]:
+    """Serialize a Release for Catalog / Play history JSON responses."""
+    artist = artists_by_id.get(mix.artist_id)
+    return {
+        "id": str(mix.id),
+        "artist_id": str(mix.artist_id),
+        "artist": artist.name if artist is not None else "Unknown",
+        "artist_url": artist.url if artist is not None else None,
+        "platform": mix.platform.value,
+        "title": mix.title,
+        "url": mix.url,
+        "duration_seconds": mix.duration_seconds,
+        "size_bytes": mix.size_bytes,
+        "tags": mix.tags,
+        "stars": int(mix.stars) if mix.stars is not None else None,
+        "played": mix.played,
+        "skipped": mix.skipped,
+        "rejected": mix.rejected,
+        "rejected_at": (
+            mix.rejected_at.isoformat() if mix.rejected_at is not None else None
+        ),
+        "last_heard_at": (
+            mix.last_heard_at.isoformat() if mix.last_heard_at is not None else None
+        ),
+    }
 
 
 class EventsPullBody(BaseModel):
@@ -534,43 +561,20 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         agent.commit_reject_file_deletes()
         artists_by_id = {a.id: a for a in agent.artists()}
         return {
-            "mixes": [
-                {
-                    "id": str(mix.id),
-                    "artist_id": str(mix.artist_id),
-                    "artist": (
-                        artists_by_id[mix.artist_id].name
-                        if mix.artist_id in artists_by_id
-                        else "Unknown"
-                    ),
-                    "artist_url": (
-                        artists_by_id[mix.artist_id].url
-                        if mix.artist_id in artists_by_id
-                        else None
-                    ),
-                    "platform": mix.platform.value,
-                    "title": mix.title,
-                    "url": mix.url,
-                    "duration_seconds": mix.duration_seconds,
-                    "size_bytes": mix.size_bytes,
-                    "tags": mix.tags,
-                    "stars": int(mix.stars) if mix.stars is not None else None,
-                    "played": mix.played,
-                    "skipped": mix.skipped,
-                    "rejected": mix.rejected,
-                    "rejected_at": (
-                        mix.rejected_at.isoformat()
-                        if mix.rejected_at is not None
-                        else None
-                    ),
-                    "last_heard_at": (
-                        mix.last_heard_at.isoformat()
-                        if mix.last_heard_at is not None
-                        else None
-                    ),
-                }
-                for mix in agent.mixes()
-            ]
+            "mixes": [_mix_row(mix, artists_by_id) for mix in agent.mixes()]
+        }
+
+    @app.get("/api/play-history")
+    def play_history(include_rejected: bool = False) -> dict:
+        agent.commit_reject_file_deletes()
+        artists_by_id = {a.id: a for a in agent.artists()}
+        rows = agent.play_history(
+            limit=PLAY_HISTORY_LIMIT,
+            include_hard_rejected=include_rejected,
+        )
+        return {
+            "mixes": [_mix_row(mix, artists_by_id) for mix in rows],
+            "limit": PLAY_HISTORY_LIMIT,
         }
 
     @app.get("/api/mixes/{mix_id}/cover")

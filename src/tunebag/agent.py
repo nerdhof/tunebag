@@ -106,6 +106,7 @@ from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 _HTTP_TIMEOUT = 5.0
 _PLAYBACK_THRESHOLD_WATCH_SECONDS = 1.0
 _DOWNLOAD_CACHE_NOTICE_SECONDS = 1.0
+PLAY_HISTORY_LIMIT = 50
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
@@ -488,6 +489,33 @@ class DeviceAgent:
 
     def mixes(self) -> list[Mix]:
         return self.catalog.mixes_list()
+
+    def play_history(
+        self,
+        *,
+        limit: int = PLAY_HISTORY_LIMIT,
+        include_hard_rejected: bool = False,
+    ) -> list[Mix]:
+        """Newest Last-heard Releases for the Play history surface (capped)."""
+        now = self._clock()
+        heard: list[Mix] = []
+        for mix in self.catalog.mixes_list():
+            if mix.last_heard_at is None:
+                continue
+            if not include_hard_rejected and mix.rejected:
+                soft = is_soft_rejected(
+                    rejected=mix.rejected,
+                    rejected_at=mix.rejected_at,
+                    now=now,
+                )
+                if not soft:
+                    continue
+            heard.append(mix)
+        heard.sort(
+            key=lambda m: m.last_heard_at or datetime.min,
+            reverse=True,
+        )
+        return heard[:limit]
 
     def artists(self) -> list[Artist]:
         return list(self.catalog.artists.values())

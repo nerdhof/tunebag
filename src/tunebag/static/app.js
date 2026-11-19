@@ -3817,7 +3817,7 @@ async function refreshMixes({ force = false } = {}) {
       tr.appendChild(td);
       body.appendChild(tr);
       await refreshTagSuggestions();
-      await refreshPlayHistory(data.mixes);
+      await refreshPlayHistory();
       return;
     }
 
@@ -3984,7 +3984,7 @@ async function refreshMixes({ force = false } = {}) {
     }
     await refreshTagSuggestions();
   }
-  await refreshPlayHistory(data.mixes);
+  await refreshPlayHistory();
 }
 
 function formatLastHeard(ts) {
@@ -3994,22 +3994,15 @@ function formatLastHeard(ts) {
   return String(ts);
 }
 
-async function refreshPlayHistory(mixes) {
+async function refreshPlayHistory() {
   const body = document.getElementById("play-history-body");
   if (!body) return;
   // Tag/star editors live in this table; remounting clears focus and drafts.
   if (focusInside(body)) return;
-  let rows = mixes;
-  if (!Array.isArray(rows)) {
-    const res = await fetch("/api/mixes");
-    const data = await res.json();
-    rows = data.mixes || [];
-  }
-  const heard = rows
-    .filter((mix) => mix.last_heard_at)
-    .filter((mix) => showRejectedHistory || !isHardRejected(mix))
-    .slice()
-    .sort((a, b) => String(b.last_heard_at).localeCompare(String(a.last_heard_at)));
+  const qs = showRejectedHistory ? "?include_rejected=true" : "";
+  const res = await fetch(`/api/play-history${qs}`);
+  const data = await res.json();
+  const heard = data.mixes || [];
   body.replaceChildren();
   if (!heard.length) {
     const tr = document.createElement("tr");
