@@ -301,4 +301,5 @@ def test_play_history_ui_lists_last_heard_newest_first() -> None:
     assert 'id="play-history-body"' in html
     assert "refreshPlayHistory" in js
     assert "last_heard_at" in js
-    assert "Play history" in html
+    assert "History" in html
+    assert "<th>Heard</th>" in html

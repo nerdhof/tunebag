@@ -1552,8 +1552,6 @@ button.artist-suggest:hover {
   max-height: 24rem;
   overflow: auto;
   margin: 0.75rem 0;
-  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
-  border-radius: 8px;
 }
 
 .catalog-toolbar {
@@ -1927,8 +1925,6 @@ span.star-rating-star {
   max-height: 24rem;
   overflow: auto;
   margin-top: 0.75rem;
-  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
-  border-radius: 8px;
 }
 
 #cache-table {

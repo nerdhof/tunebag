@@ -3079,7 +3079,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!data.mixes.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 5;
+      td.colSpan = 4;
       td.className = "muted";
       td.textContent = "No releases yet";
       tr.appendChild(td);
@@ -3103,7 +3103,7 @@ async function refreshMixes({ force = false } = {}) {
       header.setAttribute("role", "button");
 
       const artistCell = document.createElement("td");
-      artistCell.colSpan = 5;
+      artistCell.colSpan = 4;
       const artistInner = document.createElement("div");
       artistInner.className = "artist-row-inner";
       const foldMain = document.createElement("div");
@@ -3213,10 +3213,6 @@ async function refreshMixes({ force = false } = {}) {
         tr.dataset.artistId = group.artistId;
         tr.dataset.mixId = mix.id;
         tr.hidden = !expanded;
-
-        const blankArtist = document.createElement("td");
-        blankArtist.textContent = "";
-        tr.appendChild(blankArtist);
 
         const title = document.createElement("td");
         title.textContent = mix.title || "";
@@ -3811,7 +3807,7 @@ async function refreshFiles({ force = false } = {}) {
   if (!groups.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 7;
+    td.colSpan = 6;
     td.className = "muted";
     td.textContent =
       "No assigned audio yet — create an intent with hours, or press Fill caches";
@@ -3833,7 +3829,7 @@ async function refreshFiles({ force = false } = {}) {
     header.setAttribute("role", "button");
 
     const intentCell = document.createElement("td");
-    intentCell.colSpan = 7;
+    intentCell.colSpan = 6;
     const foldMain = document.createElement("div");
     foldMain.className = "cache-intent-fold-main";
     const intentLabel = document.createElement("span");
@@ -3869,10 +3865,6 @@ async function refreshFiles({ force = false } = {}) {
       tr.className = "cache-mix-row";
       tr.dataset.groupId = groupKey;
       tr.hidden = !expanded;
-
-      const blankIntent = document.createElement("td");
-      blankIntent.textContent = "";
-      tr.appendChild(blankIntent);
 
       const artist = document.createElement("td");
       artist.textContent = file.artist || "Unknown";
