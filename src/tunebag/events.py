@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from tunebag.durable_store import DurableStore
 
 
 class EventType(str, Enum):
@@ -47,37 +50,94 @@ class Event(BaseModel):
 
 
 class EventLog:
-    """In-memory event list; optionally durable as append-only JSONL."""
+    """Append-only Event log: in-memory list, or SQLite-backed without a full RAM copy."""
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._path = path
+    def __init__(self, store: DurableStore | None = None) -> None:
+        self._store = store
         self._events: list[Event] = []
         self._lock = threading.Lock()
-        self._file: TextIO | None = None
-        if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.is_file():
-                for line in path.read_text().splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    self._events.append(Event.model_validate_json(line))
-            self._file = path.open("a", encoding="utf-8")
+
+    @property
+    def store(self) -> DurableStore | None:
+        return self._store
 
     def append(self, event: Event) -> Event:
+        if self._store is not None:
+            with self._lock:
+                self._store.append_event(event)
+            return event
         with self._lock:
             self._events.append(event)
-            if self._file is not None:
-                self._file.write(event.model_dump_json() + "\n")
-                self._file.flush()
         return event
 
     def since(self, after: datetime | None = None) -> list[Event]:
-        with self._lock:
-            if after is None:
-                return list(self._events)
-            return [event for event in self._events if event.created_at > after]
+        events = self.all()
+        if after is None:
+            return events
+        return [event for event in events if event.created_at > after]
 
     def all(self) -> list[Event]:
+        """Materialize the full log (tests / in-process sync). Prefer iterators for HTTP."""
+        if self._store is not None:
+            with self._lock:
+                return list(self._store.iter_events())
         with self._lock:
             return list(self._events)
+
+    def is_empty(self) -> bool:
+        if self._store is not None:
+            return self._store.is_empty()
+        with self._lock:
+            return not self._events
+
+    def iter_all(self) -> Iterator[Event]:
+        if self._store is not None:
+            yield from self._store.iter_events()
+            return
+        with self._lock:
+            snapshot = list(self._events)
+        yield from snapshot
+
+    def iter_with_rowids(self) -> Iterator[tuple[int, Event]]:
+        """Yield (rowid, event). In-memory mode uses 1-based list indexes as rowids."""
+        if self._store is not None:
+            yield from self._store.iter_events_with_rowids()
+            return
+        with self._lock:
+            snapshot = list(self._events)
+        yield from enumerate(snapshot, start=1)
+
+    def iter_since_rowid(self, after_rowid: int) -> Iterator[tuple[int, Event]]:
+        if self._store is not None:
+            yield from self._store.iter_events_since_rowid(after_rowid)
+            return
+        for rowid, event in self.iter_with_rowids():
+            if rowid > after_rowid:
+                yield rowid, event
+
+    def iter_after_cursors(self, cursors: dict[str, int]) -> Iterator[Event]:
+        """Events where author is missing from cursors or ``seq > cursor``."""
+        if self._store is not None:
+            yield from self._store.iter_events_after_cursors(cursors)
+            return
+        for event in self.iter_all():
+            key = str(event.device_id)
+            if key in cursors and int(event.seq) <= int(cursors[key]):
+                continue
+            yield event
+
+    def max_seq_by_device(self) -> dict[UUID, int]:
+        if self._store is not None:
+            return self._store.max_seq_by_device()
+        out: dict[UUID, int] = {}
+        for event in self.iter_all():
+            current = out.get(event.device_id, 0)
+            if int(event.seq) > current:
+                out[event.device_id] = int(event.seq)
+        return out
+
+    def max_rowid(self) -> int:
+        if self._store is not None:
+            return self._store.max_rowid()
+        with self._lock:
+            return len(self._events)

@@ -12,9 +12,9 @@ Show these at the end of the hackathon demo (also on `/about#planned`). Not in t
 - **Search** across the catalog (and later across platforms) by tag, artist, title.
 - **Suggested tags and ratings** from titles/metadata, later from audio analysis.
 - **Peer cache file share**: copy assigned Release bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.
-- **Catalog snapshot cache**: disposable on-disk Catalog projection for faster boot; Event log replay remains authoritative if they disagree.
-- **Incremental Event log sync**: per-Peer cursors / `since` instead of full-log pull once logs get large.
-- **SQLite (or similar) persistence**: if JSONL Event log + sidecar JSON becomes awkward for size, query, or crash safety.
+- ~~**Catalog snapshot cache**~~ — done: disposable SQLite Catalog snapshot + tip watermark; Event log replay remains authoritative ([ADR-0008](adr/0008-sqlite-durable-bag-and-incremental-pull.md)).
+- ~~**Incremental Event log sync**~~ — done: per-author seq watermarks via `POST /api/events/pull` + NDJSON ([ADR-0008](adr/0008-sqlite-durable-bag-and-incremental-pull.md)).
+- ~~**SQLite (or similar) persistence**~~ — done: one `tunebag.sqlite` durable bag for events, identity, hints, snapshot ([ADR-0008](adr/0008-sqlite-durable-bag-and-incremental-pull.md)).
 - **Cross-network meet relay**: reach a paired Peer outside the LAN multicast domain without pasting a Locator (optional server/relay peer).
 - **Web player as a paired peer** for ad-hoc listening from anywhere (same sync protocol).
 - **Foobar (macOS) and Vanilla Music (Android)** opening intent folders as dumb consumers of files; signal capture stays in Tunebag until adapters exist.

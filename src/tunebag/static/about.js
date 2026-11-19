@@ -382,18 +382,6 @@
       body: "copy assigned Release bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.",
     },
     {
-      title: "Catalog snapshot cache",
-      body: "disposable on-disk Catalog projection for faster boot; Event log replay remains authoritative if they disagree.",
-    },
-    {
-      title: "Incremental Event log sync",
-      body: "per-Peer cursors / since instead of full-log pull once logs get large.",
-    },
-    {
-      title: "SQLite (or similar) persistence",
-      body: "if JSONL Event log + sidecar JSON becomes awkward for size, query, or crash safety.",
-    },
-    {
       title: "Cross-network meet relay",
       body: "reach a paired Peer outside the LAN multicast domain without pasting a Locator (optional server/relay peer).",
     },

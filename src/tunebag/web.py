@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,7 @@ from uuid import UUID
 import httpx
 import qrcode
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,6 +26,12 @@ from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 from tunebag.ui_notices import UIViewNotice
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+class EventsPullBody(BaseModel):
+    """Per-author seq watermarks for incremental Event log pull."""
+
+    cursors: dict[str, int] = Field(default_factory=dict)
 
 
 class PairJoinBody(BaseModel):
@@ -273,8 +279,24 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         return _peers_payload()
 
     @app.get("/api/events")
-    def events() -> dict:
-        return {"events": [event.model_dump(mode="json") for event in agent.export_events()]}
+    def events() -> StreamingResponse:
+        """Full Event log as NDJSON (one Event JSON object per line)."""
+
+        def generate() -> Iterator[str]:
+            for event in agent.iter_events():
+                yield event.model_dump_json() + "\n"
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/api/events/pull")
+    def events_pull(body: EventsPullBody) -> StreamingResponse:
+        """Events after per-author cursors as NDJSON."""
+
+        def generate() -> Iterator[str]:
+            for event in agent.iter_events_after_cursors(body.cursors):
+                yield event.model_dump_json() + "\n"
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
 
     @app.post("/api/prove")
     def prove(body: ProveBody) -> dict:

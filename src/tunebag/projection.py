@@ -6,6 +6,7 @@ CONTEXT.md (sticky Played/Skipped/Artist delete, LWW fields, hybrid Playhead).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,8 @@ from tunebag.event_payloads import decode_intent, decode_mix_added
 from tunebag.events import Event, EventType
 
 PLAYHEAD_NEAR_SECONDS = 120.0
+# Bump when apply/merge shape or snapshot codec fields change.
+PROJECTION_VERSION = 1
 
 MergeKey = tuple[str, ...]
 # Author time first (causal on one Device); (device_id, seq, id) breaks ties.
@@ -145,6 +148,185 @@ class CatalogState:
 
     def mixes_list(self) -> list[Mix]:
         return list(self.mixes.values())
+
+    def clear_projection(self) -> None:
+        """Drop projected Catalog + merge bookkeeping (keep data_dir)."""
+        self.artists.clear()
+        self.mixes.clear()
+        self.intents.clear()
+        self.sequences.clear()
+        self.assignments.clear()
+        self.devices.clear()
+        self.playheads.clear()
+        self.merge_wins.clear()
+        self.deleted_artists.clear()
+        self.rejected_mix_ids.clear()
+        self.rejected_at_by_mix.clear()
+        self.played_mix_ids.clear()
+        self.skipped_mix_ids.clear()
+        self.pending_tag_presence.clear()
+        self.pending_stars.clear()
+        self.pending_last_heard.clear()
+        self.pending_sequences.clear()
+        self.pending_assignments.clear()
+        self.unpaired_device_ids.clear()
+
+
+def dump_catalog_snapshot(state: CatalogState) -> bytes:
+    """Serialize Catalog projection + merge bookkeeping as an opaque versioned blob."""
+
+    def _dt(value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat()
+
+    def _merge_win(win: MergeWin) -> list[Any]:
+        created_at, device_id, seq, event_id = win
+        return [created_at.isoformat(), str(device_id), seq, str(event_id)]
+
+    payload: dict[str, Any] = {
+        "projection_version": PROJECTION_VERSION,
+        "local_device_id": None
+        if state.local_device_id is None
+        else str(state.local_device_id),
+        "artists": {
+            str(k): v.model_dump(mode="json") for k, v in state.artists.items()
+        },
+        "mixes": {str(k): v.model_dump(mode="json") for k, v in state.mixes.items()},
+        "intents": {
+            str(k): v.model_dump(mode="json") for k, v in state.intents.items()
+        },
+        "sequences": {
+            str(k): v.model_dump(mode="json") for k, v in state.sequences.items()
+        },
+        "assignments": {
+            f"{intent_id}/{device_id}": assignment.model_dump(mode="json")
+            for (intent_id, device_id), assignment in state.assignments.items()
+        },
+        "devices": {
+            str(k): v.model_dump(mode="json") for k, v in state.devices.items()
+        },
+        "playheads": {
+            str(k): v.model_dump(mode="json") for k, v in state.playheads.items()
+        },
+        "merge_wins": {
+            "\x1f".join(key): _merge_win(win) for key, win in state.merge_wins.items()
+        },
+        "deleted_artists": [str(x) for x in state.deleted_artists],
+        "rejected_mix_ids": [str(x) for x in state.rejected_mix_ids],
+        "rejected_at_by_mix": {
+            str(k): _dt(v) for k, v in state.rejected_at_by_mix.items()
+        },
+        "played_mix_ids": [str(x) for x in state.played_mix_ids],
+        "skipped_mix_ids": [str(x) for x in state.skipped_mix_ids],
+        "pending_tag_presence": {
+            str(mix_id): dict(tags)
+            for mix_id, tags in state.pending_tag_presence.items()
+        },
+        "pending_stars": {
+            str(k): int(v.value) for k, v in state.pending_stars.items()
+        },
+        "pending_last_heard": {
+            str(k): _dt(v) for k, v in state.pending_last_heard.items()
+        },
+        "pending_sequences": {
+            str(k): v.model_dump(mode="json") for k, v in state.pending_sequences.items()
+        },
+        "pending_assignments": {
+            f"{intent_id}/{device_id}": (
+                None if assignment is None else assignment.model_dump(mode="json")
+            )
+            for (intent_id, device_id), assignment in state.pending_assignments.items()
+        },
+        "unpaired_device_ids": [str(x) for x in state.unpaired_device_ids],
+    }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def load_catalog_snapshot(state: CatalogState, blob: bytes) -> None:
+    """Replace projected Catalog fields from a snapshot blob (fail-fast on bad data)."""
+    raw = json.loads(blob.decode("utf-8"))
+    if int(raw.get("projection_version", -1)) != PROJECTION_VERSION:
+        raise ValueError("catalog snapshot projection_version mismatch")
+
+    def _parse_dt(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        return datetime.fromisoformat(value)
+
+    def _parse_merge_win(value: list[Any]) -> MergeWin:
+        created_at, device_id, seq, event_id = value
+        return (
+            datetime.fromisoformat(created_at),
+            UUID(device_id),
+            int(seq),
+            UUID(event_id),
+        )
+
+    def _pair_key(raw_key: str) -> tuple[UUID, UUID]:
+        intent_id, device_id = raw_key.split("/", 1)
+        return UUID(intent_id), UUID(device_id)
+
+    state.clear_projection()
+    local = raw.get("local_device_id")
+    state.local_device_id = None if local is None else UUID(local)
+    state.artists = {
+        UUID(k): Artist.model_validate(v) for k, v in raw.get("artists", {}).items()
+    }
+    state.mixes = {
+        UUID(k): Mix.model_validate(v) for k, v in raw.get("mixes", {}).items()
+    }
+    state.intents = {
+        UUID(k): Intent.model_validate(v) for k, v in raw.get("intents", {}).items()
+    }
+    state.sequences = {
+        UUID(k): Sequence.model_validate(v) for k, v in raw.get("sequences", {}).items()
+    }
+    state.assignments = {
+        _pair_key(k): Assignment.model_validate(v)
+        for k, v in raw.get("assignments", {}).items()
+    }
+    state.devices = {
+        UUID(k): Device.model_validate(v) for k, v in raw.get("devices", {}).items()
+    }
+    state.playheads = {
+        UUID(k): Playhead.model_validate(v) for k, v in raw.get("playheads", {}).items()
+    }
+    state.merge_wins = {
+        tuple(k.split("\x1f")): _parse_merge_win(v)
+        for k, v in raw.get("merge_wins", {}).items()
+    }
+    state.deleted_artists = {UUID(x) for x in raw.get("deleted_artists", [])}
+    state.rejected_mix_ids = {UUID(x) for x in raw.get("rejected_mix_ids", [])}
+    state.rejected_at_by_mix = {
+        UUID(k): dt
+        for k, v in raw.get("rejected_at_by_mix", {}).items()
+        if (dt := _parse_dt(v)) is not None
+    }
+    state.played_mix_ids = {UUID(x) for x in raw.get("played_mix_ids", [])}
+    state.skipped_mix_ids = {UUID(x) for x in raw.get("skipped_mix_ids", [])}
+    state.pending_tag_presence = {
+        UUID(mix_id): {str(tag): bool(present) for tag, present in tags.items()}
+        for mix_id, tags in raw.get("pending_tag_presence", {}).items()
+    }
+    state.pending_stars = {
+        UUID(k): Stars(int(v)) for k, v in raw.get("pending_stars", {}).items()
+    }
+    state.pending_last_heard = {
+        UUID(k): dt
+        for k, v in raw.get("pending_last_heard", {}).items()
+        if (dt := _parse_dt(v)) is not None
+    }
+    state.pending_sequences = {
+        UUID(k): Sequence.model_validate(v)
+        for k, v in raw.get("pending_sequences", {}).items()
+    }
+    pending_assignments: dict[tuple[UUID, UUID], Assignment | None] = {}
+    for key, value in raw.get("pending_assignments", {}).items():
+        pair = _pair_key(key)
+        pending_assignments[pair] = (
+            None if value is None else Assignment.model_validate(value)
+        )
+    state.pending_assignments = pending_assignments
+    state.unpaired_device_ids = {UUID(x) for x in raw.get("unpaired_device_ids", [])}
 
 
 def apply(

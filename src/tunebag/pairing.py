@@ -8,7 +8,11 @@ import json
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from tunebag.durable_store import DurableStore
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -110,6 +114,35 @@ def resolve_persisted_identity(
             private_key_pem=resolved.private_key_pem,
             public_key_pem=resolved.public_key_pem,
         ),
+    )
+    return resolved, device_id
+
+
+def resolve_store_identity(
+    store: DurableStore,
+    *,
+    name: str,
+    identity: DeviceIdentity | None = None,
+) -> tuple[DeviceIdentity, UUID]:
+    """Load identity from a DurableStore if present; otherwise create and persist."""
+    loaded = store.load_identity()
+    if loaded is not None:
+        return (
+            DeviceIdentity(
+                name=name,
+                private_key_pem=loaded.private_key_pem,
+                public_key_pem=loaded.public_key_pem,
+            ),
+            loaded.device_id,
+        )
+    resolved = identity or generate_identity(name)
+    device_id = uuid4()
+    store.save_identity(
+        PersistedIdentity(
+            device_id=device_id,
+            private_key_pem=resolved.private_key_pem,
+            public_key_pem=resolved.public_key_pem,
+        )
     )
     return resolved, device_id
 

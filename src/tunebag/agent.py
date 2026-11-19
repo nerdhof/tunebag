@@ -54,6 +54,7 @@ from tunebag.domain import (
     new_id,
 )
 from tunebag.catalog_journal import CatalogJournal
+from tunebag.durable_store import open_durable_store
 from tunebag.events import Event, EventLog, EventType
 from tunebag.pairing import (
     PIN_MAX_ATTEMPTS,
@@ -65,13 +66,11 @@ from tunebag.pairing import (
     generate_identity,
     generate_pairing_pin,
     join_transcript,
-    load_locator_hints,
     normalize_pin,
     pairing_payload as build_pairing_payload,
     pins_equal,
-    resolve_persisted_identity,
+    resolve_store_identity,
     sas_for_session,
-    save_locator_hints,
 )
 from tunebag.player import AudioPlayer, default_player
 from tunebag.playback import (
@@ -167,16 +166,17 @@ class DeviceAgent:
         cover_fetch: CoverFetcher | None = None,
     ) -> None:
         # Persist identity/log/hints only for an explicit data_dir so in-process
-        # multi-agent tests (default ~/.tunebag) do not collide on one identity.json.
+        # multi-agent tests (default ~/.tunebag) do not collide on one SQLite bag.
         persist = data_dir is not None
         self._persist = persist
         self.catalog = CatalogState(data_dir=data_dir)
         self.data_dir = self.catalog.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._locator_hints_path = self.data_dir / "locator_hints.json"
+        self._store = open_durable_store(self.data_dir) if persist else None
         if persist:
-            self._identity, device_id = resolve_persisted_identity(
-                self.data_dir / "identity.json",
+            assert self._store is not None
+            self._identity, device_id = resolve_store_identity(
+                self._store,
                 name=name,
                 identity=identity,
             )
@@ -199,9 +199,7 @@ class DeviceAgent:
         )
         self.catalog.local_device_id = self.device.id
         self.catalog.add_device(self.device)
-        self._log = EventLog(
-            path=(self.data_dir / "events.jsonl") if persist else None
-        )
+        self._log = EventLog(store=self._store)
         self._activity = ActivityLog()
         self._view_notices = ViewNoticeBus()
         # When set, peer Event applies accumulate sections here and flush once at
@@ -211,7 +209,7 @@ class DeviceAgent:
         # In-process meet sessions: proved until disconnect.
         self._proved_agents: set[int] = set()
         self._peer_urls: dict[UUID, str] = (
-            load_locator_hints(self._locator_hints_path) if persist else {}
+            self._store.load_locator_hints() if self._store is not None else {}
         )
         self._pair_candidates: dict[str, dict[str, Any]] = {}
         # Ephemeral pairing session (host and/or guest view); never persisted.
@@ -240,6 +238,7 @@ class DeviceAgent:
             sign=self._sign,
             verify=self._verify,
             on_applied=self._on_journal_applied,
+            store=self._store,
         )
         # Local player supervision (browser is remote control; closing it does not stop).
         self._player: AudioPlayer = player if player is not None else default_player()
@@ -269,7 +268,7 @@ class DeviceAgent:
         self._auto_sync_defer_depth = 0
         self._auto_sync_deferred = False
         if persist:
-            self._journal.replay()
+            self._journal.boot()
             # Drop hints for Peers no longer trusted after replay (e.g. unpaired).
             self._prune_stale_locator_hints()
             # Boot replay skips on_applied — arm Soft→Hard File deletes from Catalog.
@@ -292,7 +291,7 @@ class DeviceAgent:
 
         Returns True if Explore was created. Idempotent for non-empty logs.
         """
-        if self._log.all():
+        if not self._log.is_empty():
             return False
         self.create_intent(
             "Explore",
@@ -2024,9 +2023,9 @@ class DeviceAgent:
         return dict(self._peer_urls)
 
     def _persist_locator_hints(self) -> None:
-        if not self._persist:
+        if self._store is None:
             return
-        save_locator_hints(self._locator_hints_path, self._peer_urls)
+        self._store.save_locator_hints(self._peer_urls)
 
     def _prune_stale_locator_hints(self) -> None:
         """Keep only hints for currently trusted Peers; rewrite sidecar if pruned."""
@@ -2586,6 +2585,18 @@ class DeviceAgent:
 
     def export_events(self) -> list[Event]:
         return self._journal.export()
+
+    def iter_events(self):
+        """Stream the durable Event log (HTTP NDJSON export)."""
+        return self._journal.iter_all()
+
+    def iter_events_after_cursors(self, cursors: dict[str, int]):
+        """Stream events after per-author seq watermarks."""
+        return self._journal.iter_after_cursors(cursors)
+
+    def event_cursors(self) -> dict[str, int]:
+        """Local per-author max seq for incremental peer pull."""
+        return self._journal.author_cursors()
 
     def sync(self, *, fill: bool = True) -> None:
         self.commit_reject_file_deletes()
@@ -3160,11 +3171,38 @@ class DeviceAgent:
         return signature
 
     def _http_fetch_events(self, peer_url: str) -> list[Event]:
+        """Pull peer events via POST cursors + NDJSON (falls back to GET NDJSON)."""
+        cursors = self.event_cursors()
         with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.get(f"{peer_url.rstrip('/')}/api/events")
+            response = client.post(
+                f"{peer_url.rstrip('/')}/api/events/pull",
+                json={"cursors": cursors},
+            )
+            if response.status_code == 404:
+                response = client.get(f"{peer_url.rstrip('/')}/api/events")
             response.raise_for_status()
-            raw_events = response.json().get("events", [])
-        return [Event.model_validate(raw) for raw in raw_events]
+        return _parse_events_ndjson(response.text)
+
+
+def _parse_events_ndjson(body: str) -> list[Event]:
+    """Parse NDJSON Event lines; also accept legacy ``{\"events\": [...]}`` JSON."""
+    text = body.strip()
+    if not text:
+        return []
+    if text.startswith("{"):
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            raw = None
+        if isinstance(raw, dict) and "events" in raw:
+            return [Event.model_validate(item) for item in raw["events"]]
+    events: list[Event] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        events.append(Event.model_validate_json(line))
+    return events
 
 
 def _normalize_artist_url(url: str) -> str:
