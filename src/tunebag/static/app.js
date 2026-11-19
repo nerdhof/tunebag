@@ -1508,6 +1508,15 @@ function formatChanceBlocks(dist) {
   return formatChanceBlocksFromPct(distToChancePcts(dist));
 }
 
+/** Horizontal `|` between intent filter segments (tags | artists | sources | chances). */
+function intentMetaSep() {
+  const sep = document.createElement("span");
+  sep.className = "intent-meta-sep";
+  sep.setAttribute("aria-hidden", "true");
+  sep.textContent = "|";
+  return sep;
+}
+
 function formatChancePercents(dist) {
   return formatChancePercentsFromPct(distToChancePcts(dist));
 }
@@ -1683,7 +1692,8 @@ const CHANCE_FIELD_META = [
 ];
 
 /**
- * Shared create/edit intent composer: short name + ✓×, then Tags/Artists/Sources/chances.
+ * Shared create/edit intent composer: short name + ✓×, then one filter line
+ * (tags | artists | sources | rating blocks) with rating click toggling the chance grid.
  * @param {HTMLElement} root
  * @param {{
  *   values?: {
@@ -1731,42 +1741,27 @@ function mountIntentComposer(root, options) {
   const meta = document.createElement("div");
   meta.className = "intent-form-meta";
 
-  const tagsRow = document.createElement("div");
-  tagsRow.className = "intent-form-meta-row";
-  tagsRow.title =
-    "Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged.";
-  const tagsLabel = document.createElement("span");
-  tagsLabel.className = "intent-form-meta-label";
-  tagsLabel.textContent = "Tags:";
+  const filterLine = document.createElement("div");
+  filterLine.className = "intent-form-filter-line";
+
   const tagsMount = document.createElement("div");
   tagsMount.className = "tag-editor";
   tagsMount.setAttribute("aria-label", "Intent filter tags");
-  tagsRow.appendChild(tagsLabel);
-  tagsRow.appendChild(tagsMount);
+  tagsMount.title =
+    "Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged.";
 
-  const artistsRow = document.createElement("div");
-  artistsRow.className = "intent-form-meta-row";
-  artistsRow.title = "Optional. Leave empty for no artist filter. Selected artists match by OR.";
-  const artistsLabel = document.createElement("span");
-  artistsLabel.className = "intent-form-meta-label";
-  artistsLabel.textContent = "Artists:";
   const artistsMount = document.createElement("div");
   artistsMount.className = "tag-editor";
   artistsMount.setAttribute("aria-label", "Intent artist filter");
-  artistsRow.appendChild(artistsLabel);
-  artistsRow.appendChild(artistsMount);
+  artistsMount.title =
+    "Optional. Leave empty for no artist filter. Selected artists match by OR.";
 
-  const sourcesRow = document.createElement("div");
-  sourcesRow.className = "intent-form-meta-row";
-  sourcesRow.title =
-    "Sources start on. Grey one out to exclude it. At least one must stay active.";
-  const sourcesLabel = document.createElement("span");
-  sourcesLabel.className = "intent-form-meta-label";
-  sourcesLabel.textContent = "Sources:";
   const platformsRoot = document.createElement("div");
   platformsRoot.className = "source-toggles";
   platformsRoot.setAttribute("role", "group");
   platformsRoot.setAttribute("aria-label", "Sources");
+  platformsRoot.title =
+    "Sources start on. Grey one out to exclude it. At least one must stay active.";
   for (const platform of DEFAULT_INTENT_PLATFORMS) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1778,13 +1773,17 @@ function mountIntentComposer(root, options) {
     btn.innerHTML = PLATFORM_SVG[platform] || "";
     platformsRoot.appendChild(btn);
   }
-  sourcesRow.appendChild(sourcesLabel);
-  sourcesRow.appendChild(platformsRoot);
 
-  const chancesDetails = document.createElement("details");
-  chancesDetails.className = "intent-chances";
-  const chancesSummary = document.createElement("summary");
-  chancesSummary.className = "has-tip";
+  const chancesToggle = document.createElement("button");
+  chancesToggle.type = "button";
+  chancesToggle.className = "intent-chances-toggle has-tip";
+  chancesToggle.setAttribute("aria-expanded", "false");
+  chancesToggle.setAttribute("aria-label", "Rating chances");
+  chancesToggle.title = "Rating chances";
+
+  const chancePanel = document.createElement("div");
+  chancePanel.className = "intent-chances-panel";
+  chancePanel.hidden = true;
   const chanceGrid = document.createElement("div");
   chanceGrid.className = "chance-grid";
   /** @type {Map<string, HTMLSelectElement>} */
@@ -1801,13 +1800,17 @@ function mountIntentComposer(root, options) {
     label.appendChild(select);
     chanceGrid.appendChild(label);
   }
-  chancesDetails.appendChild(chancesSummary);
-  chancesDetails.appendChild(chanceGrid);
+  chancePanel.appendChild(chanceGrid);
 
-  meta.appendChild(tagsRow);
-  meta.appendChild(artistsRow);
-  meta.appendChild(sourcesRow);
-  meta.appendChild(chancesDetails);
+  filterLine.appendChild(tagsMount);
+  filterLine.appendChild(intentMetaSep());
+  filterLine.appendChild(artistsMount);
+  filterLine.appendChild(intentMetaSep());
+  filterLine.appendChild(platformsRoot);
+  filterLine.appendChild(intentMetaSep());
+  filterLine.appendChild(chancesToggle);
+  meta.appendChild(filterLine);
+  meta.appendChild(chancePanel);
   root.appendChild(nameRow);
   root.appendChild(meta);
 
@@ -1865,11 +1868,20 @@ function mountIntentComposer(root, options) {
 
   function updateChanceSummary() {
     const chances = readChances();
-    chancesSummary.textContent = `Rating chances: ${formatChanceBlocksFromPct(chances)}`;
-    chancesSummary.removeAttribute("title");
-    chancesSummary.classList.add("has-tip");
-    chancesSummary.dataset.tip = formatChancePercentsFromPct(chances);
+    chancesToggle.textContent = formatChanceBlocksFromPct(chances);
+    chancesToggle.removeAttribute("title");
+    chancesToggle.classList.add("has-tip");
+    chancesToggle.dataset.tip = formatChancePercentsFromPct(chances);
   }
+
+  function setChancePanelOpen(open) {
+    chancePanel.hidden = !open;
+    chancesToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  chancesToggle.addEventListener("click", () => {
+    setChancePanelOpen(chancePanel.hidden);
+  });
 
   function rebalanceChances(changedId) {
     writeChances(rebalanceChanceMap(readChances(), changedId));
@@ -1910,7 +1922,7 @@ function mountIntentComposer(root, options) {
     writePlatforms(next.platforms || DEFAULT_INTENT_PLATFORMS);
     if (next.distribution) writeChances(chancesFromDist(next.distribution));
     else writeChances({ ...CHANCE_DEFAULTS });
-    chancesDetails.open = false;
+    setChancePanelOpen(false);
   }
 
   setValues(initial);
@@ -1957,7 +1969,7 @@ function mountIntentComposer(root, options) {
     getValues,
     setValues,
     focusName() {
-      nameInput.focus();
+      nameInput.focus({ preventScroll: true });
       nameInput.select?.();
     },
     isBusy() {
@@ -4879,23 +4891,44 @@ async function refreshIntents({ force = false } = {}) {
     editComposer.destroy();
     editComposer = null;
   }
-  list.innerHTML = "";
   if (
     editingIntentId &&
     !(data.intents || []).some((intent) => intent.id === editingIntentId)
   ) {
     editingIntentId = null;
   }
-  if (!data.intents.length) {
+
+  const intents = data.intents || [];
+  const seqByIntentId = new Map();
+  if (intents.length) {
+    const seqResults = await Promise.all(
+      intents.map(async (intent) => {
+        try {
+          const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
+          if (!seqRes.ok) return [intent.id, null];
+          return [intent.id, await seqRes.json()];
+        } catch (err) {
+          console.error(err);
+          return [intent.id, null];
+        }
+      }),
+    );
+    for (const [id, seq] of seqResults) {
+      seqByIntentId.set(id, seq);
+    }
+  }
+
+  const frag = document.createDocumentFragment();
+  let pendingEditFocus = null;
+
+  if (!intents.length) {
     const li = document.createElement("li");
     li.className = "muted";
     li.textContent = "No intents yet";
-    list.appendChild(li);
-    await refreshPlayerIntents();
-    return;
+    frag.appendChild(li);
   }
 
-  for (const intent of data.intents) {
+  for (const intent of intents) {
     const li = document.createElement("li");
     const isEditing = editingIntentId === intent.id;
 
@@ -4949,7 +4982,7 @@ async function refreshIntents({ force = false } = {}) {
           cancelInlineIntentEdit();
         },
       });
-      editComposer.focusName();
+      pendingEditFocus = editComposer;
     } else {
       const headingRow = document.createElement("div");
       headingRow.className = "controls";
@@ -5079,9 +5112,6 @@ async function refreshIntents({ force = false } = {}) {
       meta.className = "intent-meta muted";
       const tagsEl = document.createElement("span");
       tagsEl.className = "intent-meta-tags";
-      const tagsLabel = document.createElement("span");
-      tagsLabel.textContent = "Tags:";
-      tagsEl.appendChild(tagsLabel);
       tagsEl.appendChild(
         renderTagChipsDisplay(intent.tags || [], catalogTagsCache),
       );
@@ -5089,12 +5119,10 @@ async function refreshIntents({ force = false } = {}) {
       artistsEl.className = "intent-meta-artists";
       const artistIds = intent.artist_ids || [];
       const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
-      artistsEl.textContent = `Artists: ${artistNames.length ? artistNames.join(", ") : "-"}`;
+      artistsEl.textContent = artistNames.length ? artistNames.join(", ") : "-";
       const platformsEl = document.createElement("span");
       platformsEl.className = "intent-meta-platforms";
-      const platformsLabel = document.createElement("span");
-      platformsLabel.textContent = "Sources:";
-      platformsEl.appendChild(platformsLabel);
+      platformsEl.setAttribute("aria-label", "Sources");
       const platforms = intent.platforms || DEFAULT_INTENT_PLATFORMS;
       for (const platform of platforms) {
         const icon = document.createElement("span");
@@ -5110,21 +5138,22 @@ async function refreshIntents({ force = false } = {}) {
       }
       const chancesEl = document.createElement("span");
       chancesEl.className = "intent-meta-chances has-tip";
-      chancesEl.textContent = `Rating chances: ${formatChanceBlocks(intent.distribution)}`;
+      chancesEl.textContent = formatChanceBlocks(intent.distribution);
       chancesEl.dataset.tip = formatChancePercents(intent.distribution);
       meta.appendChild(tagsEl);
+      meta.appendChild(intentMetaSep());
       meta.appendChild(artistsEl);
+      meta.appendChild(intentMetaSep());
       meta.appendChild(platformsEl);
+      meta.appendChild(intentMetaSep());
       meta.appendChild(chancesEl);
       li.appendChild(meta);
     }
 
     let assignments = [];
-    let seq = null;
     const durationByMixId = new Map();
-    const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
-    if (seqRes.ok) {
-      seq = await seqRes.json();
+    const seq = seqByIntentId.get(intent.id) || null;
+    if (seq) {
       assignments = seq.assignments || [];
       for (const entry of seq.entries || []) {
         if (entry.mix_id != null && entry.duration_seconds != null) {
@@ -5228,8 +5257,13 @@ async function refreshIntents({ force = false } = {}) {
 
     li.appendChild(footer);
 
-    list.appendChild(li);
+    frag.appendChild(li);
   }
+
+  const scrollY = window.scrollY;
+  list.replaceChildren(frag);
+  window.scrollTo(0, scrollY);
+  pendingEditFocus?.focusName();
   await refreshPlayerIntents();
 }
 
