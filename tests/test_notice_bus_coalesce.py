@@ -140,6 +140,7 @@ def test_playhead_tick_emits_no_catalog_notice(tmp_path: Path) -> None:
     )
     agent.fill_caches()
     agent.play(intent.id, mix.id)
+    agent._cancel_playback_threshold_watch()
     # Seed a playhead below Last heard so the next tick is PLAYHEAD-only.
     agent.report_playhead(5)
     agent.drain_view_notices()
@@ -163,6 +164,7 @@ def test_last_heard_rising_edge_still_notifies_mixes_and_history(
     )
     agent.fill_caches()
     agent.play(intent.id, mix.id)
+    agent._cancel_playback_threshold_watch()
     agent.drain_view_notices()
 
     agent.report_playhead(10)
@@ -186,7 +188,9 @@ def test_create_intent_emits_single_coalesced_intents_notice(tmp_path: Path) -> 
         device_hours=[(agent.device_id, 3600)],
     )
 
-    assert _catalog_sections(agent) == [UIViewSection.INTENTS]
+    # Fill may mark CACHE (download start); intents must still coalesce to one.
+    sections = [s for s in _catalog_sections(agent) if s != UIViewSection.CACHE]
+    assert sections == [UIViewSection.INTENTS]
 
 
 def test_cache_file_add_and_remove_emit_cache(tmp_path: Path) -> None:

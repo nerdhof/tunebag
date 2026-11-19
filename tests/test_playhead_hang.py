@@ -154,6 +154,7 @@ def test_companion_playhead_heartbeat_is_five_minutes() -> None:
     js = (root / "app.js").read_text()
     html = (root / "index.html").read_text()
     assert "PLAYHEAD_COMMIT_MS = 5 * 60 * 1000" in js
-    assert "PLAYER_POLL_MS = 2000" in js
+    assert "PLAYER_POLL_MS" not in js
+    assert "setPlayerLocalClock" in js
     assert "position_seconds: Math.max(0, lastKnownPositionSeconds)" in js
-    assert "/static/app.js?v=68" in html
+    assert "/static/app.js?v=70" in html

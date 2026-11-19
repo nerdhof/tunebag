@@ -104,6 +104,8 @@ from tunebag.ytdlp_fetch import YtdlpCookies
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 
 _HTTP_TIMEOUT = 5.0
+_PLAYBACK_THRESHOLD_WATCH_SECONDS = 1.0
+_DOWNLOAD_CACHE_NOTICE_SECONDS = 1.0
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
@@ -126,6 +128,7 @@ DeviceHoursSpec = tuple[UUID, int] | tuple[UUID, int, datetime | None]
 _MIXES = (UIViewSection.MIXES,)
 _MIXES_AND_HISTORY = (UIViewSection.MIXES, UIViewSection.PLAY_HISTORY)
 _INTENTS = (UIViewSection.INTENTS,)
+_INTENTS_AND_CACHE = (UIViewSection.INTENTS, UIViewSection.CACHE)
 _PEERS = (UIViewSection.PEERS,)
 _VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
     EventType.ARTIST_ADDED: _MIXES,
@@ -142,11 +145,12 @@ _VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
     EventType.PLAYED: _MIXES_AND_HISTORY,
     EventType.SKIPPED: _MIXES_AND_HISTORY,
     EventType.LAST_HEARD: _MIXES_AND_HISTORY,
-    EventType.INTENT_UPSERTED: _INTENTS,
-    EventType.INTENT_DELETED: _INTENTS,
-    EventType.SEQUENCE_BUILT: _INTENTS,
-    EventType.ASSIGNMENT_SET: _INTENTS,
-    EventType.ASSIGNMENT_CLEARED: _INTENTS,
+    # Intent / assignment / sequence reshape cache_groups (pending/loading/cached).
+    EventType.INTENT_UPSERTED: _INTENTS_AND_CACHE,
+    EventType.INTENT_DELETED: _INTENTS_AND_CACHE,
+    EventType.SEQUENCE_BUILT: _INTENTS_AND_CACHE,
+    EventType.ASSIGNMENT_SET: _INTENTS_AND_CACHE,
+    EventType.ASSIGNMENT_CLEARED: _INTENTS_AND_CACHE,
     EventType.DEVICE_PAIRED: _PEERS,
     EventType.DEVICE_UNPAIRED: (UIViewSection.PEERS, UIViewSection.INTENTS),
 }
@@ -218,6 +222,8 @@ class DeviceAgent:
         # Ephemeral pairing session (host and/or guest view); never persisted.
         self._pairing_session: dict[str, Any] | None = None
         self._pairing_expiry_timer: threading.Timer | None = None
+        self._playback_threshold_timer: threading.Timer | None = None
+        self._download_cache_notice_at: float = 0.0
         self._cache = ReleaseCache(
             self.data_dir,
             self.catalog,
@@ -843,6 +849,8 @@ class DeviceAgent:
         # re-append PLAYHEAD at ``start`` — equal-position ticks refresh
         # updated_at and block near-window seek-backs (Last heard tests).
         self._schedule_auto_sync()
+        self._arm_playback_threshold_watch()
+        self._mark_view_sections(UIViewSection.PLAYER)
         # Last play wins: ask reachable Peers to pause so only one Device is audible.
         self._request_peers_yield()
         return mix
@@ -859,9 +867,11 @@ class DeviceAgent:
                 self._playback.freeze()
             self.report_playhead(float(position_seconds))
         self._playback.stop()
+        self._cancel_playback_threshold_watch()
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
         self._schedule_auto_sync()
+        self._mark_view_sections(UIViewSection.PLAYER)
 
     def yield_playback(self) -> bool:
         """Pause if locally playing so a Peer can take over audio.
@@ -890,8 +900,10 @@ class DeviceAgent:
             self.report_playhead(pos)
         if self.is_playing():
             self._playback.pause_audio()
+        self._cancel_playback_threshold_watch()
         # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
         self._schedule_auto_sync()
+        self._mark_view_sections(UIViewSection.PLAYER)
 
     def skip(self, intent_id: UUID | None = None) -> Mix:
         """Advance to the next local assigned mix without marking the current played.
@@ -958,17 +970,13 @@ class DeviceAgent:
             if self._current_mix_id is not None
             else None
         )
-        pos = self._playback.live_position(mix)
-        # Player poll reads this often; commit when live clock crosses Last heard
-        # or Played so Play history / Played do not wait for the 5‑minute heartbeat.
-        self._maybe_commit_threshold_playhead(mix, pos)
         return self._playback.live_position(mix)
 
     def _maybe_commit_threshold_playhead(
         self, mix: Mix | None, position_seconds: float
     ) -> None:
         """Append playhead when live position crosses Last heard or Played."""
-        if mix is None or not self.is_playing():
+        if mix is None or not self._playback.playing:
             return
         previous = 0.0
         existing = self.catalog.playheads.get(mix.id)
@@ -985,6 +993,43 @@ class DeviceAgent:
             need = True
         if need:
             self.report_playhead(pos)
+
+    def _arm_playback_threshold_watch(self) -> None:
+        """While playing, check Last heard / Played every second without UI polls."""
+        self._cancel_playback_threshold_watch()
+
+        def _fire() -> None:
+            self._playback_threshold_timer = None
+            self._playback_threshold_tick()
+
+        timer = threading.Timer(_PLAYBACK_THRESHOLD_WATCH_SECONDS, _fire)
+        timer.daemon = True
+        self._playback_threshold_timer = timer
+        timer.start()
+
+    def _cancel_playback_threshold_watch(self) -> None:
+        if self._playback_threshold_timer is not None:
+            self._playback_threshold_timer.cancel()
+            self._playback_threshold_timer = None
+
+    def _playback_threshold_tick(self) -> None:
+        if not self._playback.playing:
+            return
+        was_playing = True
+        self._supervise_playback()
+        if not self._playback.playing:
+            if was_playing:
+                self._mark_view_sections(UIViewSection.PLAYER)
+            return
+        mix = (
+            self.catalog.mixes.get(self._current_mix_id)
+            if self._current_mix_id is not None
+            else None
+        )
+        pos = self._playback.live_position(mix)
+        self._maybe_commit_threshold_playhead(mix, pos)
+        if self._playback.playing:
+            self._arm_playback_threshold_watch()
 
     def playing_intent_id(self) -> UUID | None:
         return self._playback.intent_id
@@ -1033,6 +1078,7 @@ class DeviceAgent:
         )
         # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
         self._schedule_auto_sync()
+        self._mark_view_sections(UIViewSection.PLAYER)
         return head
 
     def _locate_audio(self, mix: Mix, timeline_seconds: float) -> tuple[Path, float]:
@@ -1099,6 +1145,11 @@ class DeviceAgent:
         if intents:
             # Track advance / release end: flush playhead (and ContinueTo) to peers.
             self._schedule_auto_sync()
+            self._mark_view_sections(UIViewSection.PLAYER)
+            if self._playback.playing:
+                self._arm_playback_threshold_watch()
+            else:
+                self._cancel_playback_threshold_watch()
 
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
         """Mark a mix played (explicit control or auto at 75%).
@@ -2742,12 +2793,17 @@ class DeviceAgent:
         with self._download_lock:
             self._download_bytes = max(0, int(downloaded))
             self._download_total_bytes = None if total is None else max(0, int(total))
+        now = time.monotonic()
+        if now - self._download_cache_notice_at >= _DOWNLOAD_CACHE_NOTICE_SECONDS:
+            self._download_cache_notice_at = now
+            self._mark_view_sections(UIViewSection.CACHE)
 
     def _with_download(self, mix_id: UUID, action: Callable[[], None]) -> None:
         with self._download_lock:
             self._downloading_mix_id = mix_id
             self._download_bytes = 0
             self._download_total_bytes = None
+        self._mark_view_sections(UIViewSection.CACHE)
         try:
             action()
         finally:
@@ -2756,6 +2812,7 @@ class DeviceAgent:
                     self._downloading_mix_id = None
                     self._download_bytes = 0
                     self._download_total_bytes = None
+            self._mark_view_sections(UIViewSection.CACHE)
 
     def _origin_fetch_allowed(
         self,

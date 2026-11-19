@@ -92,7 +92,7 @@ flowchart LR
 ```
 
 - **Mutations and reads**: HTTP REST (`/api/*`). UI never consumes the raw Event log.
-- **Catalog freshness**: coalesced **View notices** (`GET /api/view-notices`) with section ids `mixes`, `play_history`, `intents`, `peers`, `cache`, `activity`, `pairing_session`. Local append and foreign ingest both mark Catalog sections; Activity notes and pairing-session transitions mark their sections; the UI refetches the matching snapshots.
+- **Catalog freshness**: coalesced **View notices** (`GET /api/view-notices`) with section ids `mixes`, `play_history`, `intents`, `peers`, `cache`, `activity`, `pairing_session`, `player`. Local append and foreign ingest both mark Catalog sections; Activity notes, pairing-session transitions, and Player transport mark their sections; the UI refetches the matching snapshots.
 - **Peer path**: Peer Sync / ingest → Catalog apply → View notices → UI refetch (same notice bus as local writes). Sync notes also mark `activity`.
 
 ## Reactivity rules
@@ -100,7 +100,7 @@ flowchart LR
 1. **After a user mutation**, refresh affected surfaces via the shared `refreshAffectedSurfaces` path with `force` where an open editor would otherwise skip DOM rebuild.
 2. **View notices** refetch listed sections **without** `force` so in-progress editors (`focusInside`) are preserved.
 3. **Non-Catalog pending** must be API-visible if the UI shows it. Reject no longer uses a pre-commit undo buffer; Soft/Hard use Reject author time on Catalog/API snapshots.
-4. **Activity** and **pairing session** are notice-driven (pairing may keep a short poll only while `pending_confirm` waits on the other device). **Player** transport/position may remain a lightweight poll/tick until a cheap push exists.
+4. **Activity**, **pairing session**, and **Player** are notice-driven (pairing may keep a short poll only while `pending_confirm` waits on the other device). Player seekbar position ticks locally between notices; Last heard / Played thresholds are watched on the agent while playing.
 
 ## Out of product UI
 
@@ -115,9 +115,8 @@ Not user verbs in this contract (APIs may still exist until an implementation pa
 
 Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Intent verbs / Fill cleanup (ui-actions 05):
 
-- Player still polls while playing (transport/position, every 2s + local seekbar tick) until a cheap Player push exists
 - Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
 
-Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when live position crosses the **Last heard** or **Played** threshold (so Play history updates promptly), plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. Heartbeat ticks must **not** rebuild Catalog / Play history and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync).
+Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when the agent watch sees live position cross **Last heard** or **Played**, plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. Heartbeat ticks must **not** rebuild Catalog / Play history and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync). Activity notices refresh Activity only — never Cache. Cache invalidates on intent/assignment/sequence changes (pending/loading/cached overview) and on download start/end plus throttled origin progress; the companion coalesces overlapping Cache refetches so the newest snapshot wins. Peer copies flip status only (no byte progress bar).
 
 Follow-up implementation should close the remaining gaps against this contract.

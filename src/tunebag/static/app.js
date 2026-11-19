@@ -26,19 +26,17 @@ let showRejectedHistory = false;
 const SOFT_REJECT_MS = 5 * 60 * 1000;
 /** @type {Map<string, number>} mixId → timeout when Soft ages to Hard (list refresh) */
 const softRejectTimers = new Map();
-let fillWasInProgress = false;
-let lastFilesRefreshAt = 0;
-let filesRefreshInFlight = null;
-const FILES_REFRESH_MIN_MS = 1000;
 let lastPlayheadCommitAt = 0;
 let lastKnownPositionSeconds = 0;
 let playheadCommitInFlight = false;
 /** Heartbeat only; pause/stop/seek/skip/track boundaries commit immediately. */
 const PLAYHEAD_COMMIT_MS = 5 * 60 * 1000;
-/** How often to hit GET /api/player while playing (seekbar ticks locally between). */
-const PLAYER_POLL_MS = 2000;
-/** Local seekbar/clock refresh between server polls. */
+/** Local seekbar/clock refresh; player state comes from view notices. */
 const PLAYER_UI_TICK_MS = 250;
+/** Cache SSE can storm during fill; coalesce so the newest snapshot wins. */
+let filesRefreshEpoch = 0;
+let filesRefreshTail = Promise.resolve();
+let filesRefreshForcePending = false;
 /** Mix id already announced as marked played during this play session. */
 let playheadPlayedNotifiedForMix = null;
 /** Last player poll: used so intent-list play buttons stay in sync. */
@@ -1435,31 +1433,6 @@ function initSectionInfo() {
   });
 }
 
-function fillInProgressFromEntries(entries) {
-  let inProgress = false;
-  for (const entry of entries) {
-    const msg = entry.message || "";
-    if (msg.startsWith("fill caches start")) {
-      inProgress = true;
-    } else if (msg.startsWith("fill caches end")) {
-      inProgress = false;
-    }
-  }
-  return inProgress;
-}
-
-function requestFilesRefresh({ force = false } = {}) {
-  const now = Date.now();
-  if (!force && now - lastFilesRefreshAt < FILES_REFRESH_MIN_MS) {
-    return filesRefreshInFlight || Promise.resolve();
-  }
-  lastFilesRefreshAt = now;
-  filesRefreshInFlight = refreshFiles().finally(() => {
-    filesRefreshInFlight = null;
-  });
-  return filesRefreshInFlight;
-}
-
 const CHANCE_IDS = [
   "chance-five",
   "chance-four",
@@ -1508,7 +1481,6 @@ function formatChanceBlocks(dist) {
   return formatChanceBlocksFromPct(distToChancePcts(dist));
 }
 
-/** Horizontal `|` between intent filter segments (tags | artists | sources | chances). */
 function intentMetaSep() {
   const sep = document.createElement("span");
   sep.className = "intent-meta-sep";
@@ -1516,6 +1488,7 @@ function intentMetaSep() {
   sep.textContent = "|";
   return sep;
 }
+
 
 function formatChancePercents(dist) {
   return formatChancePercentsFromPct(distToChancePcts(dist));
@@ -2178,15 +2151,6 @@ async function refreshActivity() {
         list.appendChild(li);
       }
     }
-
-    const filling = fillInProgressFromEntries(chronological);
-    if (filling) {
-      await requestFilesRefresh();
-    } else if (fillWasInProgress) {
-      await requestFilesRefresh({ force: true });
-      await refreshIntents();
-    }
-    fillWasInProgress = filling;
   } catch (err) {
     console.error(err);
   }
@@ -2819,7 +2783,6 @@ function formatClock(seconds) {
 }
 
 let playerSeekDragging = false;
-let playerPollTimer = null;
 let playerUiTickTimer = null;
 /** Wall-clock sync for local seekbar extrapolation between server polls. */
 let playerPositionSyncedAt = 0;
@@ -2888,30 +2851,22 @@ function tickPlayerUi() {
   seekbar.value = String(clamped);
   syncSeekProgress(seekbar);
   currentEl.textContent = formatClock(clamped);
+  // 5‑minute playhead heartbeat (throttled inside maybeCommitPlayhead).
+  void maybeCommitPlayhead(true);
 }
 
-function setPlayerPolling(playing) {
+/** Local seekbar clock while playing; transport state comes from player notices. */
+function setPlayerLocalClock(playing) {
   playerLocalPlaying = Boolean(playing);
   if (playing) {
-    if (playerPollTimer == null) {
-      playerPollTimer = setInterval(() => {
-        void refreshPlayer();
-      }, PLAYER_POLL_MS);
-    }
     if (playerUiTickTimer == null) {
       playerUiTickTimer = setInterval(() => {
         tickPlayerUi();
       }, PLAYER_UI_TICK_MS);
     }
-  } else {
-    if (playerPollTimer != null) {
-      clearInterval(playerPollTimer);
-      playerPollTimer = null;
-    }
-    if (playerUiTickTimer != null) {
-      clearInterval(playerUiTickTimer);
-      playerUiTickTimer = null;
-    }
+  } else if (playerUiTickTimer != null) {
+    clearInterval(playerUiTickTimer);
+    playerUiTickTimer = null;
   }
 }
 
@@ -4415,7 +4370,7 @@ async function refreshPlayer() {
       playerTagEditor.setTags([]);
     }
     updateSeekBar({});
-    setPlayerPolling(false);
+    setPlayerLocalClock(false);
     updateRejectControls({});
     updatePlayPauseButton(false);
     updateIntentPlayButtons(false, null);
@@ -4436,18 +4391,33 @@ async function refreshPlayer() {
     playerTagEditor.setTags(data.tags || []);
   }
   updateSeekBar(data);
-  setPlayerPolling(Boolean(data.playing));
+  setPlayerLocalClock(Boolean(data.playing));
   updateRejectControls(data);
   updatePlayPauseButton(Boolean(data.playing));
   updateIntentPlayButtons(Boolean(data.playing), data.intent_id);
-  if (data.playing) {
-    await maybeCommitPlayhead(true);
-  } else {
+  if (!data.playing) {
     lastPlayheadCommitAt = 0;
   }
 }
 
+/**
+ * Latest-wins Cache refresh. Overlapping SSE notices share one chain: superseded
+ * epochs no-op so an older GET cannot paint over newer pending/loading/progress.
+ */
 async function refreshFiles({ force = false } = {}) {
+  const epoch = ++filesRefreshEpoch;
+  if (force) filesRefreshForcePending = true;
+  const done = filesRefreshTail.then(async () => {
+    if (epoch !== filesRefreshEpoch) return;
+    const useForce = filesRefreshForcePending;
+    filesRefreshForcePending = false;
+    await refreshFilesNow({ force: useForce });
+  });
+  filesRefreshTail = done.catch(() => {});
+  return done;
+}
+
+async function refreshFilesNow({ force = false } = {}) {
   const body = document.getElementById("cache-body");
   if (!force && focusInside(body)) return;
   const res = await fetch("/api/files");
@@ -5937,6 +5907,7 @@ const VIEW_NOTICE_SECTIONS = [
   "cache",
   "activity",
   "pairing_session",
+  "player",
 ];
 
 /**
@@ -5971,6 +5942,9 @@ async function refreshAffectedSurfaces(sections, { force = false } = {}) {
   if (wanted.has("pairing_session")) {
     await refreshPairingSession();
   }
+  if (wanted.has("player")) {
+    await refreshPlayer();
+  }
 }
 
 async function refreshAllViewSurfaces() {
@@ -5994,11 +5968,10 @@ async function refreshAfterAnnotateMutation({ intents = false } = {}) {
 /** After Switch to intent / Pause from an Intent row (and Player transport play/pause). */
 async function refreshAfterIntentPlaybackMutation({ markedPlayed = false } = {}) {
   await refreshPlayer();
-  const sections = ["cache"];
-  if (markedPlayed) {
-    sections.push("mixes", "play_history", "intents");
-  }
-  await refreshAffectedSurfaces(sections, { force: true });
+  if (!markedPlayed) return;
+  await refreshAffectedSurfaces(["cache", "mixes", "play_history", "intents"], {
+    force: true,
+  });
 }
 
 function connectViewNotices() {

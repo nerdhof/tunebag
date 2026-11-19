@@ -105,6 +105,7 @@ def test_ui_refresh_contract_activity_pairing_and_force_path() -> None:
         "cache",
         "activity",
         "pairing_session",
+        "player",
     ):
         assert f'"{section}"' in js or f"'{section}'" in js
 
@@ -113,6 +114,7 @@ def test_ui_refresh_contract_activity_pairing_and_force_path() -> None:
     assert "force" in affected
     assert "refreshActivity" in affected
     assert "refreshPairingSession" in affected
+    assert "refreshPlayer" in affected
 
     view_sections = _js_function_body(js, "async function refreshViewSections")
     assert "refreshAffectedSurfaces" in view_sections
@@ -123,8 +125,20 @@ def test_ui_refresh_contract_activity_pairing_and_force_path() -> None:
     assert "refreshAffectedSurfaces" in after_annotate
     assert "force: true" in after_annotate
 
-    # Activity freshness is notice-driven; no standalone 1s poll as primary.
+    # Activity / Player freshness are notice-driven; no standalone polls.
     assert "setInterval(refreshActivity" not in js
+    assert "PLAYER_POLL_MS" not in js
+
+    activity = _js_function_body(js, "async function refreshActivity")
+    assert "refreshFiles" not in activity
+    assert "/api/files" not in activity
+
+    # Cache SSE storms coalesce: latest-wins wrapper around refreshFilesNow.
+    assert "filesRefreshEpoch" in js
+    assert "async function refreshFilesNow" in js
+    refresh_files = _js_function_body(js, "async function refreshFiles")
+    assert "filesRefreshEpoch" in refresh_files
+    assert "refreshFilesNow" in refresh_files
 
     # Pairing poll shrinks to pending_confirm (other-device confirm), not host waiting.
     start_pair = _js_function_body(js, "async function startPairSession")

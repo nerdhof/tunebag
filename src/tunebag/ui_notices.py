@@ -20,6 +20,7 @@ class UIViewSection(StrEnum):
     CACHE = "cache"
     ACTIVITY = "activity"
     PAIRING_SESSION = "pairing_session"
+    PLAYER = "player"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ _SECTION_ORDER = (
     UIViewSection.CACHE,
     UIViewSection.ACTIVITY,
     UIViewSection.PAIRING_SESSION,
+    UIViewSection.PLAYER,
 )
 
 
