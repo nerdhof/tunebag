@@ -208,6 +208,47 @@ def test_mark_played_and_continue_sets_last_heard(tmp_path: Path) -> None:
     assert mix.last_heard_at == clock()
 
 
+def test_http_mark_played_advances_to_next_local(tmp_path: Path) -> None:
+    """POST /api/player/mark-played completes current and plays the next local."""
+    laptop, _phone, source, _clock = _pair(tmp_path)
+    a = _add_mix(
+        laptop, source, title="Set A", duration_seconds=1000, platform_id="http-a"
+    )
+    b = _add_mix(
+        laptop, source, title="Set B", duration_seconds=1000, platform_id="http-b"
+    )
+    laptop.rate_mix(a, Stars.FIVE)
+    laptop.rate_mix(b, Stars.FIVE)
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 4000)],
+    )
+    laptop.fill_caches()
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    assert set(assignment.mix_ids) == {a, b}
+    head = assignment.mix_ids[0]
+    nxt_id = assignment.mix_ids[1]
+    laptop.play(intent.id, head)
+
+    client = TestClient(create_app(laptop))
+    res = client.post(
+        "/api/player/mark-played",
+        json={"intent_id": str(intent.id)},
+    )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["playing"] is True
+    assert body["current_mix_id"] == str(nxt_id)
+    finished = next(m for m in laptop.mixes() if m.id == head)
+    assert finished.played is True
+    assert finished.last_heard_at is not None
+    assert laptop.current_mix() == nxt_id
+
+
 def test_last_heard_survives_peer_sync_and_event_log_rebuild(
     tmp_path: Path,
 ) -> None:

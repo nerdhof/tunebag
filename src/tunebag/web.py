@@ -195,11 +195,11 @@ class PlayheadBody(BaseModel):
 
 class MarkPlayedBody(BaseModel):
     mix_id: UUID | None = None
+    intent_id: UUID | None = None
 
 
 class DropSequenceBody(BaseModel):
     mix_id: UUID
-    intent_id: UUID | None = None
 
 
 class RateBody(BaseModel):
