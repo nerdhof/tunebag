@@ -1,8 +1,8 @@
-"""SequenceProvisioner: need-rebuild decisions and Sequence/Assignment Event drafts.
+"""SequenceProvisioner: rebuild/fillup decisions and Sequence/Assignment Event drafts.
 
-Pure helpers ``build_sequence`` / ``assign_by_budget`` stay in ``sequence.py``.
-The caller appends returned drafts (typically via CatalogJournal under ``hold``).
-Does not own Cache fill or prune.
+Pure helpers ``build_sequence`` / ``fill_sequence`` / ``assign_by_budget`` stay in
+``sequence.py``. The caller appends returned drafts (typically via CatalogJournal
+under ``hold``). Does not own Cache fill or prune.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from tunebag.domain import Intent
+from tunebag.domain import Intent, Sequence
 from tunebag.events import EventType
 from tunebag.projection import CatalogState
-from tunebag.sequence import assign_by_budget, build_sequence
+from tunebag.sequence import assign_by_budget, build_sequence, fill_sequence
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class EventDraft:
 
 
 class SequenceProvisioner:
-    """Decide rebuild need and draft Sequence/Assignment Events for one Intent."""
+    """Decide rebuild/fillup need and draft Sequence/Assignment Events for one Intent."""
 
     def needs_rebuild(
         self,
@@ -64,7 +64,24 @@ class SequenceProvisioner:
         return rebuilt_ids != current_ids
 
     def provision(self, intent: Intent, catalog: CatalogState) -> list[EventDraft]:
-        """Draft SEQUENCE_BUILT / ASSIGNMENT_CLEARED / ASSIGNMENT_SET for ``intent``."""
+        """Full redraw: draft SEQUENCE_BUILT / ASSIGNMENT_CLEARED / ASSIGNMENT_SET."""
+        sequence = build_sequence(intent, catalog.mixes_list())
+        return self._drafts_for_sequence(intent, catalog, sequence)
+
+    def provision_fillup(
+        self, intent: Intent, catalog: CatalogState
+    ) -> list[EventDraft]:
+        """Keep remaining queued order; drop retired; append only if under budget."""
+        current = catalog.sequences.get(intent.id)
+        sequence = fill_sequence(intent, catalog.mixes_list(), current)
+        return self._drafts_for_sequence(intent, catalog, sequence)
+
+    def _drafts_for_sequence(
+        self,
+        intent: Intent,
+        catalog: CatalogState,
+        sequence: Sequence,
+    ) -> list[EventDraft]:
         drafts: list[EventDraft] = []
         active_devices = {dh.device_id for dh in intent.device_hours}
         for iid, device_id in list(catalog.assignments):
@@ -78,7 +95,6 @@ class SequenceProvisioner:
                         },
                     )
                 )
-        sequence = build_sequence(intent, catalog.mixes_list())
         drafts.append(
             EventDraft(
                 type=EventType.SEQUENCE_BUILT,

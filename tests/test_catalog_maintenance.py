@@ -20,6 +20,9 @@ class FakeActions:
     def rebuild_all_sequences(self) -> None:
         self.calls.append(("rebuild_all", None))
 
+    def fillup_all_sequences(self) -> None:
+        self.calls.append(("fillup_all", None))
+
     def rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool:
         self.calls.append(("rebuild_unfilled", include_underfilled))
         return self.rebuild_unfilled_result
@@ -46,7 +49,7 @@ def _intent() -> Intent:
     return Intent(name="Test", seed=1)
 
 
-def test_mark_played_rebuilds_fills_and_retires() -> None:
+def test_mark_played_fillups_fills_and_retires() -> None:
     actions = FakeActions()
     mix_id = uuid4()
     assert after_catalog_change(
@@ -54,7 +57,7 @@ def test_mark_played_rebuilds_fills_and_retires() -> None:
         CatalogChange(CatalogChangeReason.MARK_PLAYED, mix_id=mix_id),
     )
     assert actions.calls == [
-        ("rebuild_all", None),
+        ("fillup_all", None),
         ("fill_caches", None),
         ("retire", mix_id),
     ]
@@ -187,12 +190,12 @@ def test_sync_fill_vs_async_when_rebuilt() -> None:
     ]
 
 
-def test_reject_and_skip_commit_policies() -> None:
+def test_reject_and_skip_commit_fillup_policies() -> None:
     actions = FakeActions()
     assert after_catalog_change(
         actions, CatalogChange(CatalogChangeReason.REJECT_COMMIT)
     )
-    assert actions.calls == [("rebuild_all", None), ("fill_caches", None)]
+    assert actions.calls == [("fillup_all", None), ("fill_caches", None)]
 
     actions = FakeActions()
     mix_id = uuid4()
@@ -201,7 +204,15 @@ def test_reject_and_skip_commit_policies() -> None:
         CatalogChange(CatalogChangeReason.SKIP_COMMIT, mix_id=mix_id),
     )
     assert actions.calls == [
-        ("rebuild_all", None),
+        ("fillup_all", None),
         ("fill_caches", None),
         ("retire", mix_id),
     ]
+
+
+def test_artist_delete_still_rebuilds() -> None:
+    actions = FakeActions()
+    assert after_catalog_change(
+        actions, CatalogChange(CatalogChangeReason.ARTIST_DELETE)
+    )
+    assert actions.calls == [("rebuild_all", None), ("fill_caches", None)]

@@ -14,7 +14,7 @@ from tunebag.domain import (
     StarBucket,
     Stars,
 )
-from tunebag.sequence import assign_by_budget, build_sequence, matches_filter
+from tunebag.sequence import assign_by_budget, build_sequence, fill_sequence, matches_filter
 
 
 def _five_star_mixes(n: int) -> list[Mix]:
@@ -353,4 +353,69 @@ def test_build_sequence_platforms_excludes_other_sources() -> None:
     )
     ids = {e.mix_id for e in build_sequence(intent, mixes).entries}
     assert ids == {mixes[0].id}
+
+
+def test_fill_sequence_keeps_remaining_order_and_drops_retired() -> None:
+    mixes = _five_star_mixes(4)
+    a, b, c, d = mixes
+    a.played = True
+    device_id = uuid4()
+    intent = Intent(
+        name="Fillup",
+        tags=["set"],
+        seed=1,
+        device_hours=[DeviceHours(device_id=device_id, budget_seconds=3 * 3600)],
+    )
+    current = Sequence(
+        intent_id=intent.id,
+        entries=[
+            SequenceEntry(mix_id=a.id, position=0, bucket=StarBucket.FIVE),
+            SequenceEntry(mix_id=b.id, position=1, bucket=StarBucket.FIVE),
+            SequenceEntry(mix_id=c.id, position=2, bucket=StarBucket.FIVE),
+        ],
+    )
+    filled = fill_sequence(intent, mixes, current)
+    ids = [e.mix_id for e in filled.entries]
+    # Dropped played a; kept b then c; appended one more for 3h budget.
+    assert ids[:2] == [b.id, c.id]
+    assert len(ids) == 3
+    assert ids[2] in {a.id, d.id}
+
+
+def test_fill_sequence_drops_rejected_like_played() -> None:
+    mixes = _five_star_mixes(3)
+    a, b, c = mixes
+    a.rejected = True
+    intent = Intent(
+        name="Reject fillup",
+        tags=["set"],
+        seed=2,
+        device_hours=[DeviceHours(device_id=uuid4(), budget_seconds=2 * 3600)],
+    )
+    current = Sequence(
+        intent_id=intent.id,
+        entries=[
+            SequenceEntry(mix_id=a.id, position=0, bucket=StarBucket.FIVE),
+            SequenceEntry(mix_id=b.id, position=1, bucket=StarBucket.FIVE),
+        ],
+    )
+    filled = fill_sequence(intent, mixes, current)
+    ids = [e.mix_id for e in filled.entries]
+    assert a.id not in ids
+    assert ids[0] == b.id
+    assert len(ids) == 2
+    assert ids[1] == c.id
+
+
+def test_fill_sequence_none_current_matches_build_sequence() -> None:
+    mixes = _five_star_mixes(5)
+    intent = Intent(
+        name="Fresh",
+        tags=["set"],
+        seed=42,
+        device_hours=[DeviceHours(device_id=uuid4(), budget_seconds=3 * 3600)],
+    )
+    assert [e.mix_id for e in fill_sequence(intent, mixes, None).entries] == [
+        e.mix_id for e in build_sequence(intent, mixes).entries
+    ]
 

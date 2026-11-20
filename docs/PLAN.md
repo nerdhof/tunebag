@@ -56,9 +56,9 @@ Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating d
 - Playhead syncs; latest wins.
 - Rating and reject are separate.
 - Tags editable from list and player; suggest existing tags.
-- Played → back of pool; delete bytes once replacement is local.
-- Skip → 5 min local delay (no sync yet); then sticky Skipped (not Played) → back of pool; delete bytes once replacement is local.
-- Reject → 20s local undo (no sync yet); then tombstone + delete everywhere.
+- Played → Sequence fillup (drop from Sequence; keep remaining queued order; append only if any device budget is underfilled); back of pool for new draws; delete bytes once replacement is local.
+- Skip → 5 min local delay (no sync yet); then sticky Skipped (not Played) → same Sequence fillup as Played; delete bytes once replacement is local. Immediate Skip does not change the Sequence.
+- Reject → Sequence fillup (same as Played / Skipped); Soft then Hard; File delete after soft window (see ADR-0007).
 
 ### Pairing
 

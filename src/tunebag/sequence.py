@@ -104,30 +104,72 @@ def _draw_bucket(
     return next(iter(live))
 
 
-def build_sequence(intent: Intent, mixes: list[Mix]) -> Sequence:
-    """Draw mixes until cumulative duration is at least max device budget."""
+def fill_sequence(
+    intent: Intent,
+    mixes: list[Mix],
+    current: Sequence | None,
+) -> Sequence:
+    """Keep remaining queued order; drop retired; append until max device budget.
+
+    Played, Skipped, and Rejected Releases leave the Sequence. Surviving entries
+    keep their relative order. New draws exclude ids already kept and put
+    Played/Skipped at the back of their star bucket via ``eligible_by_bucket``.
+    """
+    mix_by_id = {mix.id: mix for mix in mixes}
+    kept: list[SequenceEntry] = []
+    if current is not None:
+        for entry in current.entries:
+            mix = mix_by_id.get(entry.mix_id)
+            if mix is None:
+                continue
+            if mix.played or mix.skipped or mix.rejected:
+                continue
+            if not matches_filter(
+                mix, intent.tags, intent.artist_ids, intent.platforms
+            ):
+                continue
+            kept.append(entry)
+
+    entries = [
+        SequenceEntry(mix_id=entry.mix_id, position=index, bucket=entry.bucket)
+        for index, entry in enumerate(kept)
+    ]
+    used_seconds = sum(
+        mix_by_id[entry.mix_id].duration_seconds for entry in entries
+    )
+    budget = intent.max_budget_seconds
+    if used_seconds >= budget:
+        return Sequence(intent_id=intent.id, entries=entries)
+
     rng = random.Random(intent.seed)
     available = eligible_by_bucket(
         mixes, intent.tags, rng, intent.artist_ids, intent.platforms
     )
-    weights = intent.distribution.as_map()
-    entries: list[SequenceEntry] = []
-    used_seconds = 0
-    budget = intent.max_budget_seconds
+    kept_ids = {entry.mix_id for entry in entries}
+    for bucket, bucket_mixes in list(available.items()):
+        available[bucket] = [mix for mix in bucket_mixes if mix.id not in kept_ids]
+        if not available[bucket]:
+            del available[bucket]
 
-    while True:
+    weights = intent.distribution.as_map()
+    while used_seconds < budget:
         bucket = _draw_bucket(rng, weights, available)
         if bucket is None:
             break
         mix = available[bucket].pop(0)
+        if not available[bucket]:
+            del available[bucket]
         entries.append(
             SequenceEntry(mix_id=mix.id, position=len(entries), bucket=bucket)
         )
         used_seconds += mix.duration_seconds
-        if used_seconds >= budget:
-            break
 
     return Sequence(intent_id=intent.id, entries=entries)
+
+
+def build_sequence(intent: Intent, mixes: list[Mix]) -> Sequence:
+    """Draw mixes until cumulative duration is at least max device budget."""
+    return fill_sequence(intent, mixes, current=None)
 
 
 def assignments_for_intent(

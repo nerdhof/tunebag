@@ -305,6 +305,7 @@ class DeviceAgent:
         # Catalog maintenance ports (rebuild / fill / prune) — after methods exist.
         self._maintenance = BoundMaintenance(
             rebuild_all_sequences=self._rebuild_all_sequences,
+            fillup_all_sequences=self._fillup_all_sequences,
             rebuild_unfilled_sequences=self._rebuild_unfilled_sequences,
             rebuild_sequence_for_intent=self._rebuild_sequence_for_intent,
             fill_caches=self.fill_caches,
@@ -1349,8 +1350,9 @@ class DeviceAgent:
         """Advance to the next local assigned mix without marking the current played.
 
         Schedules a local 5‑minute skip delay for the abandoned mix. After the
-        delay, a sticky SKIPPED event deprioritizes it in sequences (back of
-        pool) without setting played.
+        delay, a sticky SKIPPED event runs Sequence fillup (drop from Sequences;
+        keep remaining queued order; append if hours need it) without setting
+        played.
         """
         self.commit_pending_skips()
         resolved = intent_id if intent_id is not None else self._playback.intent_id
@@ -1574,9 +1576,10 @@ class DeviceAgent:
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
         """Mark a mix played (natural end-of-Release, or internal helper).
 
-        Rebuilds sequences so the mix goes to the back of the pool and fills the
-        next assignment. Does not stop playback or advance. The played file is
-        deleted once a replacement is local and the mix is no longer current.
+        Sequence fillup drops the mix from Sequences, keeps remaining queued
+        order, and appends only if device hours need it. Does not stop playback
+        or advance. The played file is deleted once a replacement is local and
+        the mix is no longer current.
         """
         target = mix_id if mix_id is not None else self._current_mix_id
         if target is None:
@@ -3704,6 +3707,15 @@ class DeviceAgent:
                         self._rebuild_sequence_for_intent(intent)
                     self._prune_unassigned_files()
 
+    def _fillup_all_sequences(self) -> None:
+        """Drop retired Releases; keep queued order; append only if under budget."""
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._journal.hold():
+                    for intent in self.intents():
+                        self._fillup_sequence_for_intent(intent)
+                    self._prune_unassigned_files()
+
     def _rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool:
         """Rebuild intents missing a device assignment and/or still under budget.
 
@@ -3744,8 +3756,15 @@ class DeviceAgent:
                     return rebuilt
 
     def _rebuild_sequence_for_intent(self, intent: Intent) -> None:
-        """Append SequenceProvisioner drafts for ``intent`` (caller holds journal)."""
+        """Append SequenceProvisioner full-rebuild drafts (caller holds journal)."""
         for draft in self._sequence_provisioner.provision(intent, self.catalog):
+            self._append_and_apply(draft.type, draft.payload)
+
+    def _fillup_sequence_for_intent(self, intent: Intent) -> None:
+        """Append SequenceProvisioner fillup drafts (caller holds journal)."""
+        for draft in self._sequence_provisioner.provision_fillup(
+            intent, self.catalog
+        ):
             self._append_and_apply(draft.type, draft.payload)
 
     def _delete_retired_file_if_replaced(self, retired_mix_id: UUID) -> None:

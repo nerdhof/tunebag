@@ -196,6 +196,36 @@ def test_needs_rebuild_skips_underfilled_when_flag_false() -> None:
     )
 
 
+def test_provision_fillup_keeps_queued_order_and_drops_played() -> None:
+    device_id = uuid4()
+    first = _mix(title="First")
+    second = _mix(title="Second")
+    third = _mix(title="Third")
+    first.played = True
+    intent = _intent_with_hours(device_id, budget_seconds=2 * 3600, seed=5)
+    catalog = CatalogState()
+    for mix in (first, second, third):
+        catalog.add_mix(mix)
+    catalog.upsert_intent(intent)
+    catalog.set_sequence(
+        Sequence(
+            intent_id=intent.id,
+            entries=[
+                SequenceEntry(mix_id=first.id, position=0, bucket=StarBucket.FIVE),
+                SequenceEntry(mix_id=second.id, position=1, bucket=StarBucket.FIVE),
+            ],
+        )
+    )
+
+    drafts = SequenceProvisioner().provision_fillup(intent, catalog)
+    seq = next(d for d in drafts if d.type is EventType.SEQUENCE_BUILT)
+    entry_ids = [UUID(e["mix_id"]) for e in seq.payload["entries"]]
+    assert first.id not in entry_ids
+    assert entry_ids[0] == second.id
+    assert len(entry_ids) == 2
+    assert entry_ids[1] == third.id
+
+
 def test_provision_drafts_sequence_and_assignment() -> None:
     device_id = uuid4()
     mixes = [_mix(title=f"Mix {i}") for i in range(3)]

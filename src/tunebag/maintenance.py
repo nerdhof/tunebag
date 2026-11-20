@@ -1,7 +1,8 @@
-"""Catalog maintenance: device-local sequence rebuild, Cache fill, and prune.
+"""Catalog maintenance: device-local sequence rebuild/fillup, Cache fill, and prune.
 
 After Catalog mutations, ``after_catalog_change`` runs the follow-up work
-(sequence rebuild, Cache fill, prune). These steps are device-local, not Events.
+(sequence rebuild or fillup, Cache fill, prune). These steps are device-local,
+not Events.
 """
 
 from __future__ import annotations
@@ -45,9 +46,11 @@ class CatalogChange:
 
 
 class MaintenanceActions(Protocol):
-    """Ports onto DeviceAgent rebuild / fill / prune / retire helpers."""
+    """Ports onto DeviceAgent rebuild / fillup / fill / prune / retire helpers."""
 
     def rebuild_all_sequences(self) -> None: ...
+
+    def fillup_all_sequences(self) -> None: ...
 
     def rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool: ...
 
@@ -67,6 +70,7 @@ class BoundMaintenance:
     """Callables bound to a DeviceAgent; satisfies ``MaintenanceActions``."""
 
     rebuild_all_sequences: Callable[[], None]
+    fillup_all_sequences: Callable[[], None]
     rebuild_unfilled_sequences: Callable[..., bool]
     rebuild_sequence_for_intent: Callable[[Intent], None]
     fill_caches: Callable[[], int]
@@ -81,7 +85,7 @@ class BoundMaintenance:
 def after_catalog_change(actions: MaintenanceActions, change: CatalogChange) -> bool:
     """Run device-local follow-up for a Catalog mutation.
 
-    Returns True when sequences were rebuilt and/or a fill was started.
+    Returns True when sequences were rebuilt/filled up and/or a fill was started.
     """
     reason = change.reason
 
@@ -107,15 +111,19 @@ def after_catalog_change(actions: MaintenanceActions, change: CatalogChange) -> 
         CatalogChangeReason.MARK_PLAYED,
         CatalogChangeReason.SKIP_COMMIT,
         CatalogChangeReason.REJECT_COMMIT,
-        CatalogChangeReason.ARTIST_DELETE,
     ):
-        actions.rebuild_all_sequences()
+        actions.fillup_all_sequences()
         actions.fill_caches()
         if change.mix_id is not None and reason in (
             CatalogChangeReason.MARK_PLAYED,
             CatalogChangeReason.SKIP_COMMIT,
         ):
             actions.delete_retired_file_if_replaced(change.mix_id)
+        return True
+
+    if reason is CatalogChangeReason.ARTIST_DELETE:
+        actions.rebuild_all_sequences()
+        actions.fill_caches()
         return True
 
     if reason is CatalogChangeReason.ARTIST_INGEST:
