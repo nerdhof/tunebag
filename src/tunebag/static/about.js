@@ -86,7 +86,7 @@
       summary:
         "The projected, fully replicated metadata on every paired Device. Derived only from the Event log.",
       points: [
-        "Includes Artists, Releases, Tags, Ratings, Rejects, play history, Intents, Sequences, Assignments.",
+        "Includes Artists, Releases, Tags, Ratings, Rejects, Last heard, Intents, Sequences, Assignments.",
         "Disposable: rebuilt by replaying the Event log.",
       ],
     },

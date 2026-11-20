@@ -324,14 +324,14 @@ def test_mixes_api_exposes_last_heard_without_backfill(tmp_path: Path) -> None:
     assert by_id[str(played_only)]["played"] is True
 
 
-def test_play_history_ui_lists_last_heard_newest_first() -> None:
-    """Static Play history section orders Mixes with a Last heard, newest first."""
+def test_playlog_ui_contract_assignment_table() -> None:
+    """Static Playlog section loads assignment-relative rows from /api/playlog."""
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
-    assert 'id="play-history"' in html
-    assert 'id="play-history-body"' in html
-    assert "refreshPlayHistory" in js
-    assert "/api/play-history" in js
-    assert "History" in html
-    assert "<th>Heard</th>" in html
+    assert 'id="playlog"' in html
+    assert 'id="playlog-body"' in html
+    assert "refreshPlaylog" in js
+    assert "/api/playlog" in js
+    assert "Playlog" in html
+    assert "<th>Cache</th>" in html

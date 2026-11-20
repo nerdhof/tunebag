@@ -14,7 +14,7 @@ from enum import StrEnum
 
 class UIViewSection(StrEnum):
     MIXES = "mixes"
-    PLAY_HISTORY = "play_history"
+    PLAYLOG = "playlog"
     INTENTS = "intents"
     PEERS = "peers"
     CACHE = "cache"
@@ -30,7 +30,7 @@ class UIViewNotice:
 
 _SECTION_ORDER = (
     UIViewSection.MIXES,
-    UIViewSection.PLAY_HISTORY,
+    UIViewSection.PLAYLOG,
     UIViewSection.INTENTS,
     UIViewSection.PEERS,
     UIViewSection.CACHE,

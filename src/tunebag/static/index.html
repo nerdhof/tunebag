@@ -7,13 +7,13 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=85" />
+    <link rel="stylesheet" href="/static/app.css?v=89" />
   </head>
   <body>
     <nav class="section-nav" aria-label="Jump to section">
       <div class="section-nav-inner">
         <a href="#player" title="Player"><span class="nav-symbol" aria-hidden="true">▶</span><span class="nav-label">player</span></a>
-        <a href="#play-history" title="History"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">history</span></a>
+        <a href="#playlog" title="Playlog"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">playlog</span></a>
         <a href="#intents" title="Intents"><span class="nav-symbol" aria-hidden="true">⬡</span><span class="nav-label">intents</span></a>
         <a href="#cache" title="Cache"><span class="nav-symbol" aria-hidden="true">⬇</span><span class="nav-label">cache</span></a>
         <a href="#catalog" title="Catalog"><span class="nav-symbol" aria-hidden="true">▤</span><span class="nav-label">catalog</span></a>
@@ -121,51 +121,39 @@
         <p id="player-reject-status" class="muted" hidden></p>
         <p id="player-status" class="muted" role="status"></p>
       </section>
-      <section id="play-history">
+      <section id="playlog">
         <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">◷</span> History
+          <span class="section-symbol" aria-hidden="true">◷</span> Playlog
           <span class="section-info">
             <button
               type="button"
               class="section-info-btn"
-              aria-label="About History"
+              aria-label="About Playlog"
               aria-expanded="false"
             >
               ⓘ
             </button>
             <span class="section-info-tip" role="tooltip">
-              Heard releases, newest first. Rate, tag, Reject (confirm-click) or Un-reject, and
-              resume at the Catalog Playhead from each row. Soft Rejected stay visible (muted) for
-              5 minutes; Hard Rejected only with the Rejected filter on.
+              Past is Catalog Last heard (any Device / Intent). Now and upcoming follow the
+              selected Intent’s assignment. Hover the cover for ▶ / ◀ / ⏸. Cover spans
+              Release + rate/tag (artist - title). Current sticks to the top/bottom while
+              scrolling; while stuck, click empty space on it to jump back to the default
+              view (−2 at top). Cache sits under Length. Soft Rejected show ✕ and size;
+              Hard Rejected are omitted from past.
             </span>
           </span>
         </h2>
-        <div class="catalog-toolbar">
-          <button
-            type="button"
-            id="play-history-show-rejected"
-            class="source-toggle"
-            aria-pressed="false"
-            title="Show rejected releases (muted)"
-            aria-label="Show rejected releases"
-          >
-            ♲
-          </button>
-        </div>
-        <div id="play-history-table-wrap">
-          <table id="play-history-table">
+        <div id="playlog-table-wrap">
+          <table id="playlog-table">
             <thead>
               <tr>
-                <th>Heard</th>
-                <th>Artist</th>
+                <th>#</th>
+                <th class="playlog-cover-col" aria-label="Cover"></th>
                 <th>Release</th>
                 <th>Length</th>
-                <th>Rating</th>
-                <th>Tags</th>
-                <th></th>
               </tr>
             </thead>
-            <tbody id="play-history-body"></tbody>
+            <tbody id="playlog-body"></tbody>
           </table>
         </div>
       </section>
@@ -486,6 +474,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=71"></script>
+    <script src="/static/app.js?v=74"></script>
   </body>
 </html>

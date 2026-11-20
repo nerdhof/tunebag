@@ -9,7 +9,7 @@ Implementation may lag; see **Gaps vs current code** at the end.
 | Surface | Job |
 |---------|-----|
 | **Player** | Transport + annotate the *now-playing* Release |
-| **Play history** | Browse by Last heard (newest 50); annotate; resume at Playhead |
+| **Playlog** | Global Last-heard past + Intent assignment now/upcoming; cover hover ▶ / ◀ / ⏸; Cache under Length |
 | **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release |
 | **Intents** | Define plans; assign device hours; rebuild Sequence; Switch to intent (start/stop that Intent’s playback); Fill now |
 | **Cache** | Inspect File completeness; Metered |
@@ -27,8 +27,7 @@ Canonical UI labels (tips / accessible names). Domain meaning in parentheses whe
 | **Tag** | Add/remove Tag on a Release |
 | **Reject** | Confirm-click destructive: arm, then confirm → append Reject Event |
 | **Un-reject** | Clear Reject on a Rejected Release (lists only) |
-| **Resume** | Play that Release in the selected Intent at Catalog Playhead (Play history) |
-| **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport (and Mark played) |
+| **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport (and Mark played); Playlog row ▶ / ◀ / ⏸ also Play / Pause |
 | **Switch to intent** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause) |
 | **Regenerate sequence** | Rebuild Sequence / assignments for one Intent |
 | **Refresh artist** / **Refresh all artists** | Re-ingest from origin for one / all Artists |
@@ -41,17 +40,17 @@ Shared control set wherever a surface’s job includes annotate:
 
 **Rate**, **Tag**, **Reject** (confirm-click), **Un-reject** (when the Release is Rejected).
 
-Surface-specific (not in the kit): Resume (Play history); transport verbs (Player); Rejected filter chips (Catalog and Play history, independent).
+Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); Player transport verbs; Catalog Rejected filter chip.
 
 ## Surface × action matrix
 
-| Action | Player | Play history | Catalog | Intents | Cache | Activity | Peers |
-|--------|--------|--------------|---------|---------|-------|----------|-------|
+| Action | Player | Playlog | Catalog | Intents | Cache | Activity | Peers |
+|--------|--------|---------|---------|---------|-------|----------|-------|
 | Rate | yes | yes | yes | — | — | — | — |
 | Tag | yes | yes | yes | — | — | — | — |
 | Reject (confirm) | yes | yes (if not Rejected) | yes (if not Rejected) | — | — | — | — |
 | Un-reject | no | yes (if Rejected) | yes (if Rejected) | — | — | — | — |
-| Resume | — | yes | — | — | — | — | — |
+| Play / Pause (row) | — | yes | — | — | — | — | — |
 | Play / Pause / Stop / Skip / Seek / Mark played | yes | — | — | — | — | — | — |
 | Switch to intent | — | — | — | yes | — | — | — |
 | Regenerate sequence | — | — | — | yes | — | — | — |
@@ -67,15 +66,16 @@ Intent create/edit/delete and device-hours assign are Intent-surface management,
 
 Catalog state is a single **Reject** flag (Event-backed). Soft / Hard are UI visibility only (`CONTEXT.md`).
 
-| Kind | Rule | Default list (Catalog + Play history) | Rejected filter on |
-|------|------|----------------------------------------|--------------------|
-| **Soft Rejected** | Rejected and Reject Event author time younger than 5 minutes | Shown, muted | Shown |
-| **Hard Rejected** | Rejected and older than 5 minutes | Hidden | Shown |
-| Not Rejected | — | Shown | Shown |
+| Kind | Rule | Catalog default list | Catalog Rejected filter on | Playlog in-window |
+|------|------|----------------------|----------------------------|-------------------|
+| **Soft Rejected** | Rejected and Reject Event author time younger than 5 minutes | Shown, muted | Shown | `✕` + size |
+| **Hard Rejected** | Rejected and older than 5 minutes | Hidden | Shown | `✕` (no size) when still in window |
+| Not Rejected | — | Shown | Shown | normal Cache glyphs |
 
-- Catalog and Play history keep **independent** Rejected filter toggles.
+- Catalog keeps a Rejected filter toggle. Playlog has no Rejected filter; Soft/Hard appear only when the row is still in the assignment / previous cushion window.
 - File byte deletion waits until Soft → Hard (5 minutes from Reject author time). Un-reject during Soft may still find local bytes; after Hard, Un-reject does not restore bytes (ADR-0003).
-- Player: Reject only (confirm-click). Recovery via Catalog or Play history Un-reject.
+- Playlog previous-File cushion (local-only, same 5 minutes) keeps the immediate previous Release’s bytes for ◀; it is not Soft Reject.
+- Player: Reject only (confirm-click). Recovery via Catalog or Playlog Un-reject.
 
 ## Backend ↔ UI
 
@@ -92,7 +92,7 @@ flowchart LR
 ```
 
 - **Mutations and reads**: HTTP REST (`/api/*`). UI never consumes the raw Event log.
-- **Catalog freshness**: coalesced **View notices** (`GET /api/view-notices`) with section ids `mixes`, `play_history`, `intents`, `peers`, `cache`, `activity`, `pairing_session`, `player`. Local append and foreign ingest both mark Catalog sections; Activity notes, pairing-session transitions, and Player transport mark their sections; the UI refetches the matching snapshots.
+- **Catalog freshness**: coalesced **View notices** (`GET /api/view-notices`) with section ids `mixes`, `playlog`, `intents`, `peers`, `cache`, `activity`, `pairing_session`, `player`. Local append and foreign ingest both mark Catalog sections; Activity notes, pairing-session transitions, and Player transport mark their sections; the UI refetches the matching snapshots.
 - **Peer path**: Peer Sync / ingest → Catalog apply → View notices → UI refetch (same notice bus as local writes). Sync notes also mark `activity`.
 
 ## Reactivity rules
@@ -117,6 +117,6 @@ Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining com
 
 - Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
 
-Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when the agent watch sees live position cross **Last heard** or **Played**, plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. Heartbeat ticks must **not** rebuild Catalog / Play history and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync). Activity notices refresh Activity only — never Cache. Cache invalidates on intent/assignment/sequence changes (pending/loading/cached overview) and on download start/end plus throttled origin progress; the companion coalesces overlapping Cache refetches so the newest snapshot wins. Peer copies flip status only (no byte progress bar).
+Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when the agent watch sees live position cross **Last heard** or **Played**, plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. When Catalog playhead is already at Release end, Play starts at 0. Heartbeat ticks must **not** rebuild Catalog / Playlog and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync). Activity notices refresh Activity only — never Cache. Cache invalidates on intent/assignment/sequence changes (pending/loading/cached overview) and on download start/end plus throttled origin progress; the companion coalesces overlapping Cache refetches so the newest snapshot wins. Peer copies flip status only (no byte progress bar). Playlog also refreshes on `player` and `cache` notices.
 
 Follow-up implementation should close the remaining gaps against this contract.

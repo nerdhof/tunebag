@@ -99,7 +99,7 @@ def test_ui_refresh_contract_activity_pairing_and_force_path() -> None:
 
     for section in (
         "mixes",
-        "play_history",
+        "playlog",
         "intents",
         "peers",
         "cache",

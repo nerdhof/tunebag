@@ -840,7 +840,7 @@ form.add-form-open .add-form-fields-inline {
 }
 
 #player-reject,
-#play-history-table .history-reject,
+#playlog-table .playlog-reject,
 #catalog-table .catalog-reject {
   border-color: color-mix(in srgb, var(--muted) 65%, transparent);
   color: var(--muted);
@@ -848,8 +848,8 @@ form.add-form-open .add-form-fields-inline {
 
 #player-reject:hover:not(:disabled),
 #player-reject:focus-visible:not(:disabled),
-#play-history-table .history-reject:hover:not(:disabled),
-#play-history-table .history-reject:focus-visible:not(:disabled),
+#playlog-table .playlog-reject:hover:not(:disabled),
+#playlog-table .playlog-reject:focus-visible:not(:disabled),
 #catalog-table .catalog-reject:hover:not(:disabled),
 #catalog-table .catalog-reject:focus-visible:not(:disabled) {
   border-color: color-mix(in srgb, var(--stat-reject) 75%, transparent);
@@ -1040,8 +1040,8 @@ button,
 #intents select,
 #player input:not([type="checkbox"]):not([type="range"]):not(.tag-picker-input),
 #player select,
-#play-history-table input:not([type="checkbox"]):not([type="range"]):not(.tag-picker-input),
-#play-history-table select,
+#playlog-table input:not([type="checkbox"]):not([type="range"]):not(.tag-picker-input),
+#playlog-table select,
 #catalog-table input:not([type="checkbox"]):not([type="range"]):not(.tag-picker-input) {
   appearance: none;
   box-sizing: border-box;
@@ -1725,7 +1725,7 @@ button.artist-suggest:hover {
 }
 
 #catalog-table-wrap,
-#play-history-table-wrap {
+#playlog-table-wrap {
   max-height: 24rem;
   overflow: auto;
   margin: 0.75rem 0;
@@ -1989,21 +1989,23 @@ button.artist-suggest:hover {
   opacity: 0.72;
 }
 
-#play-history-table {
+#playlog-table {
   width: 100%;
-  border-collapse: collapse;
+  /* separate: sticky current cells work reliably across browsers */
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.9rem;
 }
 
-#play-history-table th,
-#play-history-table td {
+#playlog-table th,
+#playlog-table td {
   padding: 0.45rem 0.65rem;
   text-align: left;
-  vertical-align: middle;
+  vertical-align: top;
   border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
-#play-history-table thead th {
+#playlog-table thead th {
   position: sticky;
   top: 0;
   background: var(--card);
@@ -2012,12 +2014,155 @@ button.artist-suggest:hover {
   font-weight: 600;
 }
 
-#play-history-table .play-history-row.mix-rejected {
-  color: var(--muted);
-  opacity: 0.72;
+#playlog-table .playlog-row.mix-rejected,
+#playlog-table .playlog-row.playlog-soft-rejected {
+  color: var(--stat-reject);
 }
 
-#play-history-table .tag-cell {
+#playlog-table .playlog-past {
+  color: var(--muted);
+}
+
+#playlog-table .playlog-current {
+  font-weight: 600;
+}
+
+/* One row per entry → sticky works; cover spans the two internal lines.
+   Keep sticky below open tag pickers (see :has(.tag-picker-wrap) below). */
+#playlog-table .playlog-row.playlog-current > td {
+  position: sticky;
+  top: var(--playlog-thead-h, 0px);
+  bottom: 0;
+  z-index: 3;
+  background: var(--card);
+}
+
+/* Jump-back click only while current is actually stuck. */
+#playlog-table.playlog-current-is-stuck .playlog-row.playlog-current {
+  cursor: pointer;
+}
+
+/* Tag picker is only mounted while editing; lift that entry above sticky current. */
+#playlog-table .playlog-row:has(.tag-picker-wrap) > td {
+  position: relative;
+  z-index: 12;
+}
+
+#playlog-table .tag-picker-wrap {
+  z-index: 13;
+}
+
+#playlog-table .playlog-offset,
+#playlog-table thead th:first-child {
+  font-variant-numeric: tabular-nums;
+  width: 2.5rem;
+  text-align: right;
+  vertical-align: middle;
+}
+
+#playlog-table .playlog-cover-col,
+#playlog-table .playlog-cover-cell {
+  width: 3.25rem;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+}
+
+#playlog-table .playlog-cover-stack {
+  position: relative;
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+#playlog-table .playlog-cover,
+#playlog-table .playlog-cover-placeholder {
+  display: block;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.2rem;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+#playlog-table .playlog-cover {
+  object-fit: cover;
+}
+
+#playlog-table .playlog-cover-action {
+  position: absolute;
+  inset: 0;
+  /* Beat .symbol-btn fixed control size so the glyph centers on the cover. */
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: #fff;
+  background: color-mix(in srgb, #000 55%, transparent);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+#playlog-table .playlog-cover-stack:hover .playlog-cover-action,
+#playlog-table .playlog-cover-action:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  #playlog-table .playlog-cover-action {
+    opacity: 0.92;
+  }
+}
+
+#playlog-table .playlog-main-cell {
+  min-width: 0;
+}
+
+#playlog-table .playlog-release {
+  line-height: 1.25;
+  padding-bottom: 0.2rem;
+}
+
+#playlog-table .playlog-annotate {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  align-items: center;
+  width: 100%;
+  font-weight: 400;
+}
+
+#playlog-table .playlog-annotate .playlog-stars {
+  flex: 0 0 auto;
+}
+
+#playlog-table .playlog-annotate .tag-cell {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+#playlog-table .playlog-side-cell {
+  white-space: nowrap;
+}
+
+#playlog-table .playlog-length {
+  line-height: 1.25;
+  padding-bottom: 0.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+#playlog-table .playlog-side-cell .playlog-cache-cell {
+  font-weight: 400;
+}
+
+#playlog-table .tag-cell {
   display: flex;
   gap: 0.25rem;
   align-items: center;
@@ -2025,18 +2170,70 @@ button.artist-suggest:hover {
   min-width: 12rem;
 }
 
-#play-history-table .history-reject,
-#play-history-table .history-undo-reject,
-#play-history-table .history-un-reject,
-#play-history-table .history-resume {
+#playlog-table .playlog-reject,
+#playlog-table .playlog-un-reject {
   margin: 0;
   flex-shrink: 0;
 }
 
-#play-history-table .history-stars,
+#playlog-table .playlog-stars,
 #catalog-table .catalog-stars {
   width: auto;
   max-width: none;
+}
+
+#playlog-table .playlog-cache-cell {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#playlog-table .playlog-cache-cached,
+#playlog-table .playlog-cache-current {
+  color: var(--cache-stat-cached);
+  font-weight: 400;
+}
+
+#playlog-table .playlog-cache-loading {
+  color: var(--cache-stat-loading);
+}
+
+#playlog-table .playlog-cache-pending {
+  color: var(--cache-stat-pending);
+}
+
+#playlog-table .playlog-cache-past {
+  color: inherit;
+}
+
+#playlog-table .playlog-cache-rejected {
+  color: var(--stat-reject);
+}
+
+#playlog-table .playlog-cache-progress {
+  position: relative;
+  display: inline-block;
+  min-width: 5.5rem;
+}
+
+#playlog-table .playlog-cache-progress-label {
+  position: relative;
+  z-index: 1;
+}
+
+#playlog-table .playlog-cache-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0.22rem;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cache-stat-loading) 25%, transparent);
+  overflow: hidden;
+}
+
+#playlog-table .playlog-cache-progress-fill {
+  height: 100%;
+  background: var(--cache-stat-loading);
 }
 
 .star-rating,
@@ -2098,7 +2295,7 @@ span.star-rating-star {
   line-height: 1;
 }
 
-#play-history-table .history-tag-editor {
+#playlog-table .playlog-tag-editor {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -2130,7 +2327,7 @@ span.star-rating-star {
 
 /* Keep reject visually separate from the tag chips. */
 #catalog-table .tag-cell > .tag-editor,
-#play-history-table .tag-cell > .tag-editor {
+#playlog-table .tag-cell > .tag-editor {
   margin-left: 0.15rem; /* gap 0.25rem + margin → room before the rule */
   padding-left: 0.4rem;
   border-left: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);

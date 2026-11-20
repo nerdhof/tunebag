@@ -20,8 +20,6 @@ let catalogFilterTags = [];
 let catalogTagFilterEditor = null;
 /** @type {{ setFloor: (n: number|null) => void, getFloor: () => number|null } | null} */
 let catalogStarFilter = null;
-/** Play history Rejected filter (default off). */
-let showRejectedHistory = false;
 /** Soft Rejected window (matches backend SOFT_REJECT_SECONDS). */
 const SOFT_REJECT_MS = 5 * 60 * 1000;
 /** @type {Map<string, number>} mixId → timeout when Soft ages to Hard (list refresh) */
@@ -42,6 +40,8 @@ let playheadPlayedNotifiedForMix = null;
 /** Last player poll: used so intent-list play buttons stay in sync. */
 let lastPlayerPlaying = false;
 let lastPlayerIntentId = null;
+/** Intent id Playlog last used for default / preserved scroll. */
+let playlogScrollIntentId = null;
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let playerTagEditor = null;
 /** @type {ReturnType<typeof mountStarRating> | null} */
@@ -2505,13 +2505,13 @@ function mountStarRating(root, { stars = null, interactive = true, onRate = null
 
 /**
  * Shared annotate control kit (Rate, Tag, Reject confirm-click / Un-reject).
- * Used by Player, Play history, and Catalog so later tickets edit one mount.
+ * Used by Player, Playlog, and Catalog so later tickets edit one mount.
  *
  * Row mode (`surface` catalog|history): builds stars + reject chrome + tag editor.
  * Player mode (`surface` "player"): binds long-lived roots from index.html.
  *
  * @param {{
- *   surface: "catalog"|"history"|"player",
+ *   surface: "catalog"|"playlog"|"player",
  *   mix?: { id: string, stars?: number|null, tags?: string[], rejected?: boolean, rejected_at?: string|null },
  *   starsRoot: HTMLElement,
  *   actionsRoot?: HTMLElement,
@@ -2537,7 +2537,7 @@ function mountAnnotateKit(options) {
 
 /**
  * @param {{
- *   surface: "catalog"|"history",
+ *   surface: "catalog"|"playlog",
  *   mix: { id: string, stars?: number|null, tags?: string[], rejected?: boolean, rejected_at?: string|null },
  *   starsRoot: HTMLElement,
  *   actionsRoot: HTMLElement,
@@ -2580,9 +2580,9 @@ function mountRowAnnotateKit({
   });
 
   const rejectClass =
-    surface === "catalog" ? "catalog-reject" : "history-reject";
+    surface === "catalog" ? "catalog-reject" : "playlog-reject";
   const unRejectClass =
-    surface === "catalog" ? "catalog-un-reject" : "history-un-reject";
+    surface === "catalog" ? "catalog-un-reject" : "playlog-un-reject";
   const rejectBtn = document.createElement("button");
   rejectBtn.type = "button";
   rejectBtn.className = rejectClass;
@@ -2656,7 +2656,7 @@ function mountRowAnnotateKit({
 }
 
 /**
- * Visibility + Soft-window refresh for Catalog / History reject chrome.
+ * Visibility + Soft-window refresh for Catalog / Playlog reject chrome.
  */
 function syncRowAnnotateRejectButtons({
   rejectBtn,
@@ -3804,7 +3804,7 @@ async function refreshMixes({ force = false } = {}) {
   const body = document.getElementById("catalog-body");
   const res = await fetch("/api/mixes");
   const data = await res.json();
-  // Keep in-progress catalog tag edits; still refresh Play history below.
+  // Keep in-progress catalog tag edits; still refresh Playlog below.
   const skipCatalog = !force && focusInside(body);
   if (!skipCatalog) {
     body.innerHTML = "";
@@ -3817,7 +3817,7 @@ async function refreshMixes({ force = false } = {}) {
       tr.appendChild(td);
       body.appendChild(tr);
       await refreshTagSuggestions();
-      await refreshPlayHistory();
+      await refreshPlaylog();
       return;
     }
 
@@ -3984,117 +3984,398 @@ async function refreshMixes({ force = false } = {}) {
     }
     await refreshTagSuggestions();
   }
-  await refreshPlayHistory();
+  await refreshPlaylog();
 }
 
-function formatLastHeard(ts) {
-  if (!ts) return "";
-  const match = String(ts).match(/^(\d{2})(\d{2}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
-  if (match) return `${match[2]} ${match[3]}`;
-  return String(ts);
+function formatPlaylogOffset(offset) {
+  const n = Number(offset) || 0;
+  if (n > 0) return String(n);
+  return String(n);
 }
 
-async function refreshPlayHistory() {
-  const body = document.getElementById("play-history-body");
-  if (!body) return;
-  // Tag/star editors live in this table; remounting clears focus and drafts.
-  if (focusInside(body)) return;
-  const qs = showRejectedHistory ? "?include_rejected=true" : "";
-  const res = await fetch(`/api/play-history${qs}`);
-  const data = await res.json();
-  const heard = data.mixes || [];
-  body.replaceChildren();
-  if (!heard.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 7;
-    td.className = "muted";
-    td.textContent = "No listens yet";
-    tr.appendChild(td);
-    body.appendChild(tr);
+/** Fill a Length-column cell with Cache status (second playlog line). */
+function fillPlaylogCacheCell(cell, item) {
+  cell.className = "playlog-cache-cell";
+  cell.replaceChildren();
+  const status = item.cache_status || "pending";
+  const rejected = Boolean(item.rejected);
+  const soft = Boolean(item.soft_rejected);
+
+  if (rejected && !soft) {
+    cell.classList.add("playlog-cache-rejected");
+    cell.textContent = "✕";
     return;
   }
-  for (const mix of heard) {
+  if (rejected && soft) {
+    cell.classList.add("playlog-cache-rejected");
+    const size =
+      item.size_bytes != null ? formatMb(item.size_bytes) : "";
+    cell.textContent = size ? `✕ ${size}` : "✕";
+    return;
+  }
+
+  if (status === "loading") {
+    cell.classList.add("playlog-cache-loading");
+    const wrap = document.createElement("div");
+    wrap.className = "playlog-cache-progress";
+    const total = item.total_bytes;
+    const downloaded = Number(item.downloaded_bytes) || 0;
+    const label = document.createElement("span");
+    label.className = "playlog-cache-progress-label";
+    label.textContent =
+      total != null && total !== ""
+        ? `← ${formatMb(total)}`
+        : "← …";
+    wrap.appendChild(label);
+    if (total != null && total !== "" && Number(total) > 0) {
+      const track = document.createElement("div");
+      track.className = "playlog-cache-progress-track";
+      const fill = document.createElement("div");
+      fill.className = "playlog-cache-progress-fill";
+      const pct = Math.max(
+        0,
+        Math.min(100, (downloaded / Number(total)) * 100),
+      );
+      fill.style.width = `${pct}%`;
+      track.appendChild(fill);
+      wrap.appendChild(track);
+    }
+    cell.appendChild(wrap);
+    return;
+  }
+
+  if (status === "pending") {
+    cell.classList.add("playlog-cache-pending");
+    cell.textContent = "⋮ pending";
+    return;
+  }
+
+  if (status === "cached") {
+    const offset = Number(item.offset) || 0;
+    const size =
+      item.size_bytes != null ? formatMb(item.size_bytes) : "";
+    if (offset < 0) {
+      cell.classList.add("playlog-cache-past");
+      cell.textContent = size ? `− ${size}` : "−";
+    } else if (offset === 0) {
+      cell.classList.add("playlog-cache-current");
+      cell.textContent = size ? `✓${size}` : "✓";
+    } else {
+      cell.classList.add("playlog-cache-cached");
+      cell.textContent = size ? `✓${size}` : "✓";
+    }
+    return;
+  }
+
+  // absent past
+  cell.classList.add("playlog-cache-past");
+  cell.textContent = "−";
+}
+
+async function playlogPlayMix(mixId) {
+  const intentId = document.getElementById("player-intent")?.value;
+  const status = document.getElementById("player-status");
+  if (!intentId) {
+    if (status) status.textContent = "Choose an intent";
+    return;
+  }
+  try {
+    const res = await fetch("/api/player/play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ intent_id: intentId, mix_id: mixId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (status) status.textContent = data.detail || "Play failed";
+      return;
+    }
+    if (status) status.textContent = "";
+    lastPlayheadCommitAt = Date.now();
+    playheadPlayedNotifiedForMix = null;
+    await refreshAfterIntentPlaybackMutation();
+  } catch (err) {
+    if (status) status.textContent = "Play request failed";
+    console.error(err);
+  }
+}
+
+async function playlogPause() {
+  const status = document.getElementById("player-status");
+  try {
+    const res = await fetch("/api/player/pause", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (status) status.textContent = data.detail || "Pause failed";
+      return;
+    }
+    if (status) status.textContent = "";
+    await refreshAfterIntentPlaybackMutation();
+  } catch (err) {
+    if (status) status.textContent = "Pause request failed";
+    console.error(err);
+  }
+}
+
+/** Scroll Playlog so offset −2 is at the top of the wrap (current near mid-view). */
+function scrollPlaylogDefaultView() {
+  const wrap = document.getElementById("playlog-table-wrap");
+  const body = document.getElementById("playlog-body");
+  if (!wrap || !body) return;
+  const rows = [...body.querySelectorAll(".playlog-row")];
+  if (!rows.length) return;
+  let target = rows.find((row) => row.dataset.offset === "-2");
+  if (!target) {
+    // Fewer than two past rows: start at −1, else current, else first row.
+    target =
+      rows.find((row) => row.dataset.offset === "-1") ||
+      rows.find((row) => row.dataset.offset === "0") ||
+      rows[0];
+  }
+  const head = wrap.querySelector("thead");
+  const headH = head ? head.getBoundingClientRect().height : 0;
+  const delta =
+    target.getBoundingClientRect().top -
+    wrap.getBoundingClientRect().top -
+    headH;
+  wrap.scrollTop += delta;
+}
+
+/** Sticky current sits under thead; measure once per layout. */
+function updatePlaylogStickyMetrics() {
+  const table = document.getElementById("playlog-table");
+  if (!table) return;
+  const head = table.querySelector("thead");
+  const headH = head ? head.getBoundingClientRect().height : 0;
+  table.style.setProperty("--playlog-thead-h", `${headH}px`);
+}
+
+/** True when current is pinned to the wrap top or bottom (not in normal flow). */
+function playlogCurrentIsStuck() {
+  const wrap = document.getElementById("playlog-table-wrap");
+  const row = document.querySelector("#playlog-table .playlog-row.playlog-current");
+  if (!wrap || !row) return false;
+
+  const wrapRect = wrap.getBoundingClientRect();
+  const head = wrap.querySelector("thead");
+  const headH = head ? head.getBoundingClientRect().height : 0;
+  const stickyTop = wrapRect.top + headH;
+  const stickyBottom = wrapRect.bottom;
+  const rowRect = row.getBoundingClientRect();
+  const eps = 2;
+
+  if (rowRect.top <= stickyTop + eps) {
+    const prev = row.previousElementSibling;
+    if (prev && prev.getBoundingClientRect().bottom <= stickyTop + eps) {
+      return true;
+    }
+  }
+  if (rowRect.bottom >= stickyBottom - eps) {
+    const next = row.nextElementSibling;
+    if (next && next.getBoundingClientRect().top >= stickyBottom - eps) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function syncPlaylogCurrentStuck() {
+  const table = document.getElementById("playlog-table");
+  if (!table) return;
+  const stuck = playlogCurrentIsStuck();
+  table.classList.toggle("playlog-current-is-stuck", stuck);
+  const row = table.querySelector(".playlog-row.playlog-current");
+  if (!row) return;
+  if (stuck) {
+    row.title = "Click empty space to return to default view";
+  } else {
+    row.removeAttribute("title");
+  }
+}
+
+function playlogInteractiveTarget(target) {
+  const el = target instanceof Element ? target : target?.parentElement;
+  return Boolean(
+    el &&
+      el.closest(
+        "button, a, input, select, textarea, label, .star-rating, .tag-chip, .tag-picker-wrap, .tag-editor",
+      ),
+  );
+}
+
+/** When current is stuck, click non-interactive cells → default (−2) view. */
+function onPlaylogWrapClick(event) {
+  const table = document.getElementById("playlog-table");
+  if (!table?.classList.contains("playlog-current-is-stuck")) return;
+  const cell = event.target?.closest?.(".playlog-row.playlog-current td");
+  if (!cell || !table.contains(cell)) return;
+  if (playlogInteractiveTarget(event.target)) return;
+  scrollPlaylogDefaultView();
+  requestAnimationFrame(() => {
+    updatePlaylogStickyMetrics();
+    syncPlaylogCurrentStuck();
+  });
+}
+
+function ensurePlaylogScrollChrome() {
+  const wrap = document.getElementById("playlog-table-wrap");
+  if (!wrap || wrap.dataset.playlogChromeWired === "1") return;
+  wrap.dataset.playlogChromeWired = "1";
+  wrap.addEventListener("scroll", () => syncPlaylogCurrentStuck(), {
+    passive: true,
+  });
+  wrap.addEventListener("click", onPlaylogWrapClick);
+}
+
+async function refreshPlaylog({ force = false } = {}) {
+  const body = document.getElementById("playlog-body");
+  if (!body) return;
+  if (!force && focusInside(body)) return;
+  const wrap = document.getElementById("playlog-table-wrap");
+  const intentId = document.getElementById("player-intent")?.value || "";
+  const savedScroll = wrap ? wrap.scrollTop : 0;
+  const resetToDefault = intentId !== playlogScrollIntentId;
+  const qs = intentId ? `?intent_id=${encodeURIComponent(intentId)}` : "";
+  const res = await fetch(`/api/playlog${qs}`);
+  const data = await res.json().catch(() => ({ items: [] }));
+  const items = data.items || [];
+  body.replaceChildren();
+  if (!items.length) {
     const tr = document.createElement("tr");
-    tr.className = "play-history-row";
-    if (mix.rejected) tr.classList.add("mix-rejected");
-    tr.dataset.mixId = mix.id;
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "muted";
+    td.textContent = "No assignment for this intent";
+    tr.appendChild(td);
+    body.appendChild(tr);
+    playlogScrollIntentId = intentId;
+    return;
+  }
+  const playing = Boolean(data.playing);
+  for (const item of items) {
+    const offset = Number(item.offset) || 0;
+    // One <tr> per entry so sticky works; cover + two-line stacks live inside cells.
+    const tr = document.createElement("tr");
+    tr.className = "playlog-row";
+    tr.dataset.mixId = item.id;
+    tr.dataset.offset = String(offset);
+    if (offset < 0) tr.classList.add("playlog-past");
+    if (offset === 0) tr.classList.add("playlog-current");
+    if (offset > 0) tr.classList.add("playlog-upcoming");
+    if (item.rejected) tr.classList.add("mix-rejected");
+    if (item.soft_rejected) tr.classList.add("playlog-soft-rejected");
 
-    const heardCell = document.createElement("td");
-    heardCell.textContent = formatLastHeard(mix.last_heard_at);
-    tr.appendChild(heardCell);
-    const artistCell = document.createElement("td");
-    artistCell.textContent = mix.artist || "Unknown";
-    tr.appendChild(artistCell);
-    const titleCell = document.createElement("td");
-    titleCell.textContent = mix.title || "";
-    tr.appendChild(titleCell);
-    const lengthCell = document.createElement("td");
-    lengthCell.textContent = formatDuration(mix.duration_seconds || 0);
-    tr.appendChild(lengthCell);
+    const offsetCell = document.createElement("td");
+    offsetCell.className = "playlog-offset";
+    offsetCell.textContent = formatPlaylogOffset(offset);
+    tr.appendChild(offsetCell);
 
-    const ratingCell = document.createElement("td");
+    const coverCell = document.createElement("td");
+    coverCell.className = "playlog-cover-cell";
+    const coverStack = document.createElement("div");
+    coverStack.className = "playlog-cover-stack";
+    if (item.has_cover) {
+      const img = document.createElement("img");
+      img.className = "playlog-cover";
+      img.alt = item.title
+        ? `Cover art for ${item.title}`
+        : "Release cover art";
+      img.width = 48;
+      img.height = 48;
+      img.loading = "lazy";
+      img.src = `/api/mixes/${item.id}/cover`;
+      coverStack.appendChild(img);
+    } else {
+      const placeholder = document.createElement("span");
+      placeholder.className = "playlog-cover-placeholder";
+      placeholder.setAttribute("aria-hidden", "true");
+      coverStack.appendChild(placeholder);
+    }
+    const canPlay = Boolean(item.playable);
+    let actionSymbol = null;
+    let actionLabel = null;
+    let actionHandler = null;
+    if (offset === 0 && playing) {
+      actionSymbol = "⏸";
+      actionLabel = "Pause";
+      actionHandler = () => playlogPause();
+    } else if (offset < 0 && canPlay) {
+      actionSymbol = "◀";
+      actionLabel = "Play previous";
+      actionHandler = () => playlogPlayMix(item.id);
+    } else if (canPlay) {
+      actionSymbol = "▶";
+      actionLabel = offset === 0 ? "Play" : "Play this release";
+      actionHandler = () => playlogPlayMix(item.id);
+    }
+    if (actionSymbol && actionHandler) {
+      const actionBtn = document.createElement("button");
+      actionBtn.type = "button";
+      actionBtn.className = "playlog-cover-action";
+      setSymbolButton(actionBtn, actionSymbol, actionLabel);
+      actionBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void actionHandler();
+      });
+      coverStack.appendChild(actionBtn);
+    }
+    coverCell.appendChild(coverStack);
+    tr.appendChild(coverCell);
+
+    const mainCell = document.createElement("td");
+    mainCell.className = "playlog-main-cell";
+    const releaseLine = document.createElement("div");
+    releaseLine.className = "playlog-release";
+    const artist = item.artist || "Unknown";
+    const title = item.title || "";
+    releaseLine.textContent = title ? `${artist} - ${title}` : artist;
+    const annotateSlot = document.createElement("div");
+    annotateSlot.className = "playlog-annotate";
     const starsRoot = document.createElement("div");
-    ratingCell.appendChild(starsRoot);
-    tr.appendChild(ratingCell);
-
-    const tagsCell = document.createElement("td");
-    const tagRow = document.createElement("div");
-    tagRow.className = "tag-cell history-tag-cell";
+    const actionsRoot = document.createElement("div");
+    actionsRoot.className = "tag-cell playlog-tag-cell";
+    annotateSlot.appendChild(starsRoot);
+    annotateSlot.appendChild(actionsRoot);
     mountAnnotateKit({
-      surface: "history",
-      mix,
+      surface: "playlog",
+      mix: item,
       starsRoot,
-      actionsRoot: tagRow,
+      actionsRoot,
       rateInteractive: true,
       allowUnreject: true,
       refreshAfterTag: true,
-      starsClass: "history-stars",
-      tagEditorClass: "tag-editor history-tag-editor",
+      starsClass: "playlog-stars",
+      tagEditorClass: "tag-editor playlog-tag-editor",
     });
-    tagsCell.appendChild(tagRow);
-    tr.appendChild(tagsCell);
+    mainCell.appendChild(releaseLine);
+    mainCell.appendChild(annotateSlot);
+    tr.appendChild(mainCell);
 
-    const actionsCell = document.createElement("td");
-    const resumeBtn = document.createElement("button");
-    resumeBtn.type = "button";
-    resumeBtn.className = "history-resume";
-    setSymbolButton(resumeBtn, BTN.resume, "Resume at Catalog Playhead");
-    resumeBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const intentId = document.getElementById("player-intent")?.value;
-      const status = document.getElementById("player-status");
-      if (!intentId) {
-        if (status) status.textContent = "Choose an intent";
-        return;
-      }
-      if (status) status.textContent = "Resuming…";
-      try {
-        const res = await fetch("/api/player/play", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ intent_id: intentId, mix_id: mix.id }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          if (status) status.textContent = data.detail || "Resume failed";
-          return;
-        }
-        if (status) status.textContent = "";
-        lastPlayheadCommitAt = Date.now();
-        playheadPlayedNotifiedForMix = null;
-        await refreshPlayer();
-        await refreshFiles();
-      } catch (err) {
-        if (status) status.textContent = "Resume request failed";
-        console.error(err);
-      }
-    });
-    actionsCell.appendChild(resumeBtn);
-    tr.appendChild(actionsCell);
+    const sideCell = document.createElement("td");
+    sideCell.className = "playlog-side-cell";
+    const lengthLine = document.createElement("div");
+    lengthLine.className = "playlog-length";
+    lengthLine.textContent = formatDuration(item.duration_seconds || 0);
+    const cacheLine = document.createElement("div");
+    fillPlaylogCacheCell(cacheLine, item);
+    sideCell.appendChild(lengthLine);
+    sideCell.appendChild(cacheLine);
+    tr.appendChild(sideCell);
 
     body.appendChild(tr);
   }
+  playlogScrollIntentId = intentId;
+  ensurePlaylogScrollChrome();
+  requestAnimationFrame(() => {
+    updatePlaylogStickyMetrics();
+    if (resetToDefault) {
+      scrollPlaylogDefaultView();
+    } else if (wrap) {
+      wrap.scrollTop = savedScroll;
+      updatePlaylogStickyMetrics();
+    }
+    syncPlaylogCurrentStuck();
+  });
 }
 
 async function refreshTagSuggestions() {
@@ -4125,6 +4406,12 @@ async function refreshPlayerIntents() {
   }
   if (previous && [...select.options].some((o) => o.value === previous)) {
     select.value = previous;
+  }
+  if (select.dataset.playlogBound !== "1") {
+    select.dataset.playlogBound = "1";
+    select.addEventListener("change", () => {
+      void refreshPlaylog({ force: true });
+    });
   }
 }
 
@@ -5884,17 +6171,10 @@ document.getElementById("catalog-show-rejected")?.addEventListener("click", asyn
   await refreshAffectedSurfaces(["mixes"], { force: true });
 });
 
-document.getElementById("play-history-show-rejected")?.addEventListener("click", async (event) => {
-  const btn = event.currentTarget;
-  showRejectedHistory = btn.getAttribute("aria-pressed") !== "true";
-  syncRejectedToggle(btn, showRejectedHistory);
-  await refreshPlayHistory();
-});
-
 /** Notice section taxonomy mirrored from DeviceAgent UI view notices. */
 const VIEW_NOTICE_SECTIONS = [
   "mixes",
-  "play_history",
+  "playlog",
   "intents",
   "peers",
   "cache",
@@ -5912,9 +6192,9 @@ async function refreshAffectedSurfaces(sections, { force = false } = {}) {
   if (wanted.has("mixes")) {
     await refreshMixes({ force });
   }
-  if (wanted.has("play_history") && !wanted.has("mixes")) {
-    // refreshMixes already refreshes Play history when mixes are included.
-    await refreshPlayHistory();
+  if (wanted.has("playlog") && !wanted.has("mixes")) {
+    // refreshMixes already refreshes Playlog when mixes are included.
+    await refreshPlaylog({ force });
   }
   if (wanted.has("intents")) {
     await refreshIntents({ force });
@@ -5928,6 +6208,9 @@ async function refreshAffectedSurfaces(sections, { force = false } = {}) {
   }
   if (wanted.has("cache")) {
     await refreshFiles({ force });
+    if (!wanted.has("playlog") && !wanted.has("mixes")) {
+      await refreshPlaylog({ force });
+    }
   }
   if (wanted.has("activity")) {
     await refreshActivity();
@@ -5937,6 +6220,9 @@ async function refreshAffectedSurfaces(sections, { force = false } = {}) {
   }
   if (wanted.has("player")) {
     await refreshPlayer();
+    if (!wanted.has("playlog") && !wanted.has("mixes") && !wanted.has("cache")) {
+      await refreshPlaylog({ force });
+    }
   }
 }
 
@@ -5950,9 +6236,9 @@ async function refreshViewSections(sections) {
   await refreshAffectedSurfaces(sections);
 }
 
-/** After annotate mutations: force Catalog/history so editors remount with new state. */
+/** After annotate mutations: force Catalog/playlog so editors remount with new state. */
 async function refreshAfterAnnotateMutation({ intents = false } = {}) {
-  const sections = ["mixes", "play_history"];
+  const sections = ["mixes", "playlog"];
   if (intents) sections.push("intents");
   await refreshAffectedSurfaces(sections, { force: true });
   await refreshPlayer();
@@ -5961,8 +6247,9 @@ async function refreshAfterAnnotateMutation({ intents = false } = {}) {
 /** After Switch to intent / Pause from an Intent row (and Player transport play/pause). */
 async function refreshAfterIntentPlaybackMutation({ markedPlayed = false } = {}) {
   await refreshPlayer();
+  await refreshPlaylog({ force: true });
   if (!markedPlayed) return;
-  await refreshAffectedSurfaces(["cache", "mixes", "play_history", "intents"], {
+  await refreshAffectedSurfaces(["cache", "mixes", "playlog", "intents"], {
     force: true,
   });
 }
@@ -6023,8 +6310,6 @@ function connectViewNotices() {
   }
   mountCatalogFilters();
   resetCatalogFilters();
-  showRejectedHistory = false;
-  syncRejectedToggle(document.getElementById("play-history-show-rejected"), false);
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();
@@ -6035,13 +6320,26 @@ function connectViewNotices() {
   await refreshPlayerIntents();
   await refreshPlayer();
   syncPlayerChrome();
-  window.addEventListener("resize", () => syncPlayerChrome());
+  ensurePlaylogScrollChrome();
+  window.addEventListener("resize", () => {
+    syncPlayerChrome();
+    updatePlaylogStickyMetrics();
+    syncPlaylogCurrentStuck();
+  });
   if (typeof ResizeObserver === "function") {
     const chromeObserver = new ResizeObserver(() => syncPlayerChrome());
     const playerNowRow = document.querySelector("#player .player-now-row");
     const playerHeading = document.querySelector("#player .player-heading-row");
     if (playerNowRow) chromeObserver.observe(playerNowRow);
     if (playerHeading) chromeObserver.observe(playerHeading);
+    const playlogWrap = document.getElementById("playlog-table-wrap");
+    if (playlogWrap) {
+      const playlogObserver = new ResizeObserver(() => {
+        updatePlaylogStickyMetrics();
+        syncPlaylogCurrentStuck();
+      });
+      playlogObserver.observe(playlogWrap);
+    }
   }
   connectViewNotices();
 })();

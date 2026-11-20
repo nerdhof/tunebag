@@ -59,8 +59,10 @@ def _play_ready(agent: DeviceAgent, source: FakeSource) -> object:
         device_hours=[(agent.device_id, 1000)],
     )
     agent.fill_caches()
+    agent.wait_for_fill()
     agent.drain_view_notices()
     agent.play(intent.id, mix.id)
+    agent.wait_for_fill()
     return mix
 
 
@@ -70,6 +72,7 @@ def test_play_and_pause_emit_player_notice(tmp_path: Path) -> None:
     mix = _play_ready(agent, source)
     sections = _sections(agent)
     assert UIViewSection.PLAYER in sections
+    assert UIViewSection.PLAYLOG in sections
 
     agent.drain_view_notices()
     agent.pause()
@@ -108,7 +111,7 @@ def test_companion_drops_player_poll_and_activity_files_coupling() -> None:
     assert "setPlayerLocalClock" in js
     assert "fillInProgressFromEntries" not in js
     assert "requestFilesRefresh" not in js
-    assert "/static/app.js?v=71" in html
+    assert "/static/app.js?v=74" in html
 
     # refreshActivity must not pull Cache.
     start = js.index("async function refreshActivity")

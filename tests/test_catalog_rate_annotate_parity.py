@@ -12,7 +12,7 @@ def _static() -> tuple[str, str]:
 
 def _catalog_row_block(js: str) -> str:
     start = js.index('tr.className = "mix-row"')
-    end = js.index("async function refreshPlayHistory")
+    end = js.index("async function refreshPlaylog")
     return js[start:end]
 
 
@@ -47,7 +47,7 @@ def test_annotate_mutation_refreshes_catalog_history_and_player() -> None:
     js, _html = _static()
     body = _js_function_body(js, "async function refreshAfterAnnotateMutation")
     assert '"mixes"' in body or "'mixes'" in body
-    assert '"play_history"' in body or "'play_history'" in body
+    assert '"playlog"' in body or "'playlog'" in body
     assert "force: true" in body
     assert "refreshPlayer" in body
     # Catalog tag path opts into the same post-mutation refresh as History.
@@ -66,11 +66,11 @@ def test_section_tips_treat_catalog_as_annotate_surface() -> None:
     assert "rate" in catalog_tip
     assert "tag" in catalog_tip
     assert "reject" in catalog_tip
-    # Must not claim rating is history-only.
-    history_section = html.split('id="play-history"', 1)[1]
-    hist_tip_start = history_section.index('class="section-info-tip"')
-    hist_tip_end = history_section.index("</span>", hist_tip_start)
-    history_tip = history_section[hist_tip_start:hist_tip_end].lower()
-    assert "rate only" not in history_tip
-    assert "only on history" not in history_tip
+    # Must not claim rating is playlog-only.
+    playlog_section = html.split('id="playlog"', 1)[1]
+    playlog_tip_start = playlog_section.index('class="section-info-tip"')
+    playlog_tip_end = playlog_section.index("</span>", playlog_tip_start)
+    playlog_tip = playlog_section[playlog_tip_start:playlog_tip_end].lower()
+    assert "rate only" not in playlog_tip
+    assert "only on history" not in playlog_tip
     assert "only from history" not in catalog_tip

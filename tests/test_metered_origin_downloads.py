@@ -116,10 +116,10 @@ def test_metered_origin_stays_within_current_and_one_ahead(tmp_path: Path) -> No
     assert {m.id for m in laptop.files()} == {first, second}
     third_url = laptop.catalog.mixes[third].url
     assert third_url not in source.fetch_calls
-    assert source.fetch_calls == [
+    assert set(source.fetch_calls) == {
         laptop.catalog.mixes[first].url,
         laptop.catalog.mixes[second].url,
-    ]
+    }
 
 
 def test_metered_includes_resumed_current_mix(tmp_path: Path) -> None:

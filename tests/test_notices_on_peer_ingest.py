@@ -120,7 +120,7 @@ def test_peer_rate_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
 
     assert _catalog_sections(phone) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
 
 
@@ -172,7 +172,7 @@ def test_peer_last_heard_ingest_emits_mixes_and_play_history(
     assert next(m for m in phone.mixes() if m.id == mix.id).last_heard_at == heard_at
     assert _catalog_sections(phone) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
 
 
@@ -205,7 +205,7 @@ def test_peer_tag_ingest_emits_mixes_and_play_history(tmp_path: Path) -> None:
 
     assert _catalog_sections(phone) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
 
 
@@ -242,7 +242,11 @@ def test_peer_intent_ingest_emits_single_coalesced_intents(tmp_path: Path) -> No
     phone.wait_for_sync()
 
     assert intent.id in {i.id for i in phone.intents()}
-    assert _catalog_sections(phone) == [UIViewSection.INTENTS]
+    assert _catalog_sections(phone) == [
+        UIViewSection.PLAYLOG,
+        UIViewSection.INTENTS,
+        UIViewSection.CACHE,
+    ]
 
 
 def test_ingested_device_paired_and_unpaired_emit_peers(tmp_path: Path) -> None:
@@ -321,8 +325,9 @@ def test_full_log_catch_up_coalesces_per_section(tmp_path: Path) -> None:
 
     assert _catalog_sections(phone) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
         UIViewSection.INTENTS,
+        UIViewSection.CACHE,
     ]
     assert len(phone.mixes()) >= 3
     assert any(i.name == "Catch-up intent" for i in phone.intents())

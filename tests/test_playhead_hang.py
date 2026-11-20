@@ -102,7 +102,7 @@ def test_playhead_tick_does_not_auto_sync_or_mark_catalog(tmp_path: Path) -> Non
 
     sections = {n.section for n in laptop.drain_view_notices()}
     assert UIViewSection.MIXES not in sections
-    assert UIViewSection.PLAY_HISTORY not in sections
+    assert UIViewSection.PLAYLOG not in sections
     assert UIViewSection.ACTIVITY not in sections
     # Peer must not see the mid-tick playhead until a transport boundary.
     assert phone.playhead(mix.id) is None or phone.playhead(mix.id).position_seconds != 8
@@ -157,4 +157,4 @@ def test_companion_playhead_heartbeat_is_five_minutes() -> None:
     assert "PLAYER_POLL_MS" not in js
     assert "setPlayerLocalClock" in js
     assert "position_seconds: Math.max(0, lastKnownPositionSeconds)" in js
-    assert "/static/app.js?v=71" in html
+    assert "/static/app.js?v=74" in html

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from tunebag import __version__
-from tunebag.agent import PLAY_HISTORY_LIMIT, DeviceAgent, DeviceHoursSpec
+from tunebag.agent import PLAYLOG_PAST_LIMIT, DeviceAgent, DeviceHoursSpec
 from tunebag.domain import Artist, Mix, Platform, ReleaseKind, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
@@ -29,7 +29,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _mix_row(mix: Mix, artists_by_id: dict[UUID, Artist]) -> dict[str, Any]:
-    """Serialize a Release for Catalog / Play history JSON responses."""
+    """Serialize a Release for Catalog JSON responses."""
     artist = artists_by_id.get(mix.artist_id)
     return {
         "id": str(mix.id),
@@ -508,6 +508,14 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     @app.get("/api/files")
     def files() -> dict:
         downloading = agent.downloading_mix_id
+        downloads = [
+            {
+                "mix_id": str(entry["mix_id"]),
+                "downloaded_bytes": int(entry["downloaded_bytes"]),
+                "total_bytes": entry["total_bytes"],
+            }
+            for entry in agent.downloads_in_progress
+        ]
         groups = []
         for group in agent.cache_groups():
             group_id = group["id"]
@@ -554,6 +562,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "groups": groups,
             "cache_summary": agent.cache_summary(),
             "downloading_mix_id": None if downloading is None else str(downloading),
+            "downloads": downloads,
         }
 
     @app.get("/api/mixes")
@@ -564,17 +573,50 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "mixes": [_mix_row(mix, artists_by_id) for mix in agent.mixes()]
         }
 
-    @app.get("/api/play-history")
-    def play_history(include_rejected: bool = False) -> dict:
+    @app.get("/api/playlog")
+    def playlog(intent_id: UUID | None = None) -> dict:
         agent.commit_reject_file_deletes()
-        artists_by_id = {a.id: a for a in agent.artists()}
-        rows = agent.play_history(
-            limit=PLAY_HISTORY_LIMIT,
-            include_hard_rejected=include_rejected,
-        )
+        resolved = intent_id
+        if resolved is None:
+            resolved = agent.playing_intent_id()
+        if resolved is None:
+            intents = agent.intents()
+            if not intents:
+                return {
+                    "intent_id": None,
+                    "current_mix_id": None,
+                    "anchor_mix_id": None,
+                    "playing": False,
+                    "past_limit": PLAYLOG_PAST_LIMIT,
+                    "items": [],
+                }
+            resolved = intents[0].id
+        try:
+            snapshot = agent.playlog(resolved, past_limit=PLAYLOG_PAST_LIMIT)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        items = []
+        for row in snapshot["items"]:
+            item = {
+                **row,
+                "id": str(row["id"]),
+            }
+            items.append(item)
         return {
-            "mixes": [_mix_row(mix, artists_by_id) for mix in rows],
-            "limit": PLAY_HISTORY_LIMIT,
+            "intent_id": str(snapshot["intent_id"]),
+            "current_mix_id": (
+                None
+                if snapshot["current_mix_id"] is None
+                else str(snapshot["current_mix_id"])
+            ),
+            "anchor_mix_id": (
+                None
+                if snapshot["anchor_mix_id"] is None
+                else str(snapshot["anchor_mix_id"])
+            ),
+            "playing": bool(snapshot["playing"]),
+            "past_limit": int(snapshot["past_limit"]),
+            "items": items,
         }
 
     @app.get("/api/mixes/{mix_id}/cover")

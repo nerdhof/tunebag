@@ -7,7 +7,7 @@ Shared understanding locked 2026-11-13. Do not reopen unless product decisions c
 | Term | Meaning |
 | --- | --- |
 | Mix | One audio file (usually a DJ set). Duration of the file is the budget unit. |
-| Catalog | Artists, mixes, tags, ratings, rejects, play history, intents, sequences, assignments. Fully replicated on every paired device. |
+| Catalog | Artists, mixes, tags, ratings, rejects, Last heard, intents, sequences, assignments. Fully replicated on every paired device. |
 | Sequence | Seeded ordered list of mixes for one intent, built from the tag filter and rating distribution. Shared across devices. |
 | Assignment | Which device hours cover which prefix of the sequence. Separate from whether the file is on disk. |
 | File | Audio bytes present on a device. Local only. |

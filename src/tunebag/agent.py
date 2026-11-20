@@ -14,8 +14,9 @@ import secrets
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -87,7 +88,11 @@ from tunebag.playback import (
 from tunebag.event_payloads import encode_intent, encode_mix_added
 from tunebag.projection import CatalogState, LocalEffects
 from tunebag.maintenance import BoundMaintenance, CatalogChange, CatalogChangeReason
-from tunebag.reject import RejectFileDeleteBuffer, is_soft_rejected
+from tunebag.reject import (
+    SOFT_REJECT_SECONDS,
+    RejectFileDeleteBuffer,
+    is_soft_rejected,
+)
 from tunebag.release_cache import OriginFetch, ReleaseCache
 from tunebag.release_layout import album_timeline_location
 from tunebag.sequence_provision import SequenceProvisioner
@@ -106,7 +111,10 @@ from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
 _HTTP_TIMEOUT = 5.0
 _PLAYBACK_THRESHOLD_WATCH_SECONDS = 1.0
 _DOWNLOAD_CACHE_NOTICE_SECONDS = 1.0
-PLAY_HISTORY_LIMIT = 50
+_ORIGIN_DOWNLOADS_PER_PLATFORM = 2
+# Peer copies + origin slots across platforms; keep headroom for peer handoffs.
+_FILL_POOL_WORKERS = _ORIGIN_DOWNLOADS_PER_PLATFORM * len(Platform) + 8
+PLAYLOG_PAST_LIMIT = 20
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
@@ -127,31 +135,36 @@ DeviceHoursSpec = tuple[UUID, int] | tuple[UUID, int, datetime | None]
 
 # Catalog Event → UI section notices (Device-local; see ui-view-notices spec).
 _MIXES = (UIViewSection.MIXES,)
-_MIXES_AND_HISTORY = (UIViewSection.MIXES, UIViewSection.PLAY_HISTORY)
+_MIXES_AND_PLAYLOG = (UIViewSection.MIXES, UIViewSection.PLAYLOG)
 _INTENTS = (UIViewSection.INTENTS,)
 _INTENTS_AND_CACHE = (UIViewSection.INTENTS, UIViewSection.CACHE)
+_INTENTS_CACHE_PLAYLOG = (
+    UIViewSection.INTENTS,
+    UIViewSection.CACHE,
+    UIViewSection.PLAYLOG,
+)
 _PEERS = (UIViewSection.PEERS,)
 _VIEW_SECTIONS_FOR_EVENT: dict[EventType, tuple[UIViewSection, ...]] = {
     EventType.ARTIST_ADDED: _MIXES,
     EventType.ARTIST_DELETED: _MIXES,
     EventType.MIX_ADDED: _MIXES,
-    EventType.MIX_TAGGED: _MIXES_AND_HISTORY,
-    EventType.MIX_TAG_ADDED: _MIXES_AND_HISTORY,
-    EventType.MIX_TAG_REMOVED: _MIXES_AND_HISTORY,
-    EventType.MIX_RATED: _MIXES_AND_HISTORY,
-    EventType.MIX_REJECTED: _MIXES_AND_HISTORY,
-    EventType.MIX_UNREJECTED: _MIXES_AND_HISTORY,
-    # PLAYHEAD: no Catalog UI notice — live position is Player poll; remounting
-    # mixes/history every tick freezes the companion.
-    EventType.PLAYED: _MIXES_AND_HISTORY,
-    EventType.SKIPPED: _MIXES_AND_HISTORY,
-    EventType.LAST_HEARD: _MIXES_AND_HISTORY,
-    # Intent / assignment / sequence reshape cache_groups (pending/loading/cached).
-    EventType.INTENT_UPSERTED: _INTENTS_AND_CACHE,
-    EventType.INTENT_DELETED: _INTENTS_AND_CACHE,
-    EventType.SEQUENCE_BUILT: _INTENTS_AND_CACHE,
-    EventType.ASSIGNMENT_SET: _INTENTS_AND_CACHE,
-    EventType.ASSIGNMENT_CLEARED: _INTENTS_AND_CACHE,
+    EventType.MIX_TAGGED: _MIXES_AND_PLAYLOG,
+    EventType.MIX_TAG_ADDED: _MIXES_AND_PLAYLOG,
+    EventType.MIX_TAG_REMOVED: _MIXES_AND_PLAYLOG,
+    EventType.MIX_RATED: _MIXES_AND_PLAYLOG,
+    EventType.MIX_REJECTED: _MIXES_AND_PLAYLOG,
+    EventType.MIX_UNREJECTED: _MIXES_AND_PLAYLOG,
+    # PLAYHEAD: no Catalog UI notice — live position is Player; remounting
+    # mixes/playlog every tick freezes the companion.
+    EventType.PLAYED: _MIXES_AND_PLAYLOG,
+    EventType.SKIPPED: _MIXES_AND_PLAYLOG,
+    EventType.LAST_HEARD: _MIXES_AND_PLAYLOG,
+    # Intent / assignment / sequence reshape cache + playlog queue.
+    EventType.INTENT_UPSERTED: _INTENTS_CACHE_PLAYLOG,
+    EventType.INTENT_DELETED: _INTENTS_CACHE_PLAYLOG,
+    EventType.SEQUENCE_BUILT: _INTENTS_CACHE_PLAYLOG,
+    EventType.ASSIGNMENT_SET: _INTENTS_CACHE_PLAYLOG,
+    EventType.ASSIGNMENT_CLEARED: _INTENTS_CACHE_PLAYLOG,
     EventType.DEVICE_PAIRED: _PEERS,
     EventType.DEVICE_UNPAIRED: (UIViewSection.PEERS, UIViewSection.INTENTS),
 }
@@ -235,6 +248,10 @@ class DeviceAgent:
         # skip delay, now-playing.
         self._metered = False
         self._current_mix_id: UUID | None = None
+        # Local-only Playlog cushion: keep the immediate previous File briefly
+        # so ◀ still works (same duration as Soft Reject; not Soft Reject).
+        self._playlog_previous_mix_id: UUID | None = None
+        self._playlog_previous_until: datetime | None = None
         self._clock: Callable[[], datetime] = clock or datetime.utcnow
         self._reject_file_deletes = RejectFileDeleteBuffer()
         self._skips = SkipBuffer()
@@ -267,10 +284,12 @@ class DeviceAgent:
         self._sync_in_progress = False
         self._sync_pending = False
         self._sync_pending_fill = False
-        self._downloading_mix_id: UUID | None = None
-        self._download_bytes: int = 0
-        self._download_total_bytes: int | None = None
+        self._downloads: dict[UUID, dict[str, Any]] = {}
         self._download_lock = threading.Lock()
+        self._origin_slots: dict[Platform, threading.Semaphore] = {
+            platform: threading.Semaphore(_ORIGIN_DOWNLOADS_PER_PLATFORM)
+            for platform in Platform
+        }
         self._last_discovery_at: datetime | None = None
         # Nestable: defer auto-sync until a multi-event local write finishes
         # (e.g. INTENT_UPSERTED + SEQUENCE + ASSIGNMENTs) so peers do not pull a
@@ -493,32 +512,288 @@ class DeviceAgent:
     def mixes(self) -> list[Mix]:
         return self.catalog.mixes_list()
 
-    def play_history(
+    def _assignment_ordered_ids(self, intent_id: UUID) -> list[UUID]:
+        """Assigned mix ids in sequence listening order for this device."""
+        assignment = self.assignment(intent_id)
+        if assignment is None or not assignment.mix_ids:
+            return []
+        assignment_set = set(assignment.mix_ids)
+        sequence = self.sequence(intent_id)
+        if sequence is not None:
+            ordered_ids = [
+                entry.mix_id
+                for entry in sequence.entries
+                if entry.mix_id in assignment_set
+            ]
+            seen = set(ordered_ids)
+            ordered_ids.extend(mid for mid in assignment.mix_ids if mid not in seen)
+            return ordered_ids
+        return list(assignment.mix_ids)
+
+    def _is_playlog_previous_retained(self, mix_id: UUID) -> bool:
+        """True while the Playlog previous-File cushion still holds."""
+        if self._playlog_previous_mix_id != mix_id:
+            return False
+        until = self._playlog_previous_until
+        if until is None:
+            return False
+        if self._clock() >= until:
+            return False
+        return True
+
+    def _record_playlog_advance(self, *, previous: UUID) -> None:
+        """Arm the previous-File cushion after leaving ``previous``."""
+        self._playlog_previous_mix_id = previous
+        self._playlog_previous_until = self._clock() + timedelta(
+            seconds=SOFT_REJECT_SECONDS
+        )
+
+    def _playlog_global_past_ids(
         self,
         *,
-        limit: int = PLAY_HISTORY_LIMIT,
-        include_hard_rejected: bool = False,
-    ) -> list[Mix]:
-        """Newest Last-heard Releases for the Play history surface (capped)."""
-        now = self._clock()
+        exclude: set[UUID],
+        limit: int,
+        now: datetime,
+    ) -> list[UUID]:
+        """Newest Last-heard Releases for Playlog past (Catalog-global).
+
+        Independent of Intent and of whether Files are local. Hard Rejected are
+        omitted; Soft Rejected stay. ``exclude`` drops rows already shown as
+        current/upcoming.
+        """
         heard: list[Mix] = []
         for mix in self.catalog.mixes_list():
             if mix.last_heard_at is None:
                 continue
-            if not include_hard_rejected and mix.rejected:
-                soft = is_soft_rejected(
-                    rejected=mix.rejected,
-                    rejected_at=mix.rejected_at,
-                    now=now,
-                )
-                if not soft:
-                    continue
+            if mix.id in exclude:
+                continue
+            if mix.rejected and not is_soft_rejected(
+                rejected=mix.rejected,
+                rejected_at=mix.rejected_at,
+                now=now,
+            ):
+                continue
             heard.append(mix)
         heard.sort(
             key=lambda m: m.last_heard_at or datetime.min,
             reverse=True,
         )
-        return heard[:limit]
+        return [mix.id for mix in heard[:limit]]
+
+    def _play_target_for_intent(self, intent_id: UUID) -> UUID | None:
+        """Mix ``play(intent)`` would pick without an explicit mix_id."""
+        assignment = self.assignment(intent_id)
+        if assignment is None or not assignment.mix_ids:
+            return None
+        if (
+            self._current_mix_id is not None
+            and self._current_mix_id in assignment.mix_ids
+            and self._has_local_file(self._current_mix_id)
+        ):
+            return self._current_mix_id
+        return assignment.mix_ids[0]
+
+    def _mix_wanted_elsewhere(self, mix_id: UUID, *, except_intent: UUID) -> bool:
+        for intent in self.intents():
+            if intent.id == except_intent:
+                continue
+            assignment = self.assignment(intent.id)
+            if assignment is not None and mix_id in assignment.mix_ids:
+                return True
+        return False
+
+    def _playlog_row(
+        self,
+        mix: Mix,
+        *,
+        offset: int,
+        intent_id: UUID,
+        local_ids: set[UUID],
+        downloads: dict[UUID, dict[str, Any]],
+        now: datetime,
+    ) -> dict[str, Any]:
+        mix_id = mix.id
+        if mix_id in local_ids:
+            status = "cached"
+        elif mix_id in downloads:
+            status = "loading"
+        elif offset < 0:
+            status = "absent"
+        else:
+            status = "pending"
+        artist = self.catalog.artists.get(mix.artist_id)
+        soft = is_soft_rejected(
+            rejected=mix.rejected,
+            rejected_at=mix.rejected_at,
+            now=now,
+        )
+        assignment = self.assignment(intent_id)
+        in_assignment = assignment is not None and mix_id in assignment.mix_ids
+        retained = self._is_playlog_previous_retained(mix_id)
+        entry: dict[str, Any] = {
+            "offset": offset,
+            "id": mix_id,
+            "artist": artist.name if artist is not None else "Unknown",
+            "title": mix.title,
+            "duration_seconds": int(mix.duration_seconds),
+            "stars": int(mix.stars) if mix.stars is not None else None,
+            "tags": list(mix.tags),
+            "rejected": mix.rejected,
+            "rejected_at": (
+                mix.rejected_at.isoformat() if mix.rejected_at is not None else None
+            ),
+            "soft_rejected": soft,
+            "cache_status": status,
+            "has_cover": self.has_cover(mix_id),
+            "playable": (
+                mix_id in local_ids
+                and not mix.rejected
+                and (in_assignment or retained)
+            ),
+            "wanted_elsewhere": self._mix_wanted_elsewhere(
+                mix_id, except_intent=intent_id
+            ),
+            "retained_previous": retained,
+            "last_heard_at": (
+                mix.last_heard_at.isoformat()
+                if mix.last_heard_at is not None
+                else None
+            ),
+        }
+        if status == "cached":
+            size = self._local_file_size(mix_id)
+            if size is not None:
+                entry["size_bytes"] = size
+        elif status == "loading":
+            progress = downloads[mix_id]
+            entry["downloaded_bytes"] = int(progress["downloaded_bytes"])
+            total = progress["total_bytes"]
+            entry["total_bytes"] = total
+        return entry
+
+    def playlog(
+        self,
+        intent_id: UUID,
+        *,
+        past_limit: int = PLAYLOG_PAST_LIMIT,
+    ) -> dict[str, Any]:
+        """Playlog: Catalog-global Last-heard past + Intent assignment upcoming.
+
+        Past (−N) is newest Last heard across the Catalog (any Device / Intent).
+        Current (0) and upcoming (+N) are this Intent's assignment order.
+        """
+        if intent_id not in self.catalog.intents:
+            raise KeyError(f"unknown intent {intent_id}")
+        now = self._clock()
+        ordered_ids = self._assignment_ordered_ids(intent_id)
+        local_ids = self._local_file_ids()
+        with self._download_lock:
+            downloads = {
+                mix_id: {
+                    "downloaded_bytes": int(progress["downloaded_bytes"]),
+                    "total_bytes": progress["total_bytes"],
+                }
+                for mix_id, progress in self._downloads.items()
+            }
+
+        playing = self.is_playing() and self._playback.intent_id == intent_id
+        current = self._current_mix_id
+        if current is not None and current in ordered_ids:
+            anchor = current
+        else:
+            anchor = self._play_target_for_intent(intent_id)
+
+        anchor_index: int | None = None
+        if anchor is not None and anchor in ordered_ids:
+            anchor_index = ordered_ids.index(anchor)
+
+        items: list[dict[str, Any]] = []
+        included: set[UUID] = set()
+
+        # Current + upcoming first so global past does not duplicate queue rows.
+        if anchor_index is not None:
+            for i in range(anchor_index, len(ordered_ids)):
+                mid = ordered_ids[i]
+                mix = self.catalog.mixes.get(mid)
+                if mix is None:
+                    continue
+                items.append(
+                    self._playlog_row(
+                        mix,
+                        offset=i - anchor_index,
+                        intent_id=intent_id,
+                        local_ids=local_ids,
+                        downloads=downloads,
+                        now=now,
+                    )
+                )
+                included.add(mid)
+        elif ordered_ids:
+            for i, mid in enumerate(ordered_ids):
+                mix = self.catalog.mixes.get(mid)
+                if mix is None:
+                    continue
+                items.append(
+                    self._playlog_row(
+                        mix,
+                        offset=i,
+                        intent_id=intent_id,
+                        local_ids=local_ids,
+                        downloads=downloads,
+                        now=now,
+                    )
+                )
+                included.add(mid)
+
+        past_ids = self._playlog_global_past_ids(
+            exclude=included,
+            limit=past_limit,
+            now=now,
+        )
+        # Cushion / soft-reject previous may lack Last heard yet — keep at −1.
+        prev_id = self._playlog_previous_mix_id
+        if (
+            prev_id is not None
+            and prev_id not in included
+            and prev_id not in past_ids
+            and prev_id in self.catalog.mixes
+            and (
+                self._is_playlog_previous_retained(prev_id)
+                or is_soft_rejected(
+                    rejected=self.catalog.mixes[prev_id].rejected,
+                    rejected_at=self.catalog.mixes[prev_id].rejected_at,
+                    now=now,
+                )
+            )
+        ):
+            past_ids = [prev_id, *[mid for mid in past_ids if mid != prev_id]][
+                :past_limit
+            ]
+
+        for i, mid in enumerate(past_ids):
+            mix = self.catalog.mixes.get(mid)
+            if mix is None:
+                continue
+            items.append(
+                self._playlog_row(
+                    mix,
+                    offset=-(i + 1),
+                    intent_id=intent_id,
+                    local_ids=local_ids,
+                    downloads=downloads,
+                    now=now,
+                )
+            )
+
+        items.sort(key=lambda row: int(row["offset"]))
+        return {
+            "intent_id": intent_id,
+            "current_mix_id": current,
+            "anchor_mix_id": anchor,
+            "playing": playing,
+            "past_limit": past_limit,
+            "items": items,
+        }
 
     def artists(self) -> list[Artist]:
         return list(self.catalog.artists.values())
@@ -545,19 +820,36 @@ class DeviceAgent:
 
     @property
     def downloading_mix_id(self) -> UUID | None:
+        """Compat: first active download, if any."""
         with self._download_lock:
-            return self._downloading_mix_id
+            if not self._downloads:
+                return None
+            return next(iter(self._downloads))
 
     @property
     def download_progress(self) -> dict[str, Any] | None:
+        """Compat: progress for the first active download, if any."""
         with self._download_lock:
-            if self._downloading_mix_id is None:
+            if not self._downloads:
                 return None
+            mix_id, progress = next(iter(self._downloads.items()))
             return {
-                "mix_id": self._downloading_mix_id,
-                "downloaded_bytes": self._download_bytes,
-                "total_bytes": self._download_total_bytes,
+                "mix_id": mix_id,
+                "downloaded_bytes": int(progress["downloaded_bytes"]),
+                "total_bytes": progress["total_bytes"],
             }
+
+    @property
+    def downloads_in_progress(self) -> list[dict[str, Any]]:
+        with self._download_lock:
+            return [
+                {
+                    "mix_id": mix_id,
+                    "downloaded_bytes": int(progress["downloaded_bytes"]),
+                    "total_bytes": progress["total_bytes"],
+                }
+                for mix_id, progress in self._downloads.items()
+            ]
 
     def _assignment_offset(self, assignment: Assignment, index: int) -> float:
         """Cumulative duration of mixes before ``index`` in the assignment."""
@@ -626,8 +918,14 @@ class DeviceAgent:
         under a synthetic Other group last.
         """
         local_ids = self._local_file_ids()
-        progress = self.download_progress
-        downloading = None if progress is None else progress["mix_id"]
+        with self._download_lock:
+            downloads = {
+                mix_id: {
+                    "downloaded_bytes": int(progress["downloaded_bytes"]),
+                    "total_bytes": progress["total_bytes"],
+                }
+                for mix_id, progress in self._downloads.items()
+            }
         assigned_ids: set[UUID] = set()
         intent_groups: list[tuple[float, str, dict[str, Any]]] = []
 
@@ -663,7 +961,7 @@ class DeviceAgent:
                     continue
                 if mix_id in local_ids:
                     status = "cached"
-                elif downloading is not None and mix_id == downloading:
+                elif mix_id in downloads:
                     status = "loading"
                 else:
                     status = "pending"
@@ -681,7 +979,8 @@ class DeviceAgent:
                     if size is not None:
                         entry["size_bytes"] = size
                         overview[status]["size_bytes"] += size
-                if status == "loading" and progress is not None:
+                if status == "loading":
+                    progress = downloads[mix_id]
                     entry["downloaded_bytes"] = int(progress["downloaded_bytes"])
                     entry["total_bytes"] = progress["total_bytes"]
                 mixes.append(entry)
@@ -786,17 +1085,30 @@ class DeviceAgent:
         mix = self.catalog.mixes.get(mix_id)
         return mix is not None and bool(mix.cover_url)
 
-    def ensure_cover(self, mix_id: UUID, url: str | None = None) -> bool:
-        """Ensure local cover bytes exist. Soft-fails on network errors."""
+    def ensure_cover(
+        self,
+        mix_id: UUID,
+        url: str | None = None,
+        *,
+        page_url: str | None = None,
+    ) -> bool:
+        """Ensure local cover bytes exist. Soft-fails on network errors.
+
+        ``page_url`` (typically the Release permalink) is a last-resort scrape
+        source for hearthis covers when CDN size/slug fallbacks all 403.
+        """
         if self._covers.has(mix_id):
             return True
+        mix = self.catalog.mixes.get(mix_id)
         cover_url = url
         if not cover_url:
-            mix = self.catalog.mixes.get(mix_id)
             cover_url = mix.cover_url if mix is not None else None
         if not cover_url:
             return False
-        ok = self._covers.ensure(mix_id, cover_url)
+        scrape_page = page_url
+        if not scrape_page and mix is not None:
+            scrape_page = mix.url
+        ok = self._covers.ensure(mix_id, cover_url, page_url=scrape_page)
         if ok:
             self.note(f"cover cached: {mix_id}")
         return ok
@@ -833,6 +1145,9 @@ class DeviceAgent:
         """Mark the mix in progress (including a resumed one) for the metered cap."""
         if mix_id is not None and mix_id not in self.catalog.mixes:
             raise KeyError(f"unknown mix {mix_id}")
+        previous = self._current_mix_id
+        if previous is not None and mix_id is not None and previous != mix_id:
+            self._record_playlog_advance(previous=previous)
         self._current_mix_id = mix_id
         # Metered window moves with play / skip / continue.
         self.request_fill()
@@ -844,7 +1159,8 @@ class DeviceAgent:
     def play(self, intent_id: UUID, mix_id: UUID | None = None) -> Mix:
         """Supervise local playback of an assigned Release that has Files on this device.
 
-        Resumes from the latest synced playhead when one exists. Mixes start the
+        Resumes from the latest synced playhead when one exists, except when that
+        playhead is already at the Release end (then starts at 0). Mixes start the
         cached blob; Albums start the Catalog-ordered track file for the timeline
         position (browser is remote only).
         """
@@ -855,15 +1171,15 @@ class DeviceAgent:
             raise ValueError("intent has no assignment on this device")
         if mix_id is not None:
             target = mix_id
-        elif (
-            self._current_mix_id is not None
-            and self._current_mix_id in assignment.mix_ids
-            and self._has_local_file(self._current_mix_id)
-        ):
-            target = self._current_mix_id
         else:
-            target = assignment.mix_ids[0]
-        if target not in assignment.mix_ids:
+            picked = self._play_target_for_intent(intent_id)
+            if picked is None:
+                raise ValueError("intent has no assignment on this device")
+            target = picked
+        retained_ok = self._is_playlog_previous_retained(target) and self._has_local_file(
+            target
+        )
+        if target not in assignment.mix_ids and not retained_ok:
             raise ValueError("mix is not in this device's assignment")
         if not self._has_local_file(target):
             raise ValueError("mix has no local file")
@@ -872,6 +1188,10 @@ class DeviceAgent:
         self._skips.cancel(target)
         existing = self.catalog.playheads.get(target)
         start = float(existing.position_seconds) if existing is not None else 0.0
+        duration = float(mix.duration_seconds)
+        # End-of-Release playhead would immediately natural-end; start over.
+        if duration > 0 and start >= duration:
+            start = 0.0
         self._ensure_blob_on_disk(target)
         # Capture successor before any mid-release mark_played rebuilds reshuffle.
         continue_next = self._next_local_assigned(intent_id, target, wrap=False)
@@ -881,13 +1201,19 @@ class DeviceAgent:
             intent_id=intent_id,
             continue_next_id=continue_next,
         )
-        self.set_current_mix(target)
+        # Advance current + cushion before fill so PLAYER/PLAYLOG notices
+        # are not trapped in a concurrent fill view-notice batch.
+        previous = self._current_mix_id
+        if previous is not None and previous != target:
+            self._record_playlog_advance(previous=previous)
+        self._current_mix_id = target
         # Resume/play boundary: flush prior pause playhead to peers. Do not
         # re-append PLAYHEAD at ``start`` — equal-position ticks refresh
         # updated_at and block near-window seek-backs (Last heard tests).
         self._schedule_auto_sync()
         self._arm_playback_threshold_watch()
-        self._mark_view_sections(UIViewSection.PLAYER)
+        self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
+        self.request_fill()
         # Last play wins: ask reachable Peers to pause so only one Device is audible.
         self._request_peers_yield()
         return mix
@@ -908,7 +1234,7 @@ class DeviceAgent:
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
         self._schedule_auto_sync()
-        self._mark_view_sections(UIViewSection.PLAYER)
+        self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
 
     def yield_playback(self) -> bool:
         """Pause if locally playing so a Peer can take over audio.
@@ -940,7 +1266,7 @@ class DeviceAgent:
         self._cancel_playback_threshold_watch()
         # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
         self._schedule_auto_sync()
-        self._mark_view_sections(UIViewSection.PLAYER)
+        self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
 
     def skip(self, intent_id: UUID | None = None) -> Mix:
         """Advance to the next local assigned mix without marking the current played.
@@ -1182,7 +1508,7 @@ class DeviceAgent:
         if intents:
             # Track advance / release end: flush playhead (and ContinueTo) to peers.
             self._schedule_auto_sync()
-            self._mark_view_sections(UIViewSection.PLAYER)
+            self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
             if self._playback.playing:
                 self._arm_playback_threshold_watch()
             else:
@@ -1357,14 +1683,16 @@ class DeviceAgent:
         """Fill this device's assignments from peers or origin.
 
         Missing mixes are fetched in soonest-needed order across intents
-        (sequence time offset minus listen progress). Only **actionable**
-        gaps are attempted: peer already has bytes, or this device may
-        origin-fetch under Metered / preferred-origin rules. Deferred gaps
-        stay pending and the pass ends (re-kick on play, unmetered, peer
-        cache, connect, …). When metered, origin fetches are limited to the
-        current mix plus one ahead per intent, unless ``override_intent_id``
-        is that intent (Fill now). Peer copies always ignore the metered cap.
-        Files already local stay.
+        (sequence time offset minus listen progress). Origin fetches run up to
+        ``_ORIGIN_DOWNLOADS_PER_PLATFORM`` concurrent downloads per Platform;
+        peer copies do not consume those slots. Only **actionable** gaps are
+        attempted: peer already has bytes, or this device may origin-fetch
+        under Metered / preferred-origin rules. Deferred gaps stay pending and
+        the pass ends (re-kick on play, unmetered, peer cache, connect, …).
+        When metered, origin fetches are limited to the current mix plus one
+        ahead per intent, unless ``override_intent_id`` is that intent
+        (Fill now). Peer copies always ignore the metered cap. Files already
+        local stay.
 
         Returns the number of mixes with local audio after the pass. Per-mix
         fetch failures are skipped so one bad URL does not abort the fill.
@@ -1403,50 +1731,92 @@ class DeviceAgent:
                 )
 
         attempted: set[tuple[UUID, UUID]] = set()
-        while True:
-            candidates: list[tuple[float, str, int, UUID, UUID]] = []
-            for intent in self.intents():
-                assignment = self.assignment(intent.id)
-                if assignment is None:
+        # Future -> (intent_id, mix_id, held origin Platform or None for peer copy)
+        in_flight: dict[Future[None], tuple[UUID, UUID, Platform | None]] = {}
+
+        def _reap_done() -> None:
+            done = [fut for fut in in_flight if fut.done()]
+            for fut in done:
+                intent_id, mix_id, held = in_flight.pop(fut)
+                if held is not None:
+                    self._origin_slots[held].release()
+                try:
+                    fut.result()
+                except Exception as exc:
+                    # yt-dlp and platform errors vary; one bad URL must not abort the fill.
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    mix = self.catalog.mixes.get(mix_id)
+                    label = mix.title if mix is not None else str(mix_id)
+                    self.note(
+                        f"download failed: {label}: {exc}",
+                        level=logging.WARNING,
+                    )
                     continue
-                for index, mix_id in enumerate(assignment.mix_ids):
-                    key = (intent.id, mix_id)
-                    if key in attempted or self._has_local_file(mix_id):
+                if self._has_local_file(mix_id):
+                    self._nudge_peers_waiting_on_us(intent_id, mix_id)
+
+        with ThreadPoolExecutor(
+            max_workers=_FILL_POOL_WORKERS,
+            thread_name_prefix="tunebag-dl",
+        ) as pool:
+            while True:
+                _reap_done()
+                in_flight_mixes = {mix_id for _, mix_id, _ in in_flight.values()}
+                candidates: list[tuple[float, str, int, UUID, UUID]] = []
+                for intent in self.intents():
+                    assignment = self.assignment(intent.id)
+                    if assignment is None:
                         continue
-                    if not self._fetch_actionable(
-                        intent.id,
+                    for index, mix_id in enumerate(assignment.mix_ids):
+                        key = (intent.id, mix_id)
+                        if (
+                            key in attempted
+                            or mix_id in in_flight_mixes
+                            or self._has_local_file(mix_id)
+                        ):
+                            continue
+                        if not self._fetch_actionable(
+                            intent.id,
+                            mix_id,
+                            override_intent_id=override_intent_id,
+                        ):
+                            continue
+                        urgency = self._mix_urgency(assignment, mix_id)
+                        candidates.append(
+                            (urgency, str(intent.id), index, intent.id, mix_id)
+                        )
+                candidates.sort()
+                started = False
+                for _urgency, _intent_key, _index, intent_id, mix_id in candidates:
+                    if mix_id in in_flight_mixes:
+                        continue
+                    held: Platform | None = None
+                    if not self._peer_can_supply(mix_id):
+                        mix = self.catalog.mixes.get(mix_id)
+                        if mix is None:
+                            attempted.add((intent_id, mix_id))
+                            continue
+                        if not self._origin_slots[mix.platform].acquire(
+                            blocking=False
+                        ):
+                            continue
+                        held = mix.platform
+                    attempted.add((intent_id, mix_id))
+                    in_flight_mixes.add(mix_id)
+                    fut = pool.submit(
+                        self._ensure_local_file,
+                        intent_id,
                         mix_id,
                         override_intent_id=override_intent_id,
-                    ):
-                        continue
-                    urgency = self._mix_urgency(assignment, mix_id)
-                    candidates.append(
-                        (urgency, str(intent.id), index, intent.id, mix_id)
                     )
-            if not candidates:
-                break
-            candidates.sort()
-            _urgency, _intent_key, _index, intent_id, mix_id = candidates[0]
-            attempted.add((intent_id, mix_id))
-            try:
-                self._ensure_local_file(
-                    intent_id,
-                    mix_id,
-                    override_intent_id=override_intent_id,
-                )
-            except Exception as exc:
-                # yt-dlp and platform errors vary; one bad URL must not abort the fill.
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                    raise
-                mix = self.catalog.mixes.get(mix_id)
-                label = mix.title if mix is not None else str(mix_id)
-                self.note(
-                    f"download failed: {label}: {exc}",
-                    level=logging.WARNING,
-                )
-                continue
-            if self._has_local_file(mix_id):
-                self._nudge_peers_waiting_on_us(intent_id, mix_id)
+                    in_flight[fut] = (intent_id, mix_id, held)
+                    started = True
+                if not in_flight:
+                    break
+                if not started:
+                    wait(tuple(in_flight.keys()), return_when=FIRST_COMPLETED)
+
         # Drop leftovers from prior assignments / deleted intents before
         # rewriting intent folders. Batch only this short tail.
         with self._view_notice_batch():
@@ -1490,7 +1860,7 @@ class DeviceAgent:
                 raise
             # Catalog apply stays in the batch; cover HTTP stays outside so SSE
             # is not held across image downloads.
-            cover_jobs: list[tuple[UUID, str]] = []
+            cover_jobs: list[tuple[UUID, str, str]] = []
             with self._view_notice_batch():
                 artist = self._artist_by_url(listing.url) or self._artist_by_url(url)
                 if artist is None:
@@ -1524,7 +1894,9 @@ class DeviceAgent:
                             and upload.cover_url
                             and not self.has_local_cover(existing.id)
                         ):
-                            cover_jobs.append((existing.id, upload.cover_url))
+                            cover_jobs.append(
+                                (existing.id, upload.cover_url, upload.url)
+                            )
                         continue
                     self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
                     known.add(key)
@@ -1532,10 +1904,10 @@ class DeviceAgent:
                     added.append(stored)
                     by_platform[key] = stored
                     if upload.cover_url:
-                        cover_jobs.append((stored.id, upload.cover_url))
+                        cover_jobs.append((stored.id, upload.cover_url, upload.url))
                     kept += 1
-            for mix_id, cover_url in cover_jobs:
-                self.ensure_cover(mix_id, cover_url)
+            for mix_id, cover_url, page_url in cover_jobs:
+                self.ensure_cover(mix_id, cover_url, page_url=page_url)
             self.note(
                 f"fetch artist list end: {listing.name} · "
                 f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
@@ -1586,7 +1958,7 @@ class DeviceAgent:
                     level=logging.WARNING,
                 )
                 raise
-            cover_jobs: list[tuple[UUID, str]] = []
+            cover_jobs: list[tuple[UUID, str, str]] = []
             with self._view_notice_batch():
                 kept = 0
                 for upload in listing.uploads:
@@ -1601,7 +1973,9 @@ class DeviceAgent:
                             and upload.cover_url
                             and not self.has_local_cover(existing.id)
                         ):
-                            cover_jobs.append((existing.id, upload.cover_url))
+                            cover_jobs.append(
+                                (existing.id, upload.cover_url, upload.url)
+                            )
                         continue
                     self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
                     known.add(key)
@@ -1609,10 +1983,10 @@ class DeviceAgent:
                     added.append(stored)
                     by_platform[key] = stored
                     if upload.cover_url:
-                        cover_jobs.append((stored.id, upload.cover_url))
+                        cover_jobs.append((stored.id, upload.cover_url, upload.url))
                     kept += 1
-            for mix_id, cover_url in cover_jobs:
-                self.ensure_cover(mix_id, cover_url)
+            for mix_id, cover_url, page_url in cover_jobs:
+                self.ensure_cover(mix_id, cover_url, page_url=page_url)
             self.note(
                 f"fetch artist list end: {artist.name} · "
                 f"{len(listing.uploads)} upload(s), {kept} mix(es) added"
@@ -2672,7 +3046,8 @@ class DeviceAgent:
         """Drop local blobs no remaining assignment wants (except currently playing).
 
         Soft Rejected Releases keep bytes until Soft → Hard (ADR-0007), even when
-        rebuild drops them from assignments.
+        rebuild drops them from assignments. Playlog previous-File cushion also
+        keeps the immediate previous Release briefly for ◀.
         """
         wanted: set[UUID] = set()
         for intent in self.intents():
@@ -2686,6 +3061,8 @@ class DeviceAgent:
             if mix_id in wanted:
                 continue
             if playing is not None and mix_id == playing:
+                continue
+            if self._is_playlog_previous_retained(mix_id):
                 continue
             mix = self.catalog.mixes.get(mix_id)
             if mix is not None and is_soft_rejected(
@@ -2815,6 +3192,13 @@ class DeviceAgent:
     def _peer_has_release(self, peer: DeviceAgent, mix_id: UUID) -> bool:
         return peer._has_local_file(mix_id)
 
+    def _peer_can_supply(self, mix_id: UUID) -> bool:
+        """True when a trusted reachable peer already has File bytes for ``mix_id``."""
+        return any(
+            self._peer_has_release(peer, mix_id)
+            for peer in self._trusted_reachable_peers()
+        )
+
     def _fetch_actionable(
         self,
         intent_id: UUID,
@@ -2867,7 +3251,12 @@ class DeviceAgent:
         origin: OriginFetch | None = None
         if preferred is self or preferred is None:
             if self._origin_fetch_allowed(intent_id, mix_id, override_intent_id):
-                origin = _SourceOriginFetch(self.source, self._on_download_progress)
+                origin = _SourceOriginFetch(
+                    self.source,
+                    lambda downloaded, total, mid=mix_id: self._on_download_progress(
+                        mid, downloaded, total
+                    ),
+                )
         # Else preferred peer is reachable but lacks bytes — wait (origin stays None).
         self._cache.ensure_complete(
             mix,
@@ -2878,10 +3267,15 @@ class DeviceAgent:
             wrap_download=self._with_download,
         )
 
-    def _on_download_progress(self, downloaded: int, total: int | None) -> None:
+    def _on_download_progress(
+        self, mix_id: UUID, downloaded: int, total: int | None
+    ) -> None:
         with self._download_lock:
-            self._download_bytes = max(0, int(downloaded))
-            self._download_total_bytes = None if total is None else max(0, int(total))
+            progress = self._downloads.get(mix_id)
+            if progress is None:
+                return
+            progress["downloaded_bytes"] = max(0, int(downloaded))
+            progress["total_bytes"] = None if total is None else max(0, int(total))
         now = time.monotonic()
         if now - self._download_cache_notice_at >= _DOWNLOAD_CACHE_NOTICE_SECONDS:
             self._download_cache_notice_at = now
@@ -2889,18 +3283,16 @@ class DeviceAgent:
 
     def _with_download(self, mix_id: UUID, action: Callable[[], None]) -> None:
         with self._download_lock:
-            self._downloading_mix_id = mix_id
-            self._download_bytes = 0
-            self._download_total_bytes = None
+            self._downloads[mix_id] = {
+                "downloaded_bytes": 0,
+                "total_bytes": None,
+            }
         self._mark_view_sections(UIViewSection.CACHE)
         try:
             action()
         finally:
             with self._download_lock:
-                if self._downloading_mix_id == mix_id:
-                    self._downloading_mix_id = None
-                    self._download_bytes = 0
-                    self._download_total_bytes = None
+                self._downloads.pop(mix_id, None)
             self._mark_view_sections(UIViewSection.CACHE)
 
     def _origin_fetch_allowed(
@@ -3265,11 +3657,14 @@ class DeviceAgent:
     def _delete_retired_file_if_replaced(self, retired_mix_id: UUID) -> None:
         """Drop a played/skipped mix's bytes once another assigned mix is local.
 
-        Keeps the blob while it is still the current mix so playback can continue.
+        Keeps the blob while it is still the current mix so playback can continue,
+        and while the Playlog previous-File cushion still holds.
         """
         if not self._has_local_file(retired_mix_id):
             return
         if retired_mix_id == self._current_mix_id:
+            return
+        if self._is_playlog_previous_retained(retired_mix_id):
             return
         replacement_local = False
         for intent in self.intents():

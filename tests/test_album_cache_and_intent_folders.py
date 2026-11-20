@@ -323,8 +323,12 @@ def test_partial_peer_album_does_not_copy(tmp_path: Path) -> None:
     phone.sync()
     laptop.sync()
     laptop.wait_for_fill()
+    phone.wait_for_fill()
     # Replace any complete fill with a stranded half-disc (must not copy).
+    # Phone may already have a peer copy from the laptop nudge — clear both.
     laptop.remove_local_file(album.id)
+    if album.id in {m.id for m in phone.files()}:
+        phone.remove_local_file(album.id)
     cache_dir = tmp_path / "laptop" / "blobs" / str(album.id)
     cache_dir.mkdir(parents=True)
     first = album.tracks[0]
@@ -332,6 +336,7 @@ def test_partial_peer_album_does_not_copy(tmp_path: Path) -> None:
         cache_dir / f"01-{first.title}-{first.platform_id}.bin"
     ).write_bytes(b"only-one-track")
     assert album.id not in {m.id for m in laptop.files()}
+    assert album.id not in {m.id for m in phone.files()}
     assert laptop.album_track_bytes(album.id) is None
     source.fetch_calls.clear()
 

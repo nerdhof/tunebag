@@ -81,7 +81,7 @@ def test_download_wrap_and_progress_mark_cache(tmp_path: Path) -> None:
 
     def action() -> None:
         seen.extend(_sections(agent))
-        agent._on_download_progress(512, 1024)
+        agent._on_download_progress(mix.id, 512, 1024)
         seen.extend(_sections(agent))
 
     agent._with_download(mix.id, action)
@@ -99,7 +99,7 @@ def test_companion_cache_refresh_coalesces_latest_wins() -> None:
     assert "filesRefreshEpoch" in js
     assert "async function refreshFilesNow" in js
     assert "async function refreshFiles" in js
-    assert "/static/app.js?v=71" in html
+    assert "/static/app.js?v=74" in html
 
     # Activity must not drive Cache; Cache notices do.
     start = js.index("async function refreshActivity")

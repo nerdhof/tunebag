@@ -262,7 +262,6 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
     assert 'id="catalog-show-rejected"' in html
-    assert 'id="play-history-show-rejected"' in html
     assert 'id="catalog-source-filters"' in html
     assert 'id="catalog-star-filters"' in html
     assert 'id="catalog-tag-filters"' in html

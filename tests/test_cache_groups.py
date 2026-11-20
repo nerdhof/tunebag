@@ -131,9 +131,10 @@ def test_cache_groups_marks_active_download_as_loading(tmp_path: Path) -> None:
 
     agent._store_local_file(a, b"audio:a")
     with agent._download_lock:
-        agent._downloading_mix_id = b
-        agent._download_bytes = 1_500_000
-        agent._download_total_bytes = 4_000_000
+        agent._downloads[b] = {
+            "downloaded_bytes": 1_500_000,
+            "total_bytes": 4_000_000,
+        }
 
     groups = agent.cache_groups()
     group = groups[0]
@@ -156,6 +157,36 @@ def test_cache_groups_marks_active_download_as_loading(tmp_path: Path) -> None:
     assert group["overview"]["pending"]["count"] == len(assignment.mix_ids) - 2
 
 
+def test_cache_groups_multiple_loading_rows(tmp_path: Path) -> None:
+    agent, source = _agent(tmp_path)
+    a = _add_mix(agent, source, title="A", duration_seconds=3600, platform_id="a")
+    b = _add_mix(agent, source, title="B", duration_seconds=1800, platform_id="b")
+    intent = agent.create_intent(
+        "Multi load",
+        seed=1,
+        device_hours=[(agent.device_id, 7200)],
+    )
+    _clear_auto_fill(agent)
+    assignment = agent.assignment(intent.id)
+    assert assignment is not None
+    assert {a, b}.issubset(set(assignment.mix_ids))
+
+    with agent._download_lock:
+        agent._downloads[a] = {"downloaded_bytes": 100, "total_bytes": 1000}
+        agent._downloads[b] = {"downloaded_bytes": 200, "total_bytes": None}
+
+    groups = agent.cache_groups()
+    group = groups[0]
+    by_id = {m["id"]: m for m in group["mixes"]}
+    assert by_id[a]["status"] == "loading"
+    assert by_id[b]["status"] == "loading"
+    assert by_id[a]["downloaded_bytes"] == 100
+    assert by_id[a]["total_bytes"] == 1000
+    assert by_id[b]["downloaded_bytes"] == 200
+    assert by_id[b]["total_bytes"] is None
+    assert group["overview"]["loading"]["count"] == 2
+
+
 def test_download_progress_property_and_clear(tmp_path: Path) -> None:
     agent, source = _agent(tmp_path)
     mix_id = _add_mix(agent, source, title="A", duration_seconds=600, platform_id="a")
@@ -166,15 +197,23 @@ def test_download_progress_property_and_clear(tmp_path: Path) -> None:
         assert progress["mix_id"] == mix_id
         assert progress["downloaded_bytes"] == 0
         assert progress["total_bytes"] is None
-        agent._on_download_progress(512, 1024)
+        agent._on_download_progress(mix_id, 512, 1024)
         mid = agent.download_progress
         assert mid is not None
         assert mid["downloaded_bytes"] == 512
         assert mid["total_bytes"] == 1024
+        assert agent.downloads_in_progress == [
+            {
+                "mix_id": mix_id,
+                "downloaded_bytes": 512,
+                "total_bytes": 1024,
+            }
+        ]
 
     agent._with_download(mix_id, action)
     assert agent.download_progress is None
     assert agent.downloading_mix_id is None
+    assert agent.downloads_in_progress == []
 
 
 def test_cache_groups_other_for_unassigned_local_files(tmp_path: Path) -> None:

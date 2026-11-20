@@ -88,7 +88,7 @@ def test_tag_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None:
 
     assert _catalog_sections(agent) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
 
 
@@ -101,7 +101,7 @@ def test_rate_mix_emits_coalesced_mixes_and_play_history(tmp_path: Path) -> None
 
     assert _catalog_sections(agent) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
 
 
@@ -125,11 +125,11 @@ def test_reject_commit_emits_mixes_and_play_history(tmp_path: Path) -> None:
 
     sections = set(_catalog_sections(agent))
     assert UIViewSection.MIXES in sections
-    assert UIViewSection.PLAY_HISTORY in sections
+    assert UIViewSection.PLAYLOG in sections
 
 
 def test_playhead_tick_emits_no_catalog_notice(tmp_path: Path) -> None:
-    """Pure PLAYHEAD ticks must not remount Catalog / Play history."""
+    """Pure PLAYHEAD ticks must not remount Catalog / Playlog."""
     agent, source = _agent(tmp_path)
     mix = _add_mix(agent, source, duration_seconds=1000)
     agent.rate_mix(mix.id, Stars.FIVE)
@@ -165,14 +165,17 @@ def test_last_heard_rising_edge_still_notifies_mixes_and_history(
     agent.fill_caches()
     agent.play(intent.id, mix.id)
     agent._cancel_playback_threshold_watch()
+    agent.wait_for_fill()
     agent.drain_view_notices()
 
+    agent.report_playhead(9)
     agent.report_playhead(10)
 
     assert _catalog_sections(agent) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
+    assert next(m for m in agent.mixes() if m.id == mix.id).last_heard_at is not None
 
 
 def test_create_intent_emits_single_coalesced_intents_notice(tmp_path: Path) -> None:
@@ -190,7 +193,7 @@ def test_create_intent_emits_single_coalesced_intents_notice(tmp_path: Path) -> 
 
     # Fill may mark CACHE (download start); intents must still coalesce to one.
     sections = [s for s in _catalog_sections(agent) if s != UIViewSection.CACHE]
-    assert sections == [UIViewSection.INTENTS]
+    assert sections == [UIViewSection.PLAYLOG, UIViewSection.INTENTS]
 
 
 def test_cache_file_add_and_remove_emit_cache(tmp_path: Path) -> None:
@@ -275,11 +278,11 @@ def test_two_subscribers_observe_same_coalesced_notices(tmp_path: Path) -> None:
 
     assert catalog_only(seen_a) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
     assert catalog_only(seen_b) == [
         UIViewSection.MIXES,
-        UIViewSection.PLAY_HISTORY,
+        UIViewSection.PLAYLOG,
     ]
     assert seen_a == seen_b
     unsub_a()

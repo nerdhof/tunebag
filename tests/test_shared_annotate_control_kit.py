@@ -10,28 +10,28 @@ def _static_js() -> str:
     return (root / "app.js").read_text()
 
 
-def test_shared_annotate_kit_mounts_on_player_history_and_catalog() -> None:
-    """One mountAnnotateKit entry point wires Player, History, and Catalog."""
+def test_shared_annotate_kit_mounts_on_player_playlog_and_catalog() -> None:
+    """One mountAnnotateKit entry point wires Player, Playlog, and Catalog."""
     js = _static_js()
     assert "function mountAnnotateKit(" in js
     assert 'surface: "player"' in js
     assert 'surface: "catalog"' in js
-    assert 'surface: "history"' in js
+    assert 'surface: "playlog"' in js
     # Catalog Rate is interactive via the shared kit (ui-actions 03).
     catalog_start = js.index('tr.className = "mix-row"')
-    catalog_end = js.index("async function refreshPlayHistory")
+    catalog_end = js.index("async function refreshPlaylog")
     catalog_block = js[catalog_start:catalog_end]
     assert "mountAnnotateKit" in catalog_block
     assert "rateInteractive: true" in catalog_block
     assert "refreshAfterTag: true" in catalog_block
-    # History keeps interactive Rate + tag refresh via the kit.
-    history_start = js.index("async function refreshPlayHistory")
-    history_end = js.index("async function refreshPlayerIntents")
-    history_block = js[history_start:history_end]
-    assert "mountAnnotateKit" in history_block
-    assert "rateInteractive: true" in history_block
-    assert "refreshAfterTag: true" in history_block
-    assert "history-stars" in history_block
+    # Playlog keeps interactive Rate + tag refresh via the kit.
+    playlog_start = js.index("async function refreshPlaylog")
+    playlog_end = js.index("async function refreshPlayerIntents")
+    playlog_block = js[playlog_start:playlog_end]
+    assert "mountAnnotateKit" in playlog_block
+    assert "rateInteractive: true" in playlog_block
+    assert "refreshAfterTag: true" in playlog_block
+    assert "playlog-stars" in playlog_block
     # Player uses the same kit (no Un-reject on player chrome).
     assert "mountPlayerAnnotateKit" in js
     assert "playerAnnotateKit" in js

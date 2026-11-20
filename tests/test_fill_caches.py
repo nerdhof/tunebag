@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 
-from tunebag.agent import DeviceAgent
+from tunebag.agent import DeviceAgent, _ORIGIN_DOWNLOADS_PER_PLATFORM
 from tunebag.domain import Platform, Stars
 from tunebag.source import FakeSource
 
@@ -382,10 +382,11 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
 
     class GatedSource(FakeSource):
         def fetch_bytes(self, source_url: str, *, on_progress=None) -> bytes:
+            # Hold every in-flight origin fetch until after refresh so the
+            # parallel pool cannot finish the old assignment tail early.
             fetch_urls.append(source_url)
-            if len(fetch_urls) == 1:
-                fetch_started.set()
-                assert release_fetch.wait(timeout=5.0), "first fetch not released"
+            fetch_started.set()
+            assert release_fetch.wait(timeout=5.0), "fetch not released"
             return super().fetch_bytes(source_url, on_progress=on_progress)
 
     source = GatedSource()
@@ -417,7 +418,6 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
     assert before is not None
     assert len(before.mix_ids) == 3
     old_ids = list(before.mix_ids)
-    old_tail_urls = [laptop.catalog.mixes[mid].url for mid in old_ids[1:]]
 
     alt_seed = None
     new_ids: list[UUID] = []
@@ -451,7 +451,9 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
     group = next(g for g in groups if g["id"] == intent.id)
     assert [m["id"] for m in group["mixes"]] == new_ids
     assert all(m["status"] == "pending" for m in group["mixes"])
-    assert laptop.downloading_mix_id == old_ids[0]
+    downloading = {entry["mix_id"] for entry in laptop.downloads_in_progress}
+    assert old_ids[0] in downloading
+    assert downloading.isdisjoint(new_ids)
 
     laptop.request_fill()
     release_fetch.set()
@@ -459,9 +461,14 @@ def test_refresh_mid_fill_skips_stale_assignment_tail(
 
     new_urls = [laptop.catalog.mixes[mid].url for mid in new_ids]
     assert set(new_urls).issubset(set(fetch_urls))
-    # Must not keep walking the pre-refresh assignment after the sequence changed.
-    assert not set(old_tail_urls).intersection(fetch_urls), (
-        f"stale tail still fetched: {sorted(set(old_tail_urls) & set(fetch_urls))}"
+    # Up to two old-assignment origin fetches may already be in flight when
+    # refresh lands; the third (and beyond) must not start after the change.
+    stale_beyond_pool = [
+        laptop.catalog.mixes[mid].url
+        for mid in old_ids[_ORIGIN_DOWNLOADS_PER_PLATFORM:]
+    ]
+    assert not set(stale_beyond_pool).intersection(fetch_urls), (
+        f"stale tail still fetched: {sorted(set(stale_beyond_pool) & set(fetch_urls))}"
     )
     cached_ids = {m.id for m in laptop.files()}
     assert set(new_ids).issubset(cached_ids)
@@ -531,10 +538,8 @@ def test_fill_caches_picks_sooner_intent_before_later_mix(tmp_path: Path) -> Non
     laptop.set_current_mix(head)
     laptop.wait_for_fill()
 
-    assert source.fetch_calls == [
-        "https://example.com/b0",
-        tail_url,
-    ]
+    # Parallel origin pool may interleave same-platform fetches.
+    assert set(source.fetch_calls) == {"https://example.com/b0", tail_url}
     assert {m.id for m in laptop.files()} == {a0, a1, b0}
 
 
@@ -675,3 +680,95 @@ def test_mark_played_coalesces_fill_while_background_running(tmp_path: Path) -> 
     cached = {m.id for m in laptop.files()}
     assert set(after.mix_ids).issubset(cached)
     assert set(ids).issuperset(set(after.mix_ids))
+
+
+def test_origin_pool_two_per_platform_and_cross_platform(
+    tmp_path: Path,
+) -> None:
+    """At most 2 SoundCloud origin fetches overlap; Bandcamp can run beside them."""
+    lock = threading.Lock()
+    active = {"soundcloud": 0, "bandcamp": 0}
+    peaks = {"soundcloud": 0, "bandcamp": 0}
+    started: list[str] = []
+    saw_capacity = threading.Event()
+    release = threading.Event()
+
+    def _platform_for(url: str) -> str:
+        return "bandcamp" if "/bc-" in url else "soundcloud"
+
+    class SlowSource(FakeSource):
+        def fetch_bytes(self, source_url: str, *, on_progress=None) -> bytes:
+            platform = _platform_for(source_url)
+            with lock:
+                started.append(source_url)
+                active[platform] += 1
+                peaks[platform] = max(peaks[platform], active[platform])
+                if (
+                    peaks["soundcloud"] >= _ORIGIN_DOWNLOADS_PER_PLATFORM
+                    and peaks["bandcamp"] >= 1
+                ):
+                    saw_capacity.set()
+            assert release.wait(timeout=5.0), "origin pool gate was not released"
+            with lock:
+                active[platform] -= 1
+            return super().fetch_bytes(source_url, on_progress=on_progress)
+
+    source = SlowSource()
+    laptop = DeviceAgent(
+        "laptop",
+        priority=1,
+        source=source,
+        data_dir=tmp_path / "pool",
+    )
+    sc_ids = []
+    for i in range(3):
+        sc_ids.append(
+            _add_mix(
+                laptop,
+                source,
+                title=f"SC {i}",
+                duration_seconds=3600,
+                platform_id=f"sc-{i}",
+                tags=["pool"],
+                stars=Stars.FIVE,
+            )
+        )
+    bc_url = "https://example.com/bc-0"
+    source.bytes_by_url[bc_url] = b"audio:bc-0"
+    bc = laptop.add_mix(
+        title="BC 0",
+        url=bc_url,
+        duration_seconds=3600,
+        platform=Platform.BANDCAMP,
+        platform_id="bc-0",
+        artist_name="DJ Example",
+    )
+    laptop.tag_mix(bc.id, ["pool"])
+    laptop.rate_mix(bc.id, Stars.FIVE)
+
+    # create_intent kicks background fill into the gate.
+    intent = laptop.create_intent(
+        "Pool",
+        tags=["pool"],
+        seed=1,
+        device_hours=[(laptop.device_id, 4 * 3600)],
+    )
+    assert saw_capacity.wait(timeout=2.0), (
+        f"never reached 2 SC + 1 BC concurrent; peaks={peaks} started={started}"
+    )
+    with lock:
+        assert peaks["soundcloud"] == _ORIGIN_DOWNLOADS_PER_PLATFORM
+        assert peaks["bandcamp"] >= 1
+        assert active["soundcloud"] <= _ORIGIN_DOWNLOADS_PER_PLATFORM
+        # Third SC must wait for a slot while two SC are held.
+        sc_urls = {laptop.catalog.mixes[mid].url for mid in sc_ids}
+        started_sc = [u for u in started if u in sc_urls]
+        assert len(started_sc) == _ORIGIN_DOWNLOADS_PER_PLATFORM
+
+    release.set()
+    laptop.wait_for_fill(timeout=5.0)
+
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    assert {m.id for m in laptop.files()} >= set(assignment.mix_ids)
+    assert peaks["soundcloud"] == _ORIGIN_DOWNLOADS_PER_PLATFORM

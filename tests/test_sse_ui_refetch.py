@@ -98,7 +98,7 @@ def test_view_notices_ui_contract_eventsource_and_section_refetch() -> None:
     assert 'addEventListener("open"' in js or "es.onopen" in js
     assert 'addEventListener("notice"' in js
     assert "refreshMixes" in js
-    assert "refreshPlayHistory" in js
+    assert "refreshPlaylog" in js
     assert "refreshIntents" in js
     assert "refreshPeers" in js
     assert "refreshFiles" in js
@@ -111,7 +111,7 @@ def test_view_notices_ui_contract_eventsource_and_section_refetch() -> None:
     # Section keys from the notice taxonomy
     for section in (
         "mixes",
-        "play_history",
+        "playlog",
         "intents",
         "peers",
         "cache",
@@ -150,5 +150,5 @@ def test_sse_refetch_preserves_tag_editor_focus() -> None:
     assert "refreshMixes({ force: true })" not in all_surfaces
     assert "refreshFiles({ force: true })" not in all_surfaces
 
-    play_history = _js_function_body(js, "async function refreshPlayHistory")
-    assert "focusInside(body)" in play_history
+    playlog = _js_function_body(js, "async function refreshPlaylog")
+    assert "focusInside(body)" in playlog

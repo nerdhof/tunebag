@@ -1,4 +1,4 @@
-"""Issue 03 (play-history): annotate + resume — DeviceAgent/HTTP + UI contracts."""
+"""Playlog annotate + play — DeviceAgent/HTTP + UI contracts."""
 
 from __future__ import annotations
 
@@ -144,43 +144,75 @@ def test_http_play_with_mix_id_resumes_at_catalog_playhead(tmp_path: Path) -> No
     assert recorder.plays[0][1] == pytest.approx(900, abs=0.05)
 
 
-def test_play_history_ui_contract_rejected_filter_and_reject_pipeline() -> None:
-    """Static Play history exposes Rejected filter + reject/un-reject hooks."""
+def test_play_at_end_of_release_starts_at_zero(tmp_path: Path) -> None:
+    """Playhead at or past duration restarts at 0 instead of resuming at the end."""
+    recorder = _RecordingPlayer()
+    laptop, _phone, source, _clock = _pair(tmp_path, player=recorder)
+    duration = 1800
+    mix_id, intent_id = _play_ready(
+        laptop,
+        source,
+        title="Finished",
+        duration_seconds=duration,
+        platform_id="finished",
+    )
+    laptop.report_playhead(float(duration))
+    laptop.stop()
+    recorder.plays.clear()
+
+    laptop.play(intent_id, mix_id)
+
+    assert len(recorder.plays) == 1
+    assert recorder.plays[0][1] == pytest.approx(0.0, abs=0.05)
+
+
+def test_playlog_ui_contract_play_controls_and_annotate() -> None:
+    """Static Playlog: one row per entry; cover + stacked release/annotate."""
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
-    assert 'id="play-history-show-rejected"' in html
-    assert "showRejectedHistory" in js
-    assert "history-reject" in js
-    assert "history-undo-reject" not in js
-    assert "history-un-reject" in js
+    assert 'id="playlog"' in html
+    assert 'id="playlog-body"' in html
+    assert ">Release</th>" in html
+    assert ">Artist</th>" not in html.split('id="playlog"')[1].split("</section>")[0]
+    assert "refreshPlaylog" in js
+    assert "/api/playlog" in js
+    assert "showRejectedHistory" not in js
+    assert "history-resume" not in js
+    assert "expandedPlaylogMixId" not in js
+    assert "playlog-annotate-row" not in js
+    assert "playlog-annotate" in js
+    assert "playlog-cover-cell" in js
+    assert "playlog-cover-stack" in js
+    assert "playlog-cover-action" in js
+    assert "playlog-main-cell" in js
+    assert "playlog-side-cell" in js
+    assert "playlog-action-btn" not in js
+    playlog_fn = js[js.index("async function refreshPlaylog") :]
+    playlog_fn = playlog_fn[: playlog_fn.index("\nasync function ", 1)]
+    assert "rowSpan" not in playlog_fn
+    assert "playlog-release" in js
+    assert "${artist} - ${title}" in js
+    assert "scrollPlaylogDefaultView" in js
+    assert "updatePlaylogStickyMetrics" in js
+    assert "playlogCurrentIsStuck" in js
+    assert "syncPlaylogCurrentStuck" in js
+    assert "onPlaylogWrapClick" in js
+    assert "playlog-current-is-stuck" in js
+    assert 'dataset.offset === "-2"' in js
+    assert "fillPlaylogCacheCell" in js
+    assert "savedScroll" in js
+    assert ">Cache</th>" not in html
+    assert 'surface: "playlog"' in js
+    assert "playlog-reject" in js
+    assert "playlog-un-reject" in js
     assert "/api/mixes/${mix.id}/reject" in js
-    assert "undo-reject" not in js
     assert "/api/mixes/${mix.id}/un-reject" in js
-    assert "mix-rejected" in js
-    # Rejected filter is sent to GET /api/play-history (server applies Soft/Hard).
-    assert "showRejectedHistory" in js
-    assert "/api/play-history" in js
-    assert "include_rejected=true" in js
-
-
-def test_play_history_ui_contract_rate_tag_and_resume() -> None:
-    """Static Play history wires Rate, Tag, and Resume at playhead."""
-    root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
-    html = (root / "index.html").read_text()
-    js = (root / "app.js").read_text()
-    assert "history-rate" in js or "history-stars" in js
-    assert "/api/mixes/${mix.id}/rate" in js
-    assert "history-tag-editor" in js
-    assert "/api/mixes/${mixId}/tags" in js or "/api/mixes/${mix.id}/tags" in js
-    assert "history-resume" in js
-    assert 'mix_id:' in js or '"mix_id"' in js
-    # Resume posts play with mix_id
+    assert '"◀"' in playlog_fn or '"▶"' in playlog_fn
+    assert "playlogPlayMix" in js
     assert "/api/player/play" in js
-    assert "mix_id" in js
-    # Columns / tip mention annotate + resume
-    assert "Rating" in html or "Rate" in html
-    assert "resume" in html.lower() or "Resume" in html
+    assert "/api/mixes/${item.id}/cover" in playlog_fn
+    assert 'colSpan = 4' in playlog_fn
 
 
 def test_catalog_ui_contract_rating_is_interactive() -> None:
@@ -188,7 +220,7 @@ def test_catalog_ui_contract_rating_is_interactive() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     js = (root / "app.js").read_text()
     catalog_start = js.index('tr.className = "mix-row"')
-    catalog_end = js.index("async function refreshPlayHistory")
+    catalog_end = js.index("async function refreshPlaylog")
     catalog_block = js[catalog_start:catalog_end]
     assert "rateInteractive: true" in catalog_block
     assert "mountAnnotateKit" in catalog_block
