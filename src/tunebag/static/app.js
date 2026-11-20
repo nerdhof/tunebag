@@ -4197,11 +4197,14 @@ function updatePlaylogStickyMetrics() {
   table.style.setProperty("--playlog-thead-h", `${headH}px`);
 }
 
-/** True when current is pinned to the wrap top or bottom (not in normal flow). */
-function playlogCurrentIsStuck() {
+/**
+ * Which edge the current row is pinned to (or null when in normal flow).
+ * Bottom stick lifts the row over the previous border, so CSS needs an edge class.
+ */
+function playlogCurrentStuckEdge() {
   const wrap = document.getElementById("playlog-table-wrap");
   const row = document.querySelector("#playlog-table .playlog-row.playlog-current");
-  if (!wrap || !row) return false;
+  if (!wrap || !row) return null;
 
   const wrapRect = wrap.getBoundingClientRect();
   const head = wrap.querySelector("thead");
@@ -4214,26 +4217,33 @@ function playlogCurrentIsStuck() {
   if (rowRect.top <= stickyTop + eps) {
     const prev = row.previousElementSibling;
     if (prev && prev.getBoundingClientRect().bottom <= stickyTop + eps) {
-      return true;
+      return "top";
     }
   }
   if (rowRect.bottom >= stickyBottom - eps) {
     const next = row.nextElementSibling;
     if (next && next.getBoundingClientRect().top >= stickyBottom - eps) {
-      return true;
+      return "bottom";
     }
   }
-  return false;
+  return null;
+}
+
+/** True when current is pinned to the wrap top or bottom (not in normal flow). */
+function playlogCurrentIsStuck() {
+  return playlogCurrentStuckEdge() !== null;
 }
 
 function syncPlaylogCurrentStuck() {
   const table = document.getElementById("playlog-table");
   if (!table) return;
-  const stuck = playlogCurrentIsStuck();
-  table.classList.toggle("playlog-current-is-stuck", stuck);
+  const edge = playlogCurrentStuckEdge();
+  table.classList.toggle("playlog-current-is-stuck", edge !== null);
+  table.classList.toggle("playlog-current-stuck-top", edge === "top");
+  table.classList.toggle("playlog-current-stuck-bottom", edge === "bottom");
   const row = table.querySelector(".playlog-row.playlog-current");
   if (!row) return;
-  if (stuck) {
+  if (edge) {
     row.title = "Click empty space to return to default view";
   } else {
     row.removeAttribute("title");

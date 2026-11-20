@@ -171,6 +171,7 @@ def test_playlog_ui_contract_play_controls_and_annotate() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
+    css = (root / "app.css").read_text()
     assert 'id="playlog"' in html
     assert 'id="playlog-body"' in html
     assert ">Release</th>" in html
@@ -198,9 +199,12 @@ def test_playlog_ui_contract_play_controls_and_annotate() -> None:
     assert "scrollPlaylogDefaultView" in js
     assert "updatePlaylogStickyMetrics" in js
     assert "playlogCurrentIsStuck" in js
+    assert "playlogCurrentStuckEdge" in js
     assert "syncPlaylogCurrentStuck" in js
     assert "onPlaylogWrapClick" in js
     assert "playlog-current-is-stuck" in js
+    assert "playlog-current-stuck-bottom" in js
+    assert "playlog-current-stuck-bottom" in css
     assert 'dataset.offset === "-2"' in js
     assert "fillPlaylogCacheCell" in js
     assert "savedScroll" in js

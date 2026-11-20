@@ -2042,6 +2042,11 @@ button.artist-suggest:hover {
   cursor: pointer;
 }
 
+/* Bottom stick overlaps the previous row’s border-bottom; paint one on the sticky layer. */
+#playlog-table.playlog-current-stuck-bottom .playlog-row.playlog-current > td {
+  border-top: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
 /* Tag picker is only mounted while editing; lift that entry above sticky current. */
 #playlog-table .playlog-row:has(.tag-picker-wrap) > td {
   position: relative;
