@@ -103,8 +103,9 @@ from tunebag.source import (
     release_from_upload,
     youtube_normalize_artist_url,
 )
-from tunebag.ytdlp_fetch import YtdlpCookies
+from tunebag.title_display import display_title
 from tunebag.ui_notices import UIViewNotice, UIViewSection, ViewNoticeBus
+from tunebag.ytdlp_fetch import YtdlpCookies
 
 _HTTP_TIMEOUT = 5.0
 _PLAYBACK_THRESHOLD_WATCH_SECONDS = 1.0
@@ -623,6 +624,7 @@ class DeviceAgent:
         else:
             status = "pending"
         artist = self.catalog.artists.get(mix.artist_id)
+        artist_name = artist.name if artist is not None else "Unknown"
         soft = is_soft_rejected(
             rejected=mix.rejected,
             rejected_at=mix.rejected_at,
@@ -635,9 +637,9 @@ class DeviceAgent:
         entry: dict[str, Any] = {
             "offset": offset,
             "id": mix_id,
-            "artist": artist.name if artist is not None else "Unknown",
+            "artist": artist_name,
             "artist_url": artist.url if artist is not None else None,
-            "title": mix.title,
+            "title": display_title(mix.title, artist=artist_name),
             "url": mix.url,
             "platform": mix.platform.value,
             "duration_seconds": int(mix.duration_seconds),
@@ -1026,10 +1028,11 @@ class DeviceAgent:
                     status = "pending"
                 duration = int(mix.duration_seconds)
                 artist = self.catalog.artists.get(mix.artist_id)
+                artist_name = artist.name if artist is not None else "Unknown"
                 entry: dict[str, Any] = {
                     "id": mix_id,
-                    "artist": artist.name if artist is not None else "Unknown",
-                    "title": mix.title,
+                    "artist": artist_name,
+                    "title": display_title(mix.title, artist=artist_name),
                     "duration_seconds": duration,
                     "status": status,
                 }
@@ -1073,10 +1076,11 @@ class DeviceAgent:
                 continue
             duration = int(mix.duration_seconds)
             artist = self.catalog.artists.get(mix.artist_id)
+            artist_name = artist.name if artist is not None else "Unknown"
             entry: dict[str, Any] = {
                 "id": mix_id,
-                "artist": artist.name if artist is not None else "Unknown",
-                "title": mix.title,
+                "artist": artist_name,
+                "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": duration,
                 "status": "cached",
             }

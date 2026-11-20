@@ -23,21 +23,36 @@ from tunebag.agent import PLAYLOG_PAST_LIMIT, DeviceAgent, DeviceHoursSpec
 from tunebag.domain import Artist, Mix, Platform, ReleaseKind, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
+from tunebag.title_display import display_title
 from tunebag.ui_notices import UIViewNotice
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _artist_name(mix: Mix, agent: DeviceAgent) -> str:
+    artist = agent.catalog.artists.get(mix.artist_id)
+    return artist.name if artist is not None else "Unknown"
+
+
+def _file_row(mix: Mix, agent: DeviceAgent) -> dict[str, Any]:
+    return {
+        "id": str(mix.id),
+        "title": display_title(mix.title, artist=_artist_name(mix, agent)),
+        "duration_seconds": mix.duration_seconds,
+    }
+
+
 def _mix_row(mix: Mix, artists_by_id: dict[UUID, Artist]) -> dict[str, Any]:
     """Serialize a Release for Catalog JSON responses."""
     artist = artists_by_id.get(mix.artist_id)
+    artist_name = artist.name if artist is not None else "Unknown"
     return {
         "id": str(mix.id),
         "artist_id": str(mix.artist_id),
-        "artist": artist.name if artist is not None else "Unknown",
+        "artist": artist_name,
         "artist_url": artist.url if artist is not None else None,
         "platform": mix.platform.value,
-        "title": mix.title,
+        "title": display_title(mix.title, artist=artist_name),
         "url": mix.url,
         "duration_seconds": mix.duration_seconds,
         "size_bytes": mix.size_bytes,
@@ -553,12 +568,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             )
         return {
             "files": [
-                {
-                    "id": str(mix.id),
-                    "title": mix.title,
-                    "duration_seconds": mix.duration_seconds,
-                }
-                for mix in agent.files()
+                _file_row(mix, agent) for mix in agent.files()
             ],
             "groups": groups,
             "cache_summary": agent.cache_summary(),
@@ -710,7 +720,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         if mix is not None and mix.kind is ReleaseKind.ALBUM and mix.tracks:
             tracks = [
                 {
-                    "title": track.title,
+                    "title": display_title(track.title, artist=artist_name),
                     "duration_seconds": int(track.duration_seconds),
                 }
                 for track in mix.tracks
@@ -727,7 +737,11 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "artist_url": artist_url,
             "platform": mix.platform.value if mix is not None else None,
             "url": mix.url if mix is not None else None,
-            "title": mix.title if mix is not None else None,
+            "title": (
+                display_title(mix.title, artist=artist_name)
+                if mix is not None
+                else None
+            ),
             "kind": mix.kind.value if mix is not None else None,
             "tracks": tracks,
             "duration_seconds": mix.duration_seconds if mix is not None else None,
@@ -759,12 +773,14 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        artist = agent.catalog.artists.get(mix.artist_id)
+        artist_name = artist.name if artist is not None else "Unknown"
         return {
             "ok": True,
             "playing": agent.is_playing(),
             "mix": {
                 "id": str(mix.id),
-                "title": mix.title,
+                "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": mix.duration_seconds,
             },
         }
@@ -812,12 +828,14 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        artist = agent.catalog.artists.get(mix.artist_id)
+        artist_name = artist.name if artist is not None else "Unknown"
         return {
             "ok": True,
             "playing": agent.is_playing(),
             "mix": {
                 "id": str(mix.id),
-                "title": mix.title,
+                "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": mix.duration_seconds,
             },
         }
@@ -1099,9 +1117,10 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             if mix is None:
                 return {"artist": None, "title": None, "duration_seconds": None}
             artist = artists_by_id.get(mix.artist_id)
+            artist_name = artist.name if artist is not None else "Unknown"
             return {
-                "artist": artist.name if artist is not None else "Unknown",
-                "title": mix.title,
+                "artist": artist_name,
+                "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": mix.duration_seconds,
             }
 
