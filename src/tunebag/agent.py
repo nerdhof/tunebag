@@ -1446,19 +1446,25 @@ class DeviceAgent:
     def _playback_threshold_tick(self) -> None:
         if not self._playback.playing:
             return
-        was_playing = True
-        self._supervise_playback()
-        if not self._playback.playing:
-            if was_playing:
-                self._mark_view_sections(UIViewSection.PLAYER)
-            return
-        mix = (
-            self.catalog.mixes.get(self._current_mix_id)
-            if self._current_mix_id is not None
-            else None
-        )
-        pos = self._playback.live_position(mix)
-        self._maybe_commit_threshold_playhead(mix, pos)
+        try:
+            was_playing = True
+            self._supervise_playback()
+            if not self._playback.playing:
+                if was_playing:
+                    self._mark_view_sections(UIViewSection.PLAYER)
+                return
+            mix = (
+                self.catalog.mixes.get(self._current_mix_id)
+                if self._current_mix_id is not None
+                else None
+            )
+            pos = self._playback.live_position(mix)
+            self._maybe_commit_threshold_playhead(mix, pos)
+        except Exception as exc:
+            self.note(
+                f"playback threshold watch failed: {exc}",
+                level=logging.WARNING,
+            )
         if self._playback.playing:
             self._arm_playback_threshold_watch()
 
@@ -1540,11 +1546,31 @@ class DeviceAgent:
             elif isinstance(intent, MarkPlayed):
                 self.mark_played(intent.mix_id)
             elif isinstance(intent, ContinueTo):
-                try:
-                    self.play(intent.intent_id, intent.mix_id)
-                except (ValueError, KeyError, FileNotFoundError):
-                    # Assignment/cache may have changed after mark_played rebuild.
-                    pass
+                self._continue_to_mix(intent.intent_id, intent.mix_id)
+
+    def _continue_to_mix(self, intent_id: UUID, mix_id: UUID) -> None:
+        """Play the next assignment Release; on miss, retry once with a fresh next."""
+        finished_id = self._current_mix_id
+        try:
+            self.play(intent_id, mix_id)
+            return
+        except (ValueError, KeyError, FileNotFoundError) as exc:
+            self.note(
+                f"auto-continue failed for {mix_id}: {exc}",
+                level=logging.WARNING,
+            )
+        fallback = self._next_local_assigned(
+            intent_id, finished_id, wrap=False
+        )
+        if fallback is None or fallback == mix_id:
+            return
+        try:
+            self.play(intent_id, fallback)
+        except (ValueError, KeyError, FileNotFoundError) as exc:
+            self.note(
+                f"auto-continue fallback failed for {fallback}: {exc}",
+                level=logging.WARNING,
+            )
 
     def _supervise_playback(self) -> None:
         """Advance Album tracks; on release end, continue to the next local assignment."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -908,6 +909,84 @@ def test_mix_end_auto_continues_to_next_local_without_skip(
     assert head_playhead.position_seconds == 3600.0
     assert len(recorder.plays) >= 2
     assert recorder.plays[-1][0] == tmp_path / "laptop" / "blobs" / str(nxt)
+
+
+def test_mix_end_auto_continues_while_background_fill_blocked(
+    tmp_path: Path,
+) -> None:
+    """Natural end must ContinueTo without waiting on an in-flight fill."""
+    gate = threading.Event()
+    extra_started = threading.Event()
+
+    class GatedSource(FakeSource):
+        def fetch_bytes(self, source_url: str, *, on_progress=None) -> bytes:
+            if "/extra-" in source_url:
+                extra_started.set()
+                assert gate.wait(timeout=5.0), "extra fill gate was not released"
+            return super().fetch_bytes(source_url, on_progress=on_progress)
+
+    recorder = _RecordingPlayer()
+    source = GatedSource()
+    laptop, _phone, _ = _pair(tmp_path, source=source, player=recorder)
+    first = _add_mix(
+        laptop,
+        source,
+        title="Alpha",
+        duration_seconds=3600,
+        platform_id="alpha",
+        stars=Stars.FIVE,
+    )
+    second = _add_mix(
+        laptop,
+        source,
+        title="Beta",
+        duration_seconds=3600,
+        platform_id="beta",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Continue under fill",
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    laptop.fill_caches()
+    laptop.wait_for_fill()
+    assert {first, second}.issubset({m.id for m in laptop.files()})
+
+    # Extra assigned Releases keep a background fill blocked after play starts.
+    for n in range(1, 3):
+        _add_mix(
+            laptop,
+            source,
+            title=f"Extra {n}",
+            duration_seconds=3600,
+            platform_id=f"extra-{n}",
+            stars=Stars.FIVE,
+        )
+    laptop.set_device_hours(intent.id, laptop.device_id, 14400)
+    assert extra_started.wait(timeout=2.0), "background fill never reached extras"
+
+    # Rebuild may reshuffle; pick a local Release that still has a later local.
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    local_ids = [
+        mid for mid in assignment.mix_ids if laptop._has_local_file(mid)
+    ]
+    assert len(local_ids) >= 2
+    head, nxt = local_ids[0], local_ids[1]
+
+    try:
+        laptop.play(intent.id, head)
+        recorder.finish()
+        assert laptop.is_playing() is True
+        assert laptop.current_mix() == nxt
+        finished = next(m for m in laptop.mixes() if m.id == head)
+        assert finished.played is True
+        assert len(recorder.plays) >= 2
+        assert recorder.plays[-1][0] == tmp_path / "laptop" / "blobs" / str(nxt)
+    finally:
+        gate.set()
+        laptop.wait_for_fill(timeout=5.0)
 
 
 def test_mix_end_stops_when_no_later_local_release(tmp_path: Path) -> None:

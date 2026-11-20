@@ -107,17 +107,21 @@ def after_catalog_change(actions: MaintenanceActions, change: CatalogChange) -> 
         actions.request_fill()
         return True
 
+    if reason is CatalogChangeReason.MARK_PLAYED:
+        # Async fill so natural-end ContinueTo is never blocked by wait_for_fill.
+        actions.fillup_all_sequences()
+        actions.request_fill()
+        if change.mix_id is not None:
+            actions.delete_retired_file_if_replaced(change.mix_id)
+        return True
+
     if reason in (
-        CatalogChangeReason.MARK_PLAYED,
         CatalogChangeReason.SKIP_COMMIT,
         CatalogChangeReason.REJECT_COMMIT,
     ):
         actions.fillup_all_sequences()
         actions.fill_caches()
-        if change.mix_id is not None and reason in (
-            CatalogChangeReason.MARK_PLAYED,
-            CatalogChangeReason.SKIP_COMMIT,
-        ):
+        if change.mix_id is not None and reason is CatalogChangeReason.SKIP_COMMIT:
             actions.delete_retired_file_if_replaced(change.mix_id)
         return True
 

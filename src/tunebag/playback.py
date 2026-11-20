@@ -219,15 +219,16 @@ class PlaybackSupervisor:
         self.playing = False
         self.album_index = None
         self._clear_anchor()
-        # End-of-Release only: playhead + Last heard + Played (no mid-song %).
+        # End-of-Release: playhead + Last heard, then ContinueTo before MarkPlayed
+        # so sync fillup/fill cannot block or abort auto-continue.
         intents: list[PlaybackIntent] = [
             ReportPlayhead(mix_id=mix.id, position_seconds=end),
             EmitLastHeard(mix_id=mix.id),
         ]
-        if not mix.played:
-            intents.append(MarkPlayed(mix_id=mix.id))
         if next_id is not None and intent_id is not None:
             intents.append(ContinueTo(intent_id=intent_id, mix_id=next_id))
+        if not mix.played:
+            intents.append(MarkPlayed(mix_id=mix.id))
         return intents
 
     def _threshold_intents(

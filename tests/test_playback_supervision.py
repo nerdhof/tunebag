@@ -197,14 +197,41 @@ def test_album_end_emits_continue_to(tmp_path: Path) -> None:
     intents = supervisor.supervise(album, previous_position=150.0)
 
     assert supervisor.playing is False
-    assert any(isinstance(i, ReportPlayhead) for i in intents)
-    assert any(isinstance(i, EmitLastHeard) for i in intents)
-    assert any(isinstance(i, MarkPlayed) for i in intents)
+    assert [type(i) for i in intents] == [
+        ReportPlayhead,
+        EmitLastHeard,
+        ContinueTo,
+        MarkPlayed,
+    ]
     cont = next(i for i in intents if isinstance(i, ContinueTo))
     assert cont.intent_id == intent_id
     assert cont.mix_id == next_id
     end_report = next(i for i in intents if isinstance(i, ReportPlayhead))
     assert end_report.position_seconds == 180.0
+
+
+def test_mix_end_emits_continue_before_mark_played(tmp_path: Path) -> None:
+    mix = _mix(duration=50)
+    next_id = new_id()
+    intent_id = new_id()
+    supervisor, player, _clock, files = _supervisor(tmp_path)
+    path = tmp_path / "mix.bin"
+    path.write_bytes(b"audio")
+    files[mix.id] = [path]
+    supervisor.start(mix, 0.0, intent_id=intent_id, continue_next_id=next_id)
+
+    player.finish()
+    intents = supervisor.supervise(mix, previous_position=0.0)
+
+    assert [type(i) for i in intents] == [
+        ReportPlayhead,
+        EmitLastHeard,
+        ContinueTo,
+        MarkPlayed,
+    ]
+    cont = next(i for i in intents if isinstance(i, ContinueTo))
+    assert cont.intent_id == intent_id
+    assert cont.mix_id == next_id
 
 
 def test_mix_end_uses_fallback_next_when_stash_cleared(tmp_path: Path) -> None:

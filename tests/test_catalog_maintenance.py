@@ -49,7 +49,7 @@ def _intent() -> Intent:
     return Intent(name="Test", seed=1)
 
 
-def test_mark_played_fillups_fills_and_retires() -> None:
+def test_mark_played_fillups_request_fill_and_retires() -> None:
     actions = FakeActions()
     mix_id = uuid4()
     assert after_catalog_change(
@@ -58,7 +58,7 @@ def test_mark_played_fillups_fills_and_retires() -> None:
     )
     assert actions.calls == [
         ("fillup_all", None),
-        ("fill_caches", None),
+        ("request_fill", None),
         ("retire", mix_id),
     ]
 

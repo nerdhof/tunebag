@@ -669,7 +669,7 @@ def test_mark_played_coalesces_fill_while_background_running(tmp_path: Path) -> 
     before = laptop.assignment(intent.id)
     assert before is not None
     head = before.mix_ids[0]
-    # mark_played runs fill_caches synchronously (waits on in-flight fill).
+    # mark_played request_fill coalesces onto the in-flight fill.
     threading.Timer(0.05, gate.set).start()
     laptop.mark_played(head)
     laptop.wait_for_fill(timeout=5.0)
