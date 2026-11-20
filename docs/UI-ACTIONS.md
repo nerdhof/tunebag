@@ -30,7 +30,7 @@ Canonical UI labels (tips / accessible names). Domain meaning in parentheses whe
 | **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport; Playlog cover hover ▶ / ◀ / ⏸ also Play / Pause. Mark played = Last heard + Played + next; Skip = next without Played; Stop = idle at 0:00 |
 | **Switch to intent** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause) |
 | **Regenerate sequence** | Full rebuild of Sequence / assignments for one Intent (explicit; Played / Skipped / Reject use Sequence fillup instead — keep remaining queue order, append only if device hours need it) |
-| **Drop from sequence** | Remove one Release from this Intent’s Sequence (trim + Sequence fillup); not Played / Skipped / Reject; may re-enter later. Playlog upcoming `#` hover; Intent Shared sequence `#` hover. Not for the live current Release |
+| **Drop from sequence** | Confirm-click (⊖ → 💥): remove one Release from this Intent’s Sequence (trim + Sequence fillup); not Played / Skipped / Reject; may re-enter later. After confirm the row greys out and Drop is hidden until refresh. Playlog upcoming `#` hover; Intent Shared sequence `#` hover. Not for the live current Release |
 | **Refresh artist** / **Refresh all artists** | Re-ingest from origin for one / all Artists |
 | **Fill now** | Metered override: fill one Intent to its full device budget |
 | **Sync** | Exchange Event logs with reachable trusted Peers (+ maintenance nudge). Not “reload UI” |

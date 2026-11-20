@@ -4,4 +4,4 @@ Listeners need to remove an upcoming Release from one Intent’s Sequence withou
 
 **Considered:** intent-scoped sticky exclusion until Regenerate (blocked re-append). Rejected as unnecessary product weight; re-entry at another position is acceptable and simplifies Catalog merge.
 
-**Consequences:** companion **Drop from sequence** on Playlog upcoming and Intent Shared sequence; agent trims then `provision_fillup`; no change to Played / Skipped / Reject / Regenerate semantics. Refuse Drop of the live current Release for that Intent (use Skip / transport instead).
+**Consequences:** companion **Drop from sequence** on Playlog upcoming and Intent Shared sequence (confirm-click ⊖ → 💥); agent trims then `provision_fillup`, then async `request_fill`; no change to Played / Skipped / Reject / Regenerate semantics. Refuse Drop of the live current Release for that Intent (use Skip / transport instead).

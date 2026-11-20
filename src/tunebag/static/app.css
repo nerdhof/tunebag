@@ -1630,51 +1630,66 @@ button.artist-suggest:hover {
   width: 2.4rem;
 }
 
-/* Shared Drop-from-sequence hover on `#` (Playlog upcoming + Intent sequence). */
+/* Shared Drop-from-sequence hover on `#` (Playlog upcoming + Intent sequence).
+   Stack and ⊖/💥 are normal square symbol-btn size — not stretched to the row. */
 .seq-drop-stack {
   position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 1.6rem;
-  min-width: 1.6rem;
+  width: var(--control-height);
+  height: var(--control-height);
+  min-width: var(--control-height);
+  min-height: var(--control-height);
+  vertical-align: middle;
 }
 
 .seq-drop-label {
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  pointer-events: none;
 }
 
-.seq-drop-action {
+button.seq-drop-action.symbol-btn {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
+  top: 0;
+  left: 0;
   margin: 0;
-  padding: 0;
   opacity: 0;
   transition: opacity 0.12s ease;
 }
 
-.seq-drop-stack:hover .seq-drop-action,
-.seq-drop-action:focus-visible {
+.seq-drop-stack:hover button.seq-drop-action,
+button.seq-drop-action:focus-visible,
+button.seq-drop-action.confirm-pending {
   opacity: 1;
 }
 
 .seq-drop-stack:hover .seq-drop-label,
-.seq-drop-stack:focus-within .seq-drop-label {
+.seq-drop-stack:focus-within .seq-drop-label,
+.seq-drop-stack:has(button.confirm-pending) .seq-drop-label {
   opacity: 0;
 }
 
 @media (hover: none) {
-  .seq-drop-action {
+  button.seq-drop-action.symbol-btn {
     opacity: 0.92;
   }
   .seq-drop-stack .seq-drop-label {
     opacity: 0;
   }
+}
+
+/* After Drop confirm: mute the row until Playlog/sequence refresh removes it. */
+#playlog-table .playlog-row.seq-drop-pending,
+#intent-list .intent-seq-table tr.seq-drop-pending {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+#playlog-table .playlog-row.seq-drop-pending .seq-drop-action,
+#intent-list .intent-seq-table tr.seq-drop-pending .seq-drop-action {
+  display: none;
 }
 
 #peers pre {
@@ -2112,8 +2127,10 @@ button.artist-suggest:hover {
   vertical-align: middle;
 }
 
-#playlog-table .playlog-offset.seq-drop-cell {
+#playlog-table .playlog-offset.seq-drop-cell,
+#intent-list .intent-seq-table td.seq-drop-cell {
   text-align: center;
+  vertical-align: middle;
 }
 
 #playlog-table .playlog-cover-col,

@@ -42,6 +42,8 @@ let lastPlayerPlaying = false;
 let lastPlayerIntentId = null;
 /** Intent id Playlog last used for default / preserved scroll. */
 let playlogScrollIntentId = null;
+/** In-flight Drop keys (`intentId:mixId`) — grey row, hide Drop until refresh. */
+const pendingSequenceDrops = new Set();
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let playerTagEditor = null;
 /** @type {ReturnType<typeof mountStarRating> | null} */
@@ -3994,6 +3996,14 @@ function formatPlaylogOffset(offset) {
   return String(n);
 }
 
+function sequenceDropKey(intentId, mixId) {
+  return `${intentId}:${mixId}`;
+}
+
+function isSequenceDropPending(intentId, mixId) {
+  return pendingSequenceDrops.has(sequenceDropKey(intentId, mixId));
+}
+
 /** POST Drop from sequence; throws Error with server detail on failure. */
 async function dropFromSequence(intentId, mixId) {
   const res = await fetch(`/api/intents/${intentId}/sequence/drop`, {
@@ -4013,6 +4023,8 @@ async function dropFromSequence(intentId, mixId) {
 
 /**
  * Hover-reveal Drop on a sequence `#` cell (Playlog upcoming / Shared sequence).
+ * Confirm-click (⊖ → 💥) like Reject / Delete. On confirm, grey the row immediately
+ * and hide Drop until the backend refresh lands (or restore on failure).
  * @param {{ cell: HTMLElement, intentId: string, mixId: string, labelText: string, statusEl?: HTMLElement | null }} opts
  */
 function mountSequenceDropControl({
@@ -4031,25 +4043,44 @@ function mountSequenceDropControl({
   label.textContent = labelText;
   const btn = document.createElement("button");
   btn.type = "button";
-  setSymbolButton(btn, BTN.drop, "Drop from sequence");
   btn.classList.add("seq-drop-action");
-  btn.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    btn.disabled = true;
-    try {
-      await dropFromSequence(intentId, mixId);
-      if (statusEl) statusEl.textContent = "Dropped from sequence";
-      await refreshAffectedSurfaces(["playlog", "intents", "cache"], {
-        force: true,
-      });
-    } catch (err) {
-      if (statusEl) {
-        statusEl.textContent =
-          err instanceof Error ? err.message : "Drop from sequence failed";
+  bindConfirmClick(btn, {
+    idleSymbol: BTN.drop,
+    idleLabel: "Drop from sequence",
+    armedSymbol: BTN.confirmDelete,
+    armedLabel: "really drop?",
+    stopPropagation: true,
+    async onConfirm() {
+      const row = cell.closest("tr");
+      pendingSequenceDrops.add(sequenceDropKey(intentId, mixId));
+      if (row) {
+        row.classList.add("seq-drop-pending");
+        row.setAttribute("aria-busy", "true");
       }
-      console.error(err);
-      btn.disabled = false;
-    }
+      btn.hidden = true;
+      btn.disabled = true;
+      try {
+        await dropFromSequence(intentId, mixId);
+        if (statusEl) statusEl.textContent = "Dropped from sequence";
+        // Playlog/intents first (row should vanish); Cache can lag behind.
+        await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
+        void refreshAffectedSurfaces(["cache"], { force: true });
+        pendingSequenceDrops.delete(sequenceDropKey(intentId, mixId));
+      } catch (err) {
+        pendingSequenceDrops.delete(sequenceDropKey(intentId, mixId));
+        if (row) {
+          row.classList.remove("seq-drop-pending");
+          row.removeAttribute("aria-busy");
+        }
+        btn.hidden = false;
+        btn.disabled = false;
+        if (statusEl) {
+          statusEl.textContent =
+            err instanceof Error ? err.message : "Drop from sequence failed";
+        }
+        console.error(err);
+      }
+    },
   });
   stack.appendChild(label);
   stack.appendChild(btn);
@@ -4384,10 +4415,16 @@ async function refreshPlaylog({ force = false } = {}) {
     if (offset > 0) tr.classList.add("playlog-upcoming");
     if (item.rejected) tr.classList.add("mix-rejected");
     if (item.soft_rejected) tr.classList.add("playlog-soft-rejected");
+    const dropPending =
+      Boolean(intentId) && isSequenceDropPending(intentId, item.id);
+    if (dropPending) {
+      tr.classList.add("seq-drop-pending");
+      tr.setAttribute("aria-busy", "true");
+    }
 
     const offsetCell = document.createElement("td");
     offsetCell.className = "playlog-offset";
-    if (offset > 0 && intentId) {
+    if (offset > 0 && intentId && !dropPending) {
       mountSequenceDropControl({
         cell: offsetCell,
         intentId,
@@ -5599,9 +5636,17 @@ async function refreshIntents({ force = false } = {}) {
           lastPlayerIntentId === intent.id ? currentMixId : null;
         for (const entry of seq.entries) {
           const tr = document.createElement("tr");
+          const dropPending =
+            Boolean(entry.mix_id) &&
+            isSequenceDropPending(intent.id, entry.mix_id);
+          if (dropPending) {
+            tr.classList.add("seq-drop-pending");
+            tr.setAttribute("aria-busy", "true");
+          }
           const pos = document.createElement("td");
           const canDrop =
             entry.mix_id &&
+            !dropPending &&
             (!liveCurrentMixId || entry.mix_id !== liveCurrentMixId);
           if (canDrop) {
             mountSequenceDropControl({

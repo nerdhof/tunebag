@@ -3175,7 +3175,9 @@ class DeviceAgent:
                     ):
                         self._append_and_apply(draft.type, draft.payload)
                     self._prune_unassigned_files()
-                self.fill_caches()
+                # Async fill so the Drop HTTP reply (and UI refresh) is not blocked
+                # on origin downloads — same pattern as intent upsert fill_async.
+                self.request_fill()
         sequence = self.catalog.sequences.get(intent_id)
         if sequence is None:
             raise KeyError(f"sequence not found for intent {intent_id}")

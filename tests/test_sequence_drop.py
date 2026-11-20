@@ -270,6 +270,28 @@ def test_drop_from_sequence_unknown_intent_raises(tmp_path: Path) -> None:
         agent.drop_from_sequence(uuid4(), uuid4())
 
 
+def test_drop_ui_contract_confirm_click_square_symbol_btn() -> None:
+    """Drop uses confirm-click; ⊖/💥 stay normal square symbol-btn size."""
+    root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
+    js = (root / "app.js").read_text()
+    css = (root / "app.css").read_text()
+    assert "mountSequenceDropControl" in js
+    assert "bindConfirmClick(btn," in js
+    assert 'idleSymbol: BTN.drop' in js
+    assert 'armedLabel: "really drop?"' in js
+    assert "pendingSequenceDrops" in js
+    assert "seq-drop-pending" in js
+    assert "button.seq-drop-action.symbol-btn" in css
+    assert "button.seq-drop-action.confirm-pending" in css
+    assert "seq-drop-pending" in css
+    # Must not stretch the control to the tall Playlog row.
+    drop_css = css[css.index("/* Shared Drop-from-sequence") :]
+    drop_css = drop_css[: drop_css.index("#peers pre")]
+    assert "width: 100%" not in drop_css
+    assert "height: 100%" not in drop_css
+    assert "width: var(--control-height)" in drop_css
+
+
 def test_drop_from_sequence_http(tmp_path: Path) -> None:
     agent, source = _agent(tmp_path)
     a = _add_mix(
