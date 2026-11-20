@@ -284,12 +284,15 @@ def test_drop_ui_contract_confirm_click_square_symbol_btn() -> None:
     assert "button.seq-drop-action.symbol-btn" in css
     assert "button.seq-drop-action.confirm-pending" in css
     assert "seq-drop-pending" in css
-    # Must not stretch the control to the tall Playlog row.
+    # Symbol-btn stays square; Playlog stack is full-cell width so −N/0/+N share an edge.
     drop_css = css[css.index("/* Shared Drop-from-sequence") :]
     drop_css = drop_css[: drop_css.index("#peers pre")]
-    assert "width: 100%" not in drop_css
     assert "height: 100%" not in drop_css
     assert "width: var(--control-height)" in drop_css
+    assert "#playlog-table .playlog-offset.seq-drop-cell .seq-drop-label" in css
+    assert "text-align: right" in css.split(
+        "#playlog-table .playlog-offset.seq-drop-cell .seq-drop-label"
+    )[1][:120]
 
 
 def test_drop_from_sequence_http(tmp_path: Path) -> None:

@@ -5557,12 +5557,21 @@ async function refreshIntents({ force = false } = {}) {
       const platformsEl = document.createElement("span");
       platformsEl.className = "intent-meta-platforms";
       platformsEl.setAttribute("aria-label", "Sources");
-      const platforms = intent.platforms || DEFAULT_INTENT_PLATFORMS;
-      for (const platform of platforms) {
+      const activePlatforms = new Set(
+        intent.platforms && intent.platforms.length
+          ? intent.platforms
+          : DEFAULT_INTENT_PLATFORMS,
+      );
+      for (const platform of DEFAULT_INTENT_PLATFORMS) {
+        const on = activePlatforms.has(platform);
         const icon = document.createElement("span");
-        icon.className = "source-toggle";
-        icon.setAttribute("aria-pressed", "true");
+        icon.className = "platform-symbol";
+        icon.dataset.on = on ? "true" : "false";
         icon.title = PLATFORM_LABELS[platform] || platform;
+        icon.setAttribute(
+          "aria-label",
+          `${PLATFORM_LABELS[platform] || platform}${on ? "" : " (off)"}`,
+        );
         if (PLATFORM_SVG[platform]) {
           icon.innerHTML = PLATFORM_SVG[platform];
         } else {
