@@ -821,6 +821,56 @@ def test_pause_keeps_mix_and_play_resumes(tmp_path: Path) -> None:
     assert recorder.plays[-1][1] == 90.0
 
 
+def test_pause_with_dead_player_does_not_continue_to_next(tmp_path: Path) -> None:
+    """Pause must not treat a dead child as natural end (ContinueTo next).
+
+    ``is_playing()`` supervises; if Pause called that, a stop/exit race would
+    mark the current Release played and start the next — then Pause would idle
+    on the next, so Play would skip. Pause must keep the current Release.
+    """
+    now = datetime(2024, 1, 1, 12, 0, 0)
+
+    def clock() -> datetime:
+        return now
+
+    recorder = _RecordingPlayer()
+    laptop, _phone, source = _pair(tmp_path, player=recorder, clock=clock)
+    for platform_id, title in (("a", "Set A"), ("b", "Set B"), ("c", "Set C")):
+        _add_mix(
+            laptop,
+            source,
+            title=title,
+            duration_seconds=3600,
+            platform_id=platform_id,
+            stars=Stars.FIVE,
+        )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 10800)],
+    )
+    laptop.fill_caches()
+    ordered = list(laptop.assignment(intent.id).mix_ids)
+    first, second = ordered[0], ordered[1]
+    laptop.play(intent.id, first)
+    now = now + timedelta(seconds=90)
+    # Disarm the 1s end-watch so this test isolates Pause vs supervise, not a
+    # wall-clock race with the threshold timer.
+    laptop._cancel_playback_threshold_watch()
+    recorder.finish()
+    laptop.pause()
+
+    assert laptop.current_mix() == first
+    assert laptop.catalog.mixes[first].played is False
+    assert laptop._playback.playing is False
+    assert laptop._playback.position == 90.0
+
+    resumed = laptop.play(intent.id)
+    assert resumed.id == first
+    assert resumed.id != second
+    assert recorder.plays[-1][1] == 90.0
+
+
 def test_skip_advances_to_next_local_mix_without_marking_played(tmp_path: Path) -> None:
     recorder = _RecordingPlayer()
     laptop, _phone, source = _pair(tmp_path, player=recorder)

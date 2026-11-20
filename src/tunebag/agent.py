@@ -274,6 +274,8 @@ class DeviceAgent:
             self._clock,
             locate_audio=self._locate_audio,
         )
+        # Serialize Pause/Stop vs natural-end supervise (threshold tick / polls).
+        self._playback_lock = threading.RLock()
         # Background fill: single-flight with coalesce so HTTP can return immediately.
         self._fill_lock = threading.Lock()
         self._fill_in_progress = False
@@ -1316,12 +1318,14 @@ class DeviceAgent:
         special payload flag.
         """
         del position_seconds  # API compat; Stop always resets to 0.
-        if self._current_mix_id is not None:
-            if self.is_playing():
-                self._playback.freeze()
-            self.report_playhead(0.0)
-        self._playback.stop()
-        self._cancel_playback_threshold_watch()
+        # Avoid is_playing()/supervise — Stop must not ContinueTo.
+        with self._playback_lock:
+            if self._current_mix_id is not None:
+                if self._playback.playing:
+                    self._playback.freeze()
+                self.report_playhead(0.0)
+            self._playback.stop()
+            self._cancel_playback_threshold_watch()
         # Expiry may have deferred deletion of the mix that was playing.
         self._prune_unassigned_files()
         self._schedule_auto_sync()
@@ -1333,7 +1337,8 @@ class DeviceAgent:
         No-op when idle so idle Peers do not rewrite playheads. Returns whether
         this Device yielded.
         """
-        if not self.is_playing():
+        # Avoid is_playing()/supervise — yield is Pause, not natural end.
+        if not self._playback.playing:
             return False
         self.pause()
         return True
@@ -1342,19 +1347,26 @@ class DeviceAgent:
         """Pause local playback; keep current mix and intent for resume.
 
         Always commits the playhead (optional explicit position, else frozen clock).
+        Does not call ``is_playing()``: that supervises and would ContinueTo when
+        the audio child has already exited (stop/restart race or early exit).
         """
-        if self.is_playing():
-            self._playback.freeze()
-        pos = (
-            float(position_seconds)
-            if position_seconds is not None
-            else self._playback.position
-        )
-        if self._current_mix_id is not None:
-            self.report_playhead(pos)
-        if self.is_playing():
-            self._playback.pause_audio()
-        self._cancel_playback_threshold_watch()
+        # Avoid is_playing()/supervise — Pause must not ContinueTo / MarkPlayed.
+        with self._playback_lock:
+            if self._playback.playing:
+                self._playback.freeze()
+            pos = (
+                float(position_seconds)
+                if position_seconds is not None
+                else self._playback.position
+            )
+            if self._current_mix_id is not None:
+                self.report_playhead(pos)
+            if self._playback.playing:
+                self._playback.pause_audio()
+            else:
+                # Ensure a stuck child cannot keep making sound after Pause.
+                self._player.stop()
+            self._cancel_playback_threshold_watch()
         # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
         self._schedule_auto_sync()
         self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
@@ -1587,35 +1599,36 @@ class DeviceAgent:
 
     def _supervise_playback(self) -> None:
         """Advance Album tracks; on release end, continue to the next local assignment."""
-        if not self._playback.playing or self._player.is_alive():
-            return
-        mix_id = self._current_mix_id
-        mix = self.catalog.mixes.get(mix_id) if mix_id is not None else None
-        previous = 0.0
-        if mix_id is not None:
-            existing_head = self.catalog.playheads.get(mix_id)
-            if existing_head is not None:
-                previous = float(existing_head.position_seconds)
-        fallback_next: UUID | None = None
-        if mix is not None and self._playback.intent_id is not None:
-            fallback_next = self._next_local_assigned(
-                self._playback.intent_id, mix.id, wrap=False
-            )
-        with self._view_notice_batch():
-            intents = self._playback.supervise(
-                mix,
-                previous_position=previous,
-                fallback_next_id=fallback_next,
-            )
-            self._apply_playback_intents(intents)
-        if intents:
-            # Track advance / release end: flush playhead (and ContinueTo) to peers.
-            self._schedule_auto_sync()
-            self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
-            if self._playback.playing:
-                self._arm_playback_threshold_watch()
-            else:
-                self._cancel_playback_threshold_watch()
+        with self._playback_lock:
+            if not self._playback.playing or self._player.is_alive():
+                return
+            mix_id = self._current_mix_id
+            mix = self.catalog.mixes.get(mix_id) if mix_id is not None else None
+            previous = 0.0
+            if mix_id is not None:
+                existing_head = self.catalog.playheads.get(mix_id)
+                if existing_head is not None:
+                    previous = float(existing_head.position_seconds)
+            fallback_next: UUID | None = None
+            if mix is not None and self._playback.intent_id is not None:
+                fallback_next = self._next_local_assigned(
+                    self._playback.intent_id, mix.id, wrap=False
+                )
+            with self._view_notice_batch():
+                intents = self._playback.supervise(
+                    mix,
+                    previous_position=previous,
+                    fallback_next_id=fallback_next,
+                )
+                self._apply_playback_intents(intents)
+            if intents:
+                # Track advance / release end: flush playhead (and ContinueTo) to peers.
+                self._schedule_auto_sync()
+                self._mark_view_sections(UIViewSection.PLAYER, UIViewSection.PLAYLOG)
+                if self._playback.playing:
+                    self._arm_playback_threshold_watch()
+                else:
+                    self._cancel_playback_threshold_watch()
 
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
         """Mark a mix played (natural end-of-Release, or internal helper).
