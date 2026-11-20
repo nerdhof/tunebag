@@ -108,6 +108,11 @@ def test_view_notices_ui_contract_eventsource_and_section_refetch() -> None:
     assign_chunk = js[assign_idx : assign_idx + 450]
     assert "await refreshPeers()" in assign_chunk
     assert "refreshIntents({ force: true })" in assign_chunk
+    # Cover-click expands shared sequence rows in the Intents table.
+    assert "expandedIntentSequences" in js
+    assert "toggleIntentSequence" in js
+    assert "intent-seq-row" in js
+    assert "appendIntentSequenceRows" in js
     # Section keys from the notice taxonomy
     for section in (
         "mixes",

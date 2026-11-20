@@ -5,6 +5,8 @@ let currentMixId = null;
 let peersCache = [];
 const expandedCatalogArtists = new Set();
 const expandedCacheIntents = new Set();
+/** Intent ids whose shared sequence rows are expanded in the Intents table. */
+const expandedIntentSequences = new Set();
 /** @type {Map<string, {mode: "add"|"edit", deviceId?: string}>} */
 const hoursEditorState = new Map();
 /** Catalog Rejected filter (default off). */
@@ -5253,24 +5255,165 @@ function intentCoverMixIds(seq, limit = 3) {
   return ids;
 }
 
-function renderIntentCoverStack(mixIds) {
+/**
+ * @param {string[]} mixIds
+ * @param {{ expanded?: boolean, onToggle?: () => void } | null} [toggle]
+ */
+function renderIntentCoverStack(mixIds, toggle = null) {
   const cell = document.createElement("td");
-  cell.className = "intent-cover-cell";
-  if (!mixIds.length) return cell;
+  cell.className = "intent-cover-cell intent-cover-span";
+  cell.colSpan = 2;
   const stack = document.createElement("div");
   stack.className = "intent-cover-stack";
-  stack.dataset.count = String(mixIds.length);
+  stack.dataset.count = String(mixIds.length || 0);
   mixIds.forEach((mixId, index) => {
     const img = document.createElement("img");
     img.className = "intent-cover";
     img.alt = "";
     img.decoding = "async";
     img.src = `/api/mixes/${mixId}/cover`;
-    img.style.zIndex = String(index + 1);
+    // Sequence #1 first in the list → on top of the stack.
+    img.style.zIndex = String(mixIds.length - index);
     stack.appendChild(img);
   });
+  if (!mixIds.length) {
+    const placeholder = document.createElement("span");
+    placeholder.className = "intent-cover-placeholder";
+    placeholder.setAttribute("aria-hidden", "true");
+    stack.appendChild(placeholder);
+  }
   cell.appendChild(stack);
+
+  if (toggle && typeof toggle.onToggle === "function") {
+    const expanded = Boolean(toggle.expanded);
+    cell.classList.add("intent-cover-toggle", "has-tip");
+    cell.tabIndex = 0;
+    cell.setAttribute("role", "button");
+    cell.setAttribute("aria-expanded", expanded ? "true" : "false");
+    cell.setAttribute(
+      "aria-label",
+      expanded ? "Collapse shared sequence" : "Expand shared sequence",
+    );
+    cell.dataset.tip = expanded ? "Collapse sequence" : "Expand sequence";
+    const activate = (event) => {
+      event.preventDefault();
+      toggle.onToggle();
+    };
+    cell.addEventListener("click", activate);
+    cell.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") activate(event);
+    });
+  }
   return cell;
+}
+
+/** Empty # + Cover cells for rows under a non-spanning cover. */
+function appendIntentLeadCells(tr) {
+  const num = document.createElement("td");
+  num.className = "intent-num-cell";
+  tr.appendChild(num);
+  const cover = document.createElement("td");
+  cover.className = "intent-cover-cell";
+  tr.appendChild(cover);
+}
+
+function renderIntentSeqCover(entry) {
+  const cell = document.createElement("td");
+  cell.className = "intent-cover-cell intent-seq-cover-cell";
+  if (entry?.mix_id && entry.has_cover) {
+    const img = document.createElement("img");
+    img.className = "intent-seq-cover";
+    img.alt = "";
+    img.decoding = "async";
+    img.src = `/api/mixes/${entry.mix_id}/cover`;
+    cell.appendChild(img);
+  } else {
+    const placeholder = document.createElement("span");
+    placeholder.className = "intent-seq-cover-placeholder";
+    placeholder.setAttribute("aria-hidden", "true");
+    cell.appendChild(placeholder);
+  }
+  return cell;
+}
+
+function toggleIntentSequence(intentId) {
+  if (expandedIntentSequences.has(intentId)) {
+    expandedIntentSequences.delete(intentId);
+  } else {
+    expandedIntentSequences.add(intentId);
+  }
+  void refreshIntents({ force: true });
+}
+
+function appendIntentSequenceRows(frag, intent, seq) {
+  const entries = seq?.entries || [];
+  if (!entries.length) {
+    const tr = document.createElement("tr");
+    tr.className = "intent-seq-row intent-seq-empty-row";
+    tr.dataset.intentId = intent.id;
+    appendIntentLeadCells(tr);
+    const empty = document.createElement("td");
+    empty.colSpan = 2;
+    empty.className = "muted";
+    empty.textContent = "Empty sequence";
+    tr.appendChild(empty);
+    frag.appendChild(tr);
+    return;
+  }
+
+  const liveCurrentMixId =
+    lastPlayerIntentId === intent.id ? currentMixId : null;
+  const statusEl = document.getElementById("intent-status");
+
+  for (const entry of entries) {
+    const tr = document.createElement("tr");
+    tr.className = "intent-seq-row";
+    tr.dataset.intentId = intent.id;
+    const dropPending =
+      Boolean(entry.mix_id) && isSequenceDropPending(intent.id, entry.mix_id);
+    if (dropPending) {
+      tr.classList.add("seq-drop-pending");
+      tr.setAttribute("aria-busy", "true");
+    }
+
+    const numCell = document.createElement("td");
+    numCell.className = "intent-num-cell intent-seq-num-cell";
+    const labelText = String(entry.position + 1);
+    const canDrop =
+      entry.mix_id &&
+      !dropPending &&
+      (!liveCurrentMixId || entry.mix_id !== liveCurrentMixId);
+    if (canDrop) {
+      mountSequenceDropControl({
+        cell: numCell,
+        intentId: intent.id,
+        mixId: entry.mix_id,
+        labelText,
+        statusEl,
+      });
+    } else {
+      numCell.textContent = labelText;
+    }
+    tr.appendChild(numCell);
+    tr.appendChild(renderIntentSeqCover(entry));
+
+    const nameCell = document.createElement("td");
+    nameCell.className = "intent-seq-name-cell";
+    const artist = entry.artist || "Unknown";
+    const title = entry.title || entry.mix_id || "—";
+    nameCell.textContent = `${artist} - ${title}`;
+    tr.appendChild(nameCell);
+
+    const actions = document.createElement("td");
+    actions.className = "intent-actions-cell intent-seq-length-cell muted";
+    actions.textContent =
+      entry.duration_seconds != null
+        ? formatDuration(entry.duration_seconds)
+        : "—";
+    tr.appendChild(actions);
+
+    frag.appendChild(tr);
+  }
 }
 
 /** Active platforms to show in the filters cell; empty when all are on. */
@@ -5442,9 +5585,7 @@ function appendIntentAssignmentRows(frag, intent, assignments, durationByMixId) 
     tr.className = "intent-assignment-row";
     tr.dataset.intentId = intent.id;
 
-    const cover = document.createElement("td");
-    cover.className = "intent-cover-cell";
-    tr.appendChild(cover);
+    appendIntentLeadCells(tr);
 
     const summary = document.createElement("td");
     summary.className = "intent-assignment-cell muted";
@@ -5458,9 +5599,17 @@ function appendIntentAssignmentRows(frag, intent, assignments, durationByMixId) 
     }
     const asg = assignmentByDevice.get(String(dh.device_id));
     const outcomeText = assignmentOutcomeText(asg, durationByMixId);
-    summary.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
+    const branch = document.createElement("span");
+    branch.className = "intent-assignment-branch";
+    branch.setAttribute("aria-hidden", "true");
+    branch.textContent = "↦";
+    const label = document.createElement("span");
+    label.className = "intent-assignment-label";
+    label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
       dh.budget_seconds,
     )}${outcomeText}${expiryText}`;
+    summary.appendChild(branch);
+    summary.appendChild(label);
     tr.appendChild(summary);
 
     const actions = document.createElement("td");
@@ -5493,9 +5642,7 @@ function appendIntentAssignmentRows(frag, intent, assignments, durationByMixId) 
     const tr = document.createElement("tr");
     tr.className = "intent-hours-editor-row";
     tr.dataset.intentId = intent.id;
-    const cover = document.createElement("td");
-    cover.className = "intent-cover-cell";
-    tr.appendChild(cover);
+    appendIntentLeadCells(tr);
     const editorCell = document.createElement("td");
     editorCell.colSpan = 2;
     editorCell.className = "intent-hours-editor-cell";
@@ -5550,7 +5697,7 @@ async function refreshIntents({ force = false } = {}) {
     const tr = document.createElement("tr");
     tr.className = "intent-empty-row";
     const td = document.createElement("td");
-    td.colSpan = 3;
+    td.colSpan = 4;
     td.className = "muted";
     td.textContent = "No intents yet";
     tr.appendChild(td);
@@ -5561,6 +5708,14 @@ async function refreshIntents({ force = false } = {}) {
     const isEditing = editingIntentId === intent.id;
     const seq = seqByIntentId.get(intent.id) || null;
     const coverIds = intentCoverMixIds(seq);
+    const seqExpanded = expandedIntentSequences.has(intent.id);
+    const coverToggle =
+      seq && !isEditing
+        ? {
+            expanded: seqExpanded,
+            onToggle: () => toggleIntentSequence(intent.id),
+          }
+        : null;
     let assignments = [];
     const durationByMixId = new Map();
     if (seq) {
@@ -5642,7 +5797,7 @@ async function refreshIntents({ force = false } = {}) {
       const nameRow = document.createElement("tr");
       nameRow.className = "intent-name-row";
       nameRow.dataset.intentId = intent.id;
-      const coverCell = renderIntentCoverStack(coverIds);
+      const coverCell = renderIntentCoverStack(coverIds, coverToggle);
       coverCell.rowSpan = 2;
       nameRow.appendChild(coverCell);
 
@@ -5730,6 +5885,9 @@ async function refreshIntents({ force = false } = {}) {
     }
 
     appendIntentAssignmentRows(frag, intent, assignments, durationByMixId);
+    if (seqExpanded && seq) {
+      appendIntentSequenceRows(frag, intent, seq);
+    }
 
     let blockEnd = null;
     for (const node of frag.children) {
