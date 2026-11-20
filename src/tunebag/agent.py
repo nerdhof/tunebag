@@ -284,6 +284,14 @@ class DeviceAgent:
         self._sync_in_progress = False
         self._sync_pending = False
         self._sync_pending_fill = False
+        # Peer yield / HTTP nudge: never block play/skip on blackholed peers.
+        self._yield_lock = threading.Lock()
+        self._yield_in_progress = False
+        self._yield_pending = False
+        self._yield_pending_targets: list[tuple[str, str]] = []
+        self._nudge_lock = threading.Lock()
+        self._nudge_in_progress = False
+        self._nudge_pending_urls: list[str] = []
         self._downloads: dict[UUID, dict[str, Any]] = {}
         self._download_lock = threading.Lock()
         self._origin_slots: dict[Platform, threading.Semaphore] = {
@@ -1359,29 +1367,34 @@ class DeviceAgent:
         keep remaining queued order; append if hours need it) without setting
         played.
         """
-        self.commit_pending_skips()
-        resolved = intent_id if intent_id is not None else self._playback.intent_id
-        if resolved is None:
-            raise ValueError("no intent to skip within")
-        if resolved not in self.catalog.intents:
-            raise KeyError(f"unknown intent {resolved}")
-        assignment = self.assignment(resolved)
-        if assignment is None or not assignment.mix_ids:
-            raise ValueError("intent has no assignment on this device")
-        current = self._current_mix_id
-        next_id = self._next_local_assigned(resolved, current, wrap=True)
-        if next_id is None:
-            raise ValueError("no other local mix to skip to")
-        if current is not None and current in self.catalog.mixes:
-            mix = self.catalog.mixes[current]
-            if not mix.played and not mix.skipped:
-                self._skips.start(current, self.device.id, now=self._clock())
-        self._playback.freeze()
-        if current is not None:
-            self.report_playhead(self._playback.position)
-        result = self.play(resolved, next_id)
-        # Playhead ticks skip auto-sync; flush to peers on transport boundaries.
-        self._schedule_auto_sync()
+        t0 = time.monotonic()
+        # Coalesce Event + play sync so Skip returns after local transport work.
+        with self._defer_auto_sync():
+            self.commit_pending_skips()
+            resolved = intent_id if intent_id is not None else self._playback.intent_id
+            if resolved is None:
+                raise ValueError("no intent to skip within")
+            if resolved not in self.catalog.intents:
+                raise KeyError(f"unknown intent {resolved}")
+            assignment = self.assignment(resolved)
+            if assignment is None or not assignment.mix_ids:
+                raise ValueError("intent has no assignment on this device")
+            current = self._current_mix_id
+            next_id = self._next_local_assigned(resolved, current, wrap=True)
+            if next_id is None:
+                raise ValueError("no other local mix to skip to")
+            if current is not None and current in self.catalog.mixes:
+                mix = self.catalog.mixes[current]
+                if not mix.played and not mix.skipped:
+                    self._skips.start(current, self.device.id, now=self._clock())
+            self._playback.freeze()
+            if current is not None:
+                self.report_playhead(self._playback.position)
+            result = self.play(resolved, next_id)
+        self.note(
+            f"skip took {(time.monotonic() - t0) * 1000:.0f}ms",
+            level=logging.DEBUG,
+        )
         return result
 
     def _next_local_assigned(
@@ -1638,6 +1651,7 @@ class DeviceAgent:
         Skip when choosing the next local File. If there is no other local
         Release, stays on the current one after marking.
         """
+        t0 = time.monotonic()
         current = self._current_mix_id
         if current is None:
             raise ValueError("no mix to mark played")
@@ -1647,7 +1661,7 @@ class DeviceAgent:
         resolved = (
             intent_id if intent_id is not None else self._playback.intent_id
         )
-        with self._view_notice_batch():
+        with self._view_notice_batch(), self._defer_auto_sync():
             if self.is_playing():
                 self._playback.freeze()
             self.report_playhead(float(mix.duration_seconds))
@@ -1656,15 +1670,33 @@ class DeviceAgent:
             )
             marked = self.mark_played(current)
             if resolved is None or resolved not in self.catalog.intents:
+                self.note(
+                    f"mark_played_and_continue took "
+                    f"{(time.monotonic() - t0) * 1000:.0f}ms",
+                    level=logging.DEBUG,
+                )
                 return marked
             next_id = self._next_local_assigned(
                 resolved, current, wrap=True
             )
             if next_id is None:
+                self.note(
+                    f"mark_played_and_continue took "
+                    f"{(time.monotonic() - t0) * 1000:.0f}ms",
+                    level=logging.DEBUG,
+                )
                 return marked
             result = self.play(resolved, next_id)
-            self._schedule_auto_sync()
-            return result
+        self.note(
+            f"mark_played_and_continue took {(time.monotonic() - t0) * 1000:.0f}ms",
+            level=logging.DEBUG,
+        )
+        return result
+
+    def shutdown(self) -> None:
+        """Stop local audio and cancel playback watches (process exit / app lifespan)."""
+        self._cancel_playback_threshold_watch()
+        self._playback.stop()
 
     def mix(self, mix_id: UUID) -> Mix | None:
         return self.catalog.mixes.get(mix_id)
@@ -1902,6 +1934,16 @@ class DeviceAgent:
                             or mix_id in in_flight_mixes
                             or self._has_local_file(mix_id)
                         ):
+                            continue
+                        # Played/Skipped/Rejected sit at the back for later draws;
+                        # do not re-fetch after delete_retired (async fill race).
+                        mix = self.catalog.mixes.get(mix_id)
+                        if (
+                            mix is not None
+                            and mix_id != self._current_mix_id
+                            and (mix.played or mix.skipped or mix.rejected)
+                        ):
+                            attempted.add(key)
                             continue
                         if not self._fetch_actionable(
                             intent.id,
@@ -3668,10 +3710,13 @@ class DeviceAgent:
 
         Each side's ``sync`` still runs the key-proof meet gate before ingest.
         Nested under ``_defer_auto_sync``, only the outermost exit schedules once.
+        Local ``request_sync`` and in-proc peers stay on this thread; HTTP nudges
+        run in the background so blackholed Locators cannot stall play/skip.
         """
         if self._auto_sync_defer_depth > 0:
             self._auto_sync_deferred = True
             return
+        t0 = time.monotonic()
         self.request_sync()
         for peer in list(self._reachable):
             if not self._trusts_public_key(peer.public_key_pem):
@@ -3680,12 +3725,54 @@ class DeviceAgent:
                 continue
             peer.request_sync()
         trusted_ids = {p.id for p in self.peers()}
-        for peer_id, url in list(self._peer_urls.items()):
-            if peer_id not in trusted_ids:
-                continue
-            if str(url).startswith("inproc://"):
-                continue
-            self._http_nudge_sync(url)
+        nudge_urls = [
+            url
+            for peer_id, url in list(self._peer_urls.items())
+            if peer_id in trusted_ids and not str(url).startswith("inproc://")
+        ]
+        if nudge_urls:
+            self._request_http_nudge_sync(nudge_urls)
+        self.note(
+            f"auto-sync schedule took {(time.monotonic() - t0) * 1000:.0f}ms "
+            f"(http_nudges={len(nudge_urls)})",
+            level=logging.DEBUG,
+        )
+
+    def _request_http_nudge_sync(self, urls: list[str]) -> None:
+        """Fire-and-forget HTTP sync nudges (single-flight with coalesce)."""
+        with self._nudge_lock:
+            self._nudge_pending_urls.extend(urls)
+            if self._nudge_in_progress:
+                return
+            self._nudge_in_progress = True
+        threading.Thread(
+            target=self._run_http_nudge_background,
+            daemon=True,
+            name="tunebag-peer-nudge",
+        ).start()
+
+    def _run_http_nudge_background(self) -> None:
+        try:
+            while True:
+                with self._nudge_lock:
+                    urls = list(dict.fromkeys(self._nudge_pending_urls))
+                    self._nudge_pending_urls.clear()
+                    if not urls:
+                        self._nudge_in_progress = False
+                        return
+                t0 = time.monotonic()
+                for url in urls:
+                    self._http_nudge_sync(url)
+                self.note(
+                    f"peer sync nudges took {(time.monotonic() - t0) * 1000:.0f}ms "
+                    f"(n={len(urls)})",
+                    level=logging.DEBUG,
+                )
+        except BaseException:
+            with self._nudge_lock:
+                self._nudge_in_progress = False
+                self._nudge_pending_urls.clear()
+            raise
 
     def _http_nudge_sync(self, peer_url: str) -> None:
         """Best-effort: ask the HTTP peer to run its own pull sync."""
@@ -3702,8 +3789,11 @@ class DeviceAgent:
         """Best-effort: ask reachable trusted Peers to pause local playback.
 
         Playing stays local (not Event log). Unreachable Peers are left alone.
-        Failures never fail local play.
+        Failures never fail local play. In-process peers yield on this thread
+        (immediate mute); HTTP Locators run in the background so a 5s timeout
+        cannot stall play/skip/mark-played.
         """
+        t0 = time.monotonic()
         for peer in list(self._reachable):
             if not self._trusts_public_key(peer.public_key_pem):
                 continue
@@ -3720,6 +3810,7 @@ class DeviceAgent:
                     level=logging.WARNING,
                 )
         trusted_ids = {p.id for p in self.peers()}
+        http_targets: list[tuple[str, str]] = []
         for peer_id, url in list(self._peer_urls.items()):
             if peer_id not in trusted_ids:
                 continue
@@ -3727,7 +3818,61 @@ class DeviceAgent:
                 continue
             peer = self.catalog.devices.get(peer_id)
             label = peer.name if peer is not None else str(peer_id)
-            self._http_request_yield(url, label=label)
+            http_targets.append((url, label))
+        if http_targets:
+            self._request_http_peers_yield(http_targets)
+        self.note(
+            f"peer yield schedule took {(time.monotonic() - t0) * 1000:.0f}ms "
+            f"(http={len(http_targets)})",
+            level=logging.DEBUG,
+        )
+
+    def _request_http_peers_yield(
+        self, targets: list[tuple[str, str]]
+    ) -> None:
+        """Fire-and-forget HTTP yield posts (single-flight with coalesce)."""
+        with self._yield_lock:
+            self._yield_pending_targets.extend(targets)
+            if self._yield_in_progress:
+                self._yield_pending = True
+                return
+            self._yield_in_progress = True
+            self._yield_pending = False
+        threading.Thread(
+            target=self._run_http_peers_yield_background,
+            daemon=True,
+            name="tunebag-peer-yield",
+        ).start()
+
+    def _run_http_peers_yield_background(self) -> None:
+        try:
+            while True:
+                with self._yield_lock:
+                    targets = list(dict.fromkeys(self._yield_pending_targets))
+                    self._yield_pending_targets.clear()
+                    if not targets:
+                        self._yield_in_progress = False
+                        self._yield_pending = False
+                        return
+                t0 = time.monotonic()
+                for url, label in targets:
+                    self._http_request_yield(url, label=label)
+                self.note(
+                    f"peer http yield took {(time.monotonic() - t0) * 1000:.0f}ms "
+                    f"(n={len(targets)})",
+                    level=logging.DEBUG,
+                )
+                with self._yield_lock:
+                    if not self._yield_pending and not self._yield_pending_targets:
+                        self._yield_in_progress = False
+                        return
+                    self._yield_pending = False
+        except BaseException:
+            with self._yield_lock:
+                self._yield_in_progress = False
+                self._yield_pending = False
+                self._yield_pending_targets.clear()
+            raise
 
     def _http_request_yield(self, peer_url: str, *, label: str) -> None:
         """Best-effort: POST /api/player/yield on an HTTP Peer Locator."""
@@ -3787,12 +3932,17 @@ class DeviceAgent:
 
     def _fillup_all_sequences(self) -> None:
         """Drop retired Releases; keep queued order; append only if under budget."""
+        t0 = time.monotonic()
         with self._defer_auto_sync():
             with self._view_notice_batch():
                 with self._journal.hold():
                     for intent in self.intents():
                         self._fillup_sequence_for_intent(intent)
                     self._prune_unassigned_files()
+        self.note(
+            f"fillup_all_sequences took {(time.monotonic() - t0) * 1000:.0f}ms",
+            level=logging.DEBUG,
+        )
 
     def _rebuild_unfilled_sequences(self, *, include_underfilled: bool = True) -> bool:
         """Rebuild intents missing a device assignment and/or still under budget.

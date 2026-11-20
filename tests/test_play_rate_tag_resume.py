@@ -407,6 +407,8 @@ def test_played_file_deleted_once_replacement_is_local(tmp_path: Path) -> None:
     assert {m.id for m in laptop.files()} == {head}
     laptop.play(intent.id, head)
     laptop.mark_played()
+    # MARK_PLAYED kicks async request_fill for the replacement.
+    laptop.wait_for_fill()
 
     # Still current: keep bytes so playback can continue.
     assert head in {m.id for m in laptop.files()}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -211,7 +212,14 @@ class TagBody(BaseModel):
 
 
 def create_app(agent: DeviceAgent) -> FastAPI:
-    app = FastAPI(title="Tunebag", version=__version__)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            agent.shutdown()
+
+    app = FastAPI(title="Tunebag", version=__version__, lifespan=lifespan)
     app.state.agent = agent
 
     if STATIC_DIR.exists():

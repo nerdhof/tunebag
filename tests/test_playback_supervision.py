@@ -252,3 +252,39 @@ def test_mix_end_uses_fallback_next_when_stash_cleared(tmp_path: Path) -> None:
     cont = next(i for i in intents if isinstance(i, ContinueTo))
     assert cont.mix_id == fallback
     assert cont.intent_id == intent_id
+
+
+def test_stop_clears_playing_before_player_die_so_supervise_is_noop(
+    tmp_path: Path,
+) -> None:
+    """User Stop must not race into natural-end MarkPlayed while child dies."""
+    mix = _mix(duration=100)
+    next_id = new_id()
+    intent_id = new_id()
+    supervisor, player, _clock, files = _supervisor(tmp_path)
+    path = tmp_path / "mix.bin"
+    path.write_bytes(b"audio")
+    files[mix.id] = [path]
+    supervisor.start(mix, 0.0, intent_id=intent_id, continue_next_id=next_id)
+
+    # Simulate stop's ordering: playing cleared, then child exits.
+    supervisor.playing = False
+    player.finish()
+    intents = supervisor.supervise(mix, previous_position=10.0)
+    assert intents == []
+    assert not any(isinstance(i, MarkPlayed) for i in intents)
+
+
+def test_pause_audio_does_not_natural_end_via_supervise(tmp_path: Path) -> None:
+    mix = _mix(duration=100)
+    supervisor, player, _clock, files = _supervisor(tmp_path)
+    path = tmp_path / "mix.bin"
+    path.write_bytes(b"audio")
+    files[mix.id] = [path]
+    supervisor.start(mix, 0.0, intent_id=new_id(), continue_next_id=new_id())
+
+    supervisor.pause_audio()
+    assert supervisor.playing is False
+    assert player.is_alive() is False
+    intents = supervisor.supervise(mix, previous_position=10.0)
+    assert intents == []

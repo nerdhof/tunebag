@@ -205,8 +205,8 @@ def test_reject_and_skip_commit_fillup_policies() -> None:
     )
     assert actions.calls == [
         ("fillup_all", None),
-        ("fill_caches", None),
         ("retire", mix_id),
+        ("request_fill", None),
     ]
 
 

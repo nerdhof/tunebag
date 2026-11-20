@@ -94,16 +94,18 @@ class PlaybackSupervisor:
     def stop(self) -> None:
         """Stop local playback without marking the mix played."""
         self.freeze()
-        self._player.stop()
+        # Clear playing before killing audio so a concurrent supervise tick
+        # cannot treat the mid-stop dead child as a natural end (MarkPlayed).
         self.playing = False
+        self._player.stop()
         self.intent_id = None
         self.album_index = None
         self.continue_next_id = None
 
     def pause_audio(self) -> None:
         """Stop the player; keep intent/position for resume (playhead already committed)."""
-        self._player.stop()
         self.playing = False
+        self._player.stop()
         self.album_index = None
         self._clear_anchor()
 
@@ -244,14 +246,18 @@ class PlaybackSupervisor:
         ]
 
     def _start_audio(self, mix: Mix, timeline_seconds: float) -> None:
-        path, offset = self._locate_audio(mix, float(timeline_seconds))
-        self._player.play(path, start_seconds=offset)
+        # Validate Album layout before spawning audio so a raise cannot leave
+        # an untracked child playing while ``playing`` is still False.
         if mix.kind is ReleaseKind.ALBUM:
             if not mix.tracks:
                 raise ValueError("album has no tracks")
             index, _ = album_timeline_location(mix, timeline_seconds)
+            path, offset = self._locate_audio(mix, float(timeline_seconds))
+            self._player.play(path, start_seconds=offset)
             self.album_index = index
             return
+        path, offset = self._locate_audio(mix, float(timeline_seconds))
+        self._player.play(path, start_seconds=offset)
         self.album_index = None
 
     def _set_anchor(self, position: float) -> None:

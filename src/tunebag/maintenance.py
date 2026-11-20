@@ -115,14 +115,19 @@ def after_catalog_change(actions: MaintenanceActions, change: CatalogChange) -> 
             actions.delete_retired_file_if_replaced(change.mix_id)
         return True
 
-    if reason in (
-        CatalogChangeReason.SKIP_COMMIT,
-        CatalogChangeReason.REJECT_COMMIT,
-    ):
+    if reason is CatalogChangeReason.SKIP_COMMIT:
+        # Async fill so Skip / commit_pending_skips never blocks the UI on
+        # origin downloads (same shape as MARK_PLAYED). Retire before kicking
+        # fill so a coalesced pass does not race the delete.
+        actions.fillup_all_sequences()
+        if change.mix_id is not None:
+            actions.delete_retired_file_if_replaced(change.mix_id)
+        actions.request_fill()
+        return True
+
+    if reason is CatalogChangeReason.REJECT_COMMIT:
         actions.fillup_all_sequences()
         actions.fill_caches()
-        if change.mix_id is not None and reason is CatalogChangeReason.SKIP_COMMIT:
-            actions.delete_retired_file_if_replaced(change.mix_id)
         return True
 
     if reason is CatalogChangeReason.ARTIST_DELETE:
