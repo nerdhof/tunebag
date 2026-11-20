@@ -263,7 +263,7 @@ def test_hearthis_cover_urls_from_html_ranks_square_track_art() -> None:
     from tunebag.cover_cache import hearthis_cover_urls_from_html
 
     html = """
-    <img src="https://img.hearthis.at/x/image_user/1/w64_h64_q70.jpg">
+    <img src="https://img.hearthis.at/x/uploads/1/image_user/w64_h64_q70.jpg">
     <img src="https://img.hearthis.at/x/image_track/13107798/banner----w1200_h629_q100.jpg">
     <img src="https://img.hearthis.at/x/image_track/13107798/cover----w880_h880_c3a3a3a_q70.jpg">
     <img src="https://img.hearthis.at/x/image_track/999/other----w640_h640_c3a3a3a_q70.jpg">
@@ -275,6 +275,36 @@ def test_hearthis_cover_urls_from_html_ranks_square_track_art() -> None:
     assert all("/image_user/" not in u for u in urls)
     assert "btrue" in urls[-1]
     assert not urls[-1].endswith(")")
+
+
+def test_hearthis_cover_fallback_urls_adds_c3_profile_sizes() -> None:
+    """When artwork_url is image_user, page mid-sizes need the c3a3a3a token."""
+    primary = (
+        "https://img.hearthis.at/4/5/5/_/uploads/10269411/image_user/"
+        "w800_h800_q70_ptrue_v2_----cropped_1654729078554.jpg"
+    )
+    alts = hearthis_cover_fallback_urls(primary)
+    assert (
+        "https://img.hearthis.at/4/5/5/_/uploads/10269411/image_user/"
+        "w440_h440_c3a3a3a_q70_ptrue_v2_----cropped_1654729078554.jpg"
+    ) in alts
+
+
+def test_hearthis_cover_urls_from_html_falls_back_to_uploader_avatar() -> None:
+    from tunebag.cover_cache import hearthis_cover_urls_from_html
+
+    html = """
+    <img src="https://img.hearthis.at/x/uploads/999/image_user/w64_h64_q70.jpg">
+    <img src="https://img.hearthis.at/4/5/5/_/uploads/10269411/image_user/w440_h440_c3a3a3a_q70_ptrue_v2_----cropped_1.jpg">
+    <img src="https://img.hearthis.at/4/5/5/_/uploads/10269411/image_user/w320_h320_c3a3a3a_q70_ptrue_v2_----cropped_1.jpg">
+    """
+    cover = (
+        "https://img.hearthis.at/4/5/5/_/uploads/10269411/image_user/"
+        "w800_h800_q70_ptrue_v2_----cropped_1.jpg"
+    )
+    urls = hearthis_cover_urls_from_html(html, cover_url=cover)
+    assert urls[0].endswith("w440_h440_c3a3a3a_q70_ptrue_v2_----cropped_1.jpg")
+    assert all("/uploads/10269411/" in u for u in urls)
 
 
 def test_cover_cache_scrapes_hearthis_page_as_last_resort(tmp_path: Path) -> None:

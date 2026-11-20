@@ -49,6 +49,8 @@ _HEARTHIS_SLUG_SIZE_VARIANTS = (
     "w160_h160",
 )
 _HEARTHIS_SIZE_RE = re.compile(r"w\d+_h\d+")
+# API squares omit the page ``c3a3a3a`` color token; mid sizes with it often 200.
+_HEARTHIS_SIZE_Q_RE = re.compile(r"(w\d+_h\d+_)(?:c[0-9a-f]+_)?(q\d+_ptrue_v2_)")
 # …/image_track/ID/w800_h800_q70_…----cropped_<32hex><slug>.jpg
 _HEARTHIS_EMBEDDED_SLUG_RE = re.compile(
     r"(/image_track/\d+/)(w\d+_h\d+_)"
@@ -57,6 +59,7 @@ _HEARTHIS_EMBEDDED_SLUG_RE = re.compile(
 )
 _HEARTHIS_IMG_RE = re.compile(r"https://img\.hearthis\.at/[^\s\"'<>\\]+")
 _HEARTHIS_TRACK_ID_RE = re.compile(r"/image_track/(\d+)/")
+_HEARTHIS_UPLOADS_ID_RE = re.compile(r"/uploads/(\d+)/")
 _HEARTHIS_DIM_RE = re.compile(r"w(\d+)(?:_h(\d+))?")
 _HEARTHIS_OVERLAY_RE = re.compile(r"_btrue_|_o\d+_")
 
@@ -118,6 +121,19 @@ def hearthis_cover_fallback_urls(url: str) -> list[str]:
         for alt in _HEARTHIS_SIZE_VARIANTS:
             _add(_hearthis_rewrite_size(url, alt, match))
 
+    # Page/CDN often serves mid squares only with the ``c3a3a3a`` token
+    # (common when artwork_url is actually image_user / profile art).
+    size_q = _HEARTHIS_SIZE_Q_RE.search(url)
+    if size_q is not None:
+        for size in _HEARTHIS_SLUG_SIZE_VARIANTS:
+            candidate = (
+                url[: size_q.start(1)]
+                + f"{size}_c3a3a3a_"
+                + size_q.group(2)
+                + url[size_q.end(2) :]
+            )
+            _add(candidate if candidate != url else None)
+
     slug = _HEARTHIS_EMBEDDED_SLUG_RE.search(url)
     if slug is not None:
         # API:  …/ID/w800_h800_q70_…----cropped_<hash><slug>.jpg
@@ -150,19 +166,44 @@ def is_hearthis_page_url(url: str) -> bool:
 
 
 def hearthis_cover_urls_from_html(
-    html: str, *, track_id: str | None = None
+    html: str,
+    *,
+    track_id: str | None = None,
+    cover_url: str | None = None,
 ) -> list[str]:
-    """Ranked ``img.hearthis.at`` track artwork URLs scraped from a track page."""
-    scored: list[tuple[tuple[int, int, int], str]] = []
+    """Ranked ``img.hearthis.at`` artwork URLs scraped from a track page.
+
+    Uses ``image_track`` when present; otherwise the uploader's ``image_user``
+    avatar (hearthis shows the profile picture as the cover in that case).
+    """
+    uploads_id: str | None = None
+    if cover_url:
+        match = _HEARTHIS_UPLOADS_ID_RE.search(cover_url)
+        if match is not None:
+            uploads_id = match.group(1)
+
+    track_scored: list[tuple[tuple[int, int, int], str]] = []
+    user_scored: list[tuple[tuple[int, int, int], str]] = []
     seen: set[str] = set()
     for raw in _HEARTHIS_IMG_RE.findall(html):
         candidate = raw.rstrip(").,;\"'")
-        if candidate in seen or "/image_track/" not in candidate:
+        if candidate in seen:
             continue
-        if track_id is not None and f"/image_track/{track_id}/" not in candidate:
+        if "/image_track/" in candidate:
+            if track_id is not None and f"/image_track/{track_id}/" not in candidate:
+                continue
+            seen.add(candidate)
+            track_scored.append((_hearthis_page_url_score(candidate), candidate))
+            continue
+        if "/image_user/" not in candidate:
+            continue
+        # Skip commenter avatars when we know the upload owner folder.
+        if uploads_id is not None and f"/uploads/{uploads_id}/" not in candidate:
             continue
         seen.add(candidate)
-        scored.append((_hearthis_page_url_score(candidate), candidate))
+        user_scored.append((_hearthis_page_url_score(candidate), candidate))
+
+    scored = track_scored if track_scored else user_scored
     scored.sort(key=lambda item: item[0], reverse=True)
     return [url for _, url in scored]
 
@@ -289,7 +330,9 @@ class CoverCache:
             return []
         html = html_bytes.decode("utf-8", errors="ignore")
         track_id = hearthis_track_id_from_cover_url(cover_url)
-        scraped = hearthis_cover_urls_from_html(html, track_id=track_id)
+        scraped = hearthis_cover_urls_from_html(
+            html, track_id=track_id, cover_url=cover_url
+        )
         out = [candidate for candidate in scraped if candidate not in tried]
         if out:
             logger.info(
