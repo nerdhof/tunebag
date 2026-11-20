@@ -1151,13 +1151,19 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         def _entry_fields(entry) -> dict:
             mix = mix_by_id.get(entry.mix_id)
             if mix is None:
-                return {"artist": None, "title": None, "duration_seconds": None}
+                return {
+                    "artist": None,
+                    "title": None,
+                    "duration_seconds": None,
+                    "has_cover": False,
+                }
             artist = artists_by_id.get(mix.artist_id)
             artist_name = artist.name if artist is not None else "Unknown"
             return {
                 "artist": artist_name,
                 "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": mix.duration_seconds,
+                "has_cover": agent.has_cover(entry.mix_id),
             }
 
         device_names = {

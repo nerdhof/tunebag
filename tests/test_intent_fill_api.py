@@ -195,6 +195,9 @@ def test_refresh_sequence_api_rerolls_seed(tmp_path: Path) -> None:
     assert len(after["entries"]) == 3
     assert after["assignments"]
     assert after["assignments"][0]["mix_ids"] == [e["mix_id"] for e in after["entries"]]
+    for entry in after["entries"]:
+        assert "has_cover" in entry
+        assert isinstance(entry["has_cover"], bool)
 
 
 def test_refresh_sequence_api_unknown_intent(tmp_path: Path) -> None:

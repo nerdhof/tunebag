@@ -102,9 +102,9 @@ def test_view_notices_ui_contract_eventsource_and_section_refetch() -> None:
     assert "refreshIntents" in js
     assert "refreshPeers" in js
     assert "refreshFiles" in js
-    # Assign hours refreshes peers before rendering the device picker.
-    assert "Assign hours" in js
-    assign_idx = js.index('setSymbolButton(assignBtn, BTN.add, "Assign hours")')
+    # Add assignment refreshes peers before rendering the device picker.
+    assert "Add assignment" in js
+    assign_idx = js.index('setSymbolButton(assignBtn, BTN.add, "Add assignment")')
     assign_chunk = js[assign_idx : assign_idx + 450]
     assert "await refreshPeers()" in assign_chunk
     assert "refreshIntents({ force: true })" in assign_chunk

@@ -5,7 +5,6 @@ let currentMixId = null;
 let peersCache = [];
 const expandedCatalogArtists = new Set();
 const expandedCacheIntents = new Set();
-const expandedIntentPanes = new Set();
 /** @type {Map<string, {mode: "add"|"edit", deviceId?: string}>} */
 const hoursEditorState = new Map();
 /** Catalog Rejected filter (default off). */
@@ -37,7 +36,7 @@ let filesRefreshTail = Promise.resolve();
 let filesRefreshForcePending = false;
 /** Mix id already announced as marked played during this play session. */
 let playheadPlayedNotifiedForMix = null;
-/** Last player poll: used so intent-list play buttons stay in sync. */
+/** Last player poll: used so intent-table play buttons stay in sync. */
 let lastPlayerPlaying = false;
 let lastPlayerIntentId = null;
 /** Intent id Playlog last used for default / preserved scroll. */
@@ -4681,7 +4680,7 @@ function updateIntentPlayButtons(playing, intentId) {
   if (lastPlayerIntentId) {
     syncPlayerIntentSelect(lastPlayerIntentId);
   }
-  for (const btn of document.querySelectorAll("#intent-list .intent-play")) {
+  for (const btn of document.querySelectorAll("#intent-table .intent-play")) {
     const playingThis =
       lastPlayerPlaying &&
       lastPlayerIntentId != null &&
@@ -5244,80 +5243,272 @@ function assignmentOutcomeText(asg, durationByMixId) {
   return ` (${mixIds.length}→${formatDuration(durationSeconds)})`;
 }
 
-function renderDeviceHoursPanel(intent, assignments = [], durationByMixId = new Map()) {
-  const panel = document.createElement("div");
-  panel.className = "device-hours";
+function intentCoverMixIds(seq, limit = 3) {
+  const ids = [];
+  for (const entry of seq?.entries || []) {
+    if (!entry?.mix_id || !entry.has_cover) continue;
+    ids.push(String(entry.mix_id));
+    if (ids.length >= limit) break;
+  }
+  return ids;
+}
 
+function renderIntentCoverStack(mixIds) {
+  const cell = document.createElement("td");
+  cell.className = "intent-cover-cell";
+  if (!mixIds.length) return cell;
+  const stack = document.createElement("div");
+  stack.className = "intent-cover-stack";
+  stack.dataset.count = String(mixIds.length);
+  mixIds.forEach((mixId, index) => {
+    const img = document.createElement("img");
+    img.className = "intent-cover";
+    img.alt = "";
+    img.decoding = "async";
+    img.src = `/api/mixes/${mixId}/cover`;
+    img.style.zIndex = String(index + 1);
+    stack.appendChild(img);
+  });
+  cell.appendChild(stack);
+  return cell;
+}
+
+/** Active platforms to show in the filters cell; empty when all are on. */
+function intentFilterPlatforms(platforms) {
+  const active = new Set(
+    platforms && platforms.length ? platforms : DEFAULT_INTENT_PLATFORMS,
+  );
+  const ordered = DEFAULT_INTENT_PLATFORMS.filter((p) => active.has(p));
+  if (ordered.length === DEFAULT_INTENT_PLATFORMS.length) return [];
+  return ordered;
+}
+
+function appendIntentPlatformSymbols(parent, platforms) {
+  for (const platform of platforms) {
+    const icon = document.createElement("span");
+    icon.className = "platform-symbol";
+    icon.dataset.on = "true";
+    icon.title = PLATFORM_LABELS[platform] || platform;
+    icon.setAttribute("aria-label", PLATFORM_LABELS[platform] || platform);
+    if (PLATFORM_SVG[platform]) {
+      icon.innerHTML = PLATFORM_SVG[platform];
+    } else {
+      icon.textContent = PLATFORM_LABELS[platform] || platform;
+    }
+    parent.appendChild(icon);
+  }
+}
+
+function appendIntentActions(cell, ...buttons) {
+  cell.className = "intent-actions-cell";
+  for (const btn of buttons) {
+    if (btn) cell.appendChild(btn);
+  }
+}
+
+function buildIntentActionButtons(intent) {
+  const playBtn = document.createElement("button");
+  playBtn.type = "button";
+  playBtn.className = "intent-play";
+  playBtn.dataset.intentId = intent.id;
+  const playingThis =
+    lastPlayerPlaying && lastPlayerIntentId != null && lastPlayerIntentId === intent.id;
+  setIntentPlayButton(playBtn, playingThis);
+  playBtn.addEventListener("click", async () => {
+    const status = document.getElementById("intent-status");
+    try {
+      if (isIntentCurrentlyPlaying(intent.id)) {
+        const ok = await pausePlayback();
+        if (status) {
+          status.textContent = ok
+            ? `Paused “${intent.name}”`
+            : document.getElementById("player-status")?.textContent || "Pause failed";
+        }
+        return;
+      }
+      const ok = await playIntent(intent.id);
+      if (status) {
+        status.textContent = ok
+          ? `Playing “${intent.name}”`
+          : document.getElementById("player-status")?.textContent || "Play failed";
+      }
+    } catch (err) {
+      if (status) status.textContent = "Switch to intent request failed";
+      console.error(err);
+    }
+  });
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  setSymbolButton(editBtn, BTN.edit, "Edit intent");
+  editBtn.addEventListener("click", () => beginEditIntent(intent));
+
+  const regenerateBtn = document.createElement("button");
+  regenerateBtn.type = "button";
+  setSymbolButton(regenerateBtn, BTN.refresh, "Regenerate sequence");
+  regenerateBtn.addEventListener("click", async () => {
+    const status = document.getElementById("intent-status");
+    status.textContent = `Regenerating sequence “${intent.name}”…`;
+    try {
+      const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        status.textContent = data.detail || "Regenerate sequence failed";
+        return;
+      }
+      status.textContent = data.fill_in_progress
+        ? `Regenerated “${intent.name}” · fill started`
+        : `Regenerated “${intent.name}”`;
+      await refreshAffectedSurfaces(["intents", "cache"], { force: true });
+    } catch (err) {
+      status.textContent = "Regenerate sequence request failed";
+      console.error(err);
+    }
+  });
+
+  const fillNowBtn = document.createElement("button");
+  fillNowBtn.type = "button";
+  setSymbolButton(fillNowBtn, BTN.fill, "Fill now");
+  fillNowBtn.addEventListener("click", async () => {
+    const status = document.getElementById("intent-status");
+    status.textContent = `Fill now “${intent.name}”…`;
+    try {
+      const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        status.textContent = data.detail || "Fill now failed";
+        return;
+      }
+      status.textContent = data.fill_in_progress
+        ? `Fill now “${intent.name}” started · ${data.files} cached so far`
+        : `Fill now “${intent.name}” · ${data.files} cached`;
+      await refreshAffectedSurfaces(["cache", "intents"], { force: true });
+    } catch (err) {
+      status.textContent = "Fill now request failed";
+      console.error(err);
+    }
+  });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  bindConfirmDelete(deleteBtn, {
+    label: "Delete intent",
+    onConfirm: async () => {
+      const status = document.getElementById("intent-status");
+      status.textContent = "Deleting…";
+      try {
+        const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          status.textContent = data.detail || "Delete intent failed";
+          return;
+        }
+        if (editingIntentId === intent.id) {
+          editingIntentId = null;
+          if (editComposer) {
+            editComposer.destroy();
+            editComposer = null;
+          }
+        }
+        hoursEditorState.delete(intent.id);
+        status.textContent = `Deleted “${intent.name}”`;
+        await refreshIntents({ force: true });
+      } catch (err) {
+        status.textContent = "Delete intent request failed";
+        console.error(err);
+      }
+    },
+  });
+
+  return [playBtn, editBtn, regenerateBtn, fillNowBtn, deleteBtn];
+}
+
+function appendIntentAssignmentRows(frag, intent, assignments, durationByMixId) {
   const assignmentByDevice = new Map();
   for (const asg of assignments) {
     assignmentByDevice.set(String(asg.device_id), asg);
   }
-
   const editor = hoursEditorState.get(intent.id);
   const hours = intent.device_hours || [];
-  if (hours.length) {
-    const list = document.createElement("ul");
-    list.className = "device-hours-list";
-    for (const dh of hours) {
-      const editingThis =
-        editor && editor.mode === "edit" && editor.deviceId === dh.device_id;
-      if (editingThis) continue;
-      const item = document.createElement("li");
-      const label = document.createElement("span");
-      label.className = "hours-label";
-      const until = hoursUntilExpiry(dh.expires_at);
-      let expiryText = "";
-      if (dh.expires_at) {
-        expiryText =
-          until === "" || until === "0"
-            ? " · expired"
-            : ` · expires in ${until}h`;
-      }
-      const asg = assignmentByDevice.get(String(dh.device_id));
-      const outcomeText = assignmentOutcomeText(asg, durationByMixId);
-      label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
-        dh.budget_seconds,
-      )}${outcomeText}${expiryText}`;
-      item.appendChild(label);
 
-      if (!editor) {
-        const editBtn = document.createElement("button");
-        editBtn.type = "button";
-        setSymbolButton(editBtn, BTN.edit, "Edit hours");
-        editBtn.addEventListener("click", () => {
-          hoursEditorState.set(intent.id, {
-            mode: "edit",
-            deviceId: dh.device_id,
-          });
-          void refreshIntents();
-        });
-        item.appendChild(editBtn);
+  for (const dh of hours) {
+    const editingThis =
+      editor && editor.mode === "edit" && editor.deviceId === dh.device_id;
+    if (editingThis) continue;
 
-        const deleteBtn = document.createElement("button");
-        deleteBtn.type = "button";
-        bindConfirmDelete(deleteBtn, {
-          label: "Remove hours",
-          onConfirm: () => deleteDeviceHours(intent, dh.device_id),
+    const tr = document.createElement("tr");
+    tr.className = "intent-assignment-row";
+    tr.dataset.intentId = intent.id;
+
+    const cover = document.createElement("td");
+    cover.className = "intent-cover-cell";
+    tr.appendChild(cover);
+
+    const summary = document.createElement("td");
+    summary.className = "intent-assignment-cell muted";
+    const until = hoursUntilExpiry(dh.expires_at);
+    let expiryText = "";
+    if (dh.expires_at) {
+      expiryText =
+        until === "" || until === "0"
+          ? " · expired"
+          : ` · expires in ${until}h`;
+    }
+    const asg = assignmentByDevice.get(String(dh.device_id));
+    const outcomeText = assignmentOutcomeText(asg, durationByMixId);
+    summary.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
+      dh.budget_seconds,
+    )}${outcomeText}${expiryText}`;
+    tr.appendChild(summary);
+
+    const actions = document.createElement("td");
+    if (!editor) {
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      setSymbolButton(editBtn, BTN.edit, "Edit hours");
+      editBtn.addEventListener("click", () => {
+        hoursEditorState.set(intent.id, {
+          mode: "edit",
+          deviceId: dh.device_id,
         });
-        item.appendChild(deleteBtn);
-      }
-      list.appendChild(item);
+        void refreshIntents();
+      });
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      bindConfirmDelete(deleteBtn, {
+        label: "Remove hours",
+        onConfirm: () => deleteDeviceHours(intent, dh.device_id),
+      });
+      appendIntentActions(actions, editBtn, deleteBtn);
+    } else {
+      appendIntentActions(actions);
     }
-    if (list.childElementCount) {
-      panel.appendChild(list);
-    }
+    tr.appendChild(actions);
+    frag.appendChild(tr);
   }
 
   if (editor) {
-    panel.appendChild(buildHoursEditor(intent, editor));
+    const tr = document.createElement("tr");
+    tr.className = "intent-hours-editor-row";
+    tr.dataset.intentId = intent.id;
+    const cover = document.createElement("td");
+    cover.className = "intent-cover-cell";
+    tr.appendChild(cover);
+    const editorCell = document.createElement("td");
+    editorCell.colSpan = 2;
+    editorCell.className = "intent-hours-editor-cell";
+    editorCell.appendChild(buildHoursEditor(intent, editor));
+    tr.appendChild(editorCell);
+    frag.appendChild(tr);
   }
-
-  return panel;
 }
 
 async function refreshIntents({ force = false } = {}) {
-  const list = document.getElementById("intent-list");
-  if (!force && focusInside(list)) return;
+  const body = document.getElementById("intent-table-body");
+  if (!body) return;
+  if (!force && focusInside(body)) return;
   await refreshIntentArtistOptions();
   const res = await fetch("/api/intents");
   const data = await res.json();
@@ -5356,20 +5547,50 @@ async function refreshIntents({ force = false } = {}) {
   let pendingEditFocus = null;
 
   if (!intents.length) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "No intents yet";
-    frag.appendChild(li);
+    const tr = document.createElement("tr");
+    tr.className = "intent-empty-row";
+    const td = document.createElement("td");
+    td.colSpan = 3;
+    td.className = "muted";
+    td.textContent = "No intents yet";
+    tr.appendChild(td);
+    frag.appendChild(tr);
   }
 
   for (const intent of intents) {
-    const li = document.createElement("li");
     const isEditing = editingIntentId === intent.id;
+    const seq = seqByIntentId.get(intent.id) || null;
+    const coverIds = intentCoverMixIds(seq);
+    let assignments = [];
+    const durationByMixId = new Map();
+    if (seq) {
+      assignments = seq.assignments || [];
+      for (const entry of seq.entries || []) {
+        if (entry.mix_id != null && entry.duration_seconds != null) {
+          durationByMixId.set(
+            String(entry.mix_id),
+            Number(entry.duration_seconds) || 0,
+          );
+        }
+      }
+    }
 
     if (isEditing) {
+      const editRow = document.createElement("tr");
+      editRow.className = "intent-edit-row";
+      editRow.dataset.intentId = intent.id;
+      editRow.appendChild(renderIntentCoverStack(coverIds));
+      const composerCell = document.createElement("td");
+      composerCell.className = "intent-composer-cell";
       const composerMount = document.createElement("div");
       composerMount.className = "intent-composer intent-composer-edit";
-      li.appendChild(composerMount);
+      composerCell.appendChild(composerMount);
+      editRow.appendChild(composerCell);
+      const actions = document.createElement("td");
+      appendIntentActions(actions);
+      editRow.appendChild(actions);
+      frag.appendChild(editRow);
+
       editComposer = mountIntentComposer(composerMount, {
         saveLabel: "Save changes",
         values: {
@@ -5418,316 +5639,107 @@ async function refreshIntents({ force = false } = {}) {
       });
       pendingEditFocus = editComposer;
     } else {
-      const headingRow = document.createElement("div");
-      headingRow.className = "controls";
-      const heading = document.createElement("h3");
-      heading.textContent = intent.name;
-      heading.style.flex = "1";
-      headingRow.appendChild(heading);
-      const playBtn = document.createElement("button");
-      playBtn.type = "button";
-      playBtn.className = "intent-play";
-      playBtn.dataset.intentId = intent.id;
-      const playingThis =
-        lastPlayerPlaying && lastPlayerIntentId != null && lastPlayerIntentId === intent.id;
-      setIntentPlayButton(playBtn, playingThis);
-      playBtn.addEventListener("click", async () => {
-        const status = document.getElementById("intent-status");
-        try {
-          // Pause only the intent that is actually playing right now.
-          if (isIntentCurrentlyPlaying(intent.id)) {
-            const ok = await pausePlayback();
-            if (status) {
-              status.textContent = ok
-                ? `Paused “${intent.name}”`
-                : document.getElementById("player-status")?.textContent || "Pause failed";
-            }
-            return;
-          }
-          const ok = await playIntent(intent.id);
-          if (status) {
-            status.textContent = ok
-              ? `Playing “${intent.name}”`
-              : document.getElementById("player-status")?.textContent || "Play failed";
-          }
-        } catch (err) {
-          if (status) status.textContent = "Switch to intent request failed";
-          console.error(err);
-        }
-      });
-      headingRow.appendChild(playBtn);
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      setSymbolButton(editBtn, BTN.edit, "Edit intent");
-      editBtn.addEventListener("click", () => beginEditIntent(intent));
-      headingRow.appendChild(editBtn);
-      const regenerateBtn = document.createElement("button");
-      regenerateBtn.type = "button";
-      setSymbolButton(regenerateBtn, BTN.refresh, "Regenerate sequence");
-      regenerateBtn.addEventListener("click", async () => {
-        const status = document.getElementById("intent-status");
-        status.textContent = `Regenerating sequence “${intent.name}”…`;
-        try {
-          const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
-            method: "POST",
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            status.textContent = data.detail || "Regenerate sequence failed";
-            return;
-          }
-          status.textContent = data.fill_in_progress
-            ? `Regenerated “${intent.name}” · fill started`
-            : `Regenerated “${intent.name}”`;
-          await refreshAffectedSurfaces(["intents", "cache"], { force: true });
-        } catch (err) {
-          status.textContent = "Regenerate sequence request failed";
-          console.error(err);
-        }
-      });
-      headingRow.appendChild(regenerateBtn);
-      const fillNowBtn = document.createElement("button");
-      fillNowBtn.type = "button";
-      setSymbolButton(fillNowBtn, BTN.fill, "Fill now");
-      fillNowBtn.addEventListener("click", async () => {
-        const status = document.getElementById("intent-status");
-        status.textContent = `Fill now “${intent.name}”…`;
-        try {
-          const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            status.textContent = data.detail || "Fill now failed";
-            return;
-          }
-          status.textContent = data.fill_in_progress
-            ? `Fill now “${intent.name}” started · ${data.files} cached so far`
-            : `Fill now “${intent.name}” · ${data.files} cached`;
-          await refreshAffectedSurfaces(["cache", "intents"], { force: true });
-        } catch (err) {
-          status.textContent = "Fill now request failed";
-          console.error(err);
-        }
-      });
-      headingRow.appendChild(fillNowBtn);
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      bindConfirmDelete(deleteBtn, {
-        label: "Delete intent",
-        onConfirm: async () => {
-          const status = document.getElementById("intent-status");
-          status.textContent = "Deleting…";
-          try {
-            const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-              status.textContent = data.detail || "Delete intent failed";
-              return;
-            }
-            if (editingIntentId === intent.id) {
-              editingIntentId = null;
-              if (editComposer) {
-                editComposer.destroy();
-                editComposer = null;
-              }
-            }
-            hoursEditorState.delete(intent.id);
-            status.textContent = `Deleted “${intent.name}”`;
-            await refreshIntents({ force: true });
-          } catch (err) {
-            status.textContent = "Delete intent request failed";
-            console.error(err);
-          }
-        },
-      });
-      headingRow.appendChild(deleteBtn);
-      li.appendChild(headingRow);
+      const nameRow = document.createElement("tr");
+      nameRow.className = "intent-name-row";
+      nameRow.dataset.intentId = intent.id;
+      const coverCell = renderIntentCoverStack(coverIds);
+      coverCell.rowSpan = 2;
+      nameRow.appendChild(coverCell);
 
-      const meta = document.createElement("div");
-      meta.className = "intent-meta muted";
-      const tagsEl = document.createElement("span");
-      tagsEl.className = "intent-meta-tags";
-      tagsEl.appendChild(
-        renderTagChipsDisplay(intent.tags || [], catalogTagsCache),
-      );
-      const artistsEl = document.createElement("span");
-      artistsEl.className = "intent-meta-artists";
-      const artistIds = intent.artist_ids || [];
-      const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
-      artistsEl.textContent = artistNames.length ? artistNames.join(", ") : "-";
-      const platformsEl = document.createElement("span");
-      platformsEl.className = "intent-meta-platforms";
-      platformsEl.setAttribute("aria-label", "Sources");
-      const activePlatforms = new Set(
-        intent.platforms && intent.platforms.length
-          ? intent.platforms
-          : DEFAULT_INTENT_PLATFORMS,
-      );
-      for (const platform of DEFAULT_INTENT_PLATFORMS) {
-        const on = activePlatforms.has(platform);
-        const icon = document.createElement("span");
-        icon.className = "platform-symbol";
-        icon.dataset.on = on ? "true" : "false";
-        icon.title = PLATFORM_LABELS[platform] || platform;
-        icon.setAttribute(
-          "aria-label",
-          `${PLATFORM_LABELS[platform] || platform}${on ? "" : " (off)"}`,
-        );
-        if (PLATFORM_SVG[platform]) {
-          icon.innerHTML = PLATFORM_SVG[platform];
-        } else {
-          icon.textContent = PLATFORM_LABELS[platform] || platform;
-        }
-        platformsEl.appendChild(icon);
-      }
+      const nameCell = document.createElement("td");
+      nameCell.className = "intent-name-cell";
+      const nameInner = document.createElement("div");
+      nameInner.className = "intent-name-inner";
+      const heading = document.createElement("span");
+      heading.className = "intent-name";
+      heading.textContent = intent.name;
+      nameInner.appendChild(heading);
       const chancesEl = document.createElement("span");
-      chancesEl.className = "intent-meta-chances has-tip";
+      chancesEl.className = "intent-name-chances has-tip muted";
       chancesEl.textContent = formatChanceBlocks(intent.distribution);
       chancesEl.dataset.tip = formatChancePercents(intent.distribution);
-      meta.appendChild(tagsEl);
-      meta.appendChild(intentMetaSep());
-      meta.appendChild(artistsEl);
-      meta.appendChild(intentMetaSep());
-      meta.appendChild(platformsEl);
-      meta.appendChild(intentMetaSep());
-      meta.appendChild(chancesEl);
-      li.appendChild(meta);
-    }
+      nameInner.appendChild(chancesEl);
+      nameCell.appendChild(nameInner);
+      nameRow.appendChild(nameCell);
 
-    let assignments = [];
-    const durationByMixId = new Map();
-    const seq = seqByIntentId.get(intent.id) || null;
-    if (seq) {
-      assignments = seq.assignments || [];
-      for (const entry of seq.entries || []) {
-        if (entry.mix_id != null && entry.duration_seconds != null) {
-          durationByMixId.set(
-            String(entry.mix_id),
-            Number(entry.duration_seconds) || 0,
-          );
-        }
-      }
-    }
+      const nameActions = document.createElement("td");
+      appendIntentActions(nameActions, ...buildIntentActionButtons(intent));
+      nameRow.appendChild(nameActions);
+      frag.appendChild(nameRow);
 
-    li.appendChild(renderDeviceHoursPanel(intent, assignments, durationByMixId));
+      const metaRow = document.createElement("tr");
+      metaRow.className = "intent-meta-row";
+      metaRow.dataset.intentId = intent.id;
 
-    const footer = document.createElement("div");
-    footer.className = "intent-footer";
-
-    if (seq) {
-      const seqKey = `${intent.id}:sequence`;
-      const seqExpanded = expandedIntentPanes.has(seqKey);
-      const seqFoldLabel = (open) =>
-        `${open ? "▾" : "▸"} Shared sequence`;
-      const seqPane = document.createElement("div");
-      seqPane.className = "intent-pane intent-pane-sequence";
-      const seqToggle = document.createElement("button");
-      seqToggle.type = "button";
-      seqToggle.className = "intent-pane-toggle";
-      seqToggle.setAttribute("aria-expanded", seqExpanded ? "true" : "false");
-      seqToggle.textContent = seqFoldLabel(seqExpanded);
-      const seqBody = document.createElement("div");
-      seqBody.className = "intent-pane-body";
-      seqBody.hidden = !seqExpanded;
-      if (seq.entries.length) {
-        const table = document.createElement("table");
-        table.className = "intent-seq-table";
-        const thead = document.createElement("thead");
-        const headRow = document.createElement("tr");
-        for (const label of ["#", "Artist", "Title", "Bucket", "Duration"]) {
-          const th = document.createElement("th");
-          th.textContent = label;
-          headRow.appendChild(th);
-        }
-        thead.appendChild(headRow);
-        table.appendChild(thead);
-        const tbody = document.createElement("tbody");
-        const liveCurrentMixId =
-          lastPlayerIntentId === intent.id ? currentMixId : null;
-        for (const entry of seq.entries) {
-          const tr = document.createElement("tr");
-          const dropPending =
-            Boolean(entry.mix_id) &&
-            isSequenceDropPending(intent.id, entry.mix_id);
-          if (dropPending) {
-            tr.classList.add("seq-drop-pending");
-            tr.setAttribute("aria-busy", "true");
-          }
-          const pos = document.createElement("td");
-          const canDrop =
-            entry.mix_id &&
-            !dropPending &&
-            (!liveCurrentMixId || entry.mix_id !== liveCurrentMixId);
-          if (canDrop) {
-            mountSequenceDropControl({
-              cell: pos,
-              intentId: intent.id,
-              mixId: entry.mix_id,
-              labelText: String(entry.position + 1),
-              statusEl: document.getElementById("intent-status"),
-            });
-          } else {
-            pos.textContent = String(entry.position + 1);
-          }
-          tr.appendChild(pos);
-          const artist = document.createElement("td");
-          artist.textContent = entry.artist || "Unknown";
-          tr.appendChild(artist);
-          const title = document.createElement("td");
-          title.textContent = entry.title || entry.mix_id;
-          tr.appendChild(title);
-          const bucket = document.createElement("td");
-          bucket.textContent = entry.bucket;
-          tr.appendChild(bucket);
-          const dur = document.createElement("td");
-          dur.textContent =
-            entry.duration_seconds != null ? formatDuration(entry.duration_seconds) : "—";
-          tr.appendChild(dur);
-          tbody.appendChild(tr);
-        }
-        table.appendChild(tbody);
-        seqBody.appendChild(table);
+      const filtersCell = document.createElement("td");
+      filtersCell.className = "intent-filters-cell";
+      const tags = intent.tags || [];
+      const artistIds = intent.artist_ids || [];
+      const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
+      const filterPlatforms = intentFilterPlatforms(intent.platforms);
+      if (!tags.length && !artistNames.length && !filterPlatforms.length) {
+        filtersCell.classList.add("muted");
+        filtersCell.textContent = "—";
       } else {
-        const empty = document.createElement("p");
-        empty.className = "muted";
-        empty.textContent = "Empty sequence";
-        seqBody.appendChild(empty);
+        let needSep = false;
+        if (tags.length) {
+          filtersCell.appendChild(
+            renderTagChipsDisplay(tags, catalogTagsCache),
+          );
+          needSep = true;
+        }
+        if (artistNames.length) {
+          if (needSep) filtersCell.appendChild(intentMetaSep());
+          const artistsEl = document.createElement("span");
+          artistsEl.className = "intent-filter-artists muted";
+          artistsEl.textContent = artistNames.join(", ");
+          filtersCell.appendChild(artistsEl);
+          needSep = true;
+        }
+        if (filterPlatforms.length) {
+          if (needSep) filtersCell.appendChild(intentMetaSep());
+          const platformsEl = document.createElement("span");
+          platformsEl.className = "intent-filter-platforms";
+          platformsEl.setAttribute("aria-label", "Sources");
+          appendIntentPlatformSymbols(platformsEl, filterPlatforms);
+          filtersCell.appendChild(platformsEl);
+        }
       }
-      seqToggle.addEventListener("click", () => {
-        const open = seqBody.hidden;
-        seqBody.hidden = !open;
-        seqToggle.setAttribute("aria-expanded", open ? "true" : "false");
-        seqToggle.textContent = seqFoldLabel(open);
-        if (open) expandedIntentPanes.add(seqKey);
-        else expandedIntentPanes.delete(seqKey);
-      });
-      seqPane.appendChild(seqToggle);
-      seqPane.appendChild(seqBody);
-      footer.appendChild(seqPane);
+      metaRow.appendChild(filtersCell);
+
+      const metaActions = document.createElement("td");
+      const editor = hoursEditorState.get(intent.id);
+      if (!editor) {
+        const assignBtn = document.createElement("button");
+        assignBtn.type = "button";
+        setSymbolButton(assignBtn, BTN.add, "Add assignment");
+        assignBtn.addEventListener("click", () => {
+          hoursEditorState.set(intent.id, { mode: "add" });
+          // Peers may have landed while a long fill held SSE; refresh before render.
+          void (async () => {
+            await refreshPeers();
+            await refreshIntents({ force: true });
+          })();
+        });
+        appendIntentActions(metaActions, assignBtn);
+      } else {
+        appendIntentActions(metaActions);
+      }
+      metaRow.appendChild(metaActions);
+      frag.appendChild(metaRow);
     }
 
-    const editor = hoursEditorState.get(intent.id);
-    if (!editor) {
-      const assignBtn = document.createElement("button");
-      assignBtn.type = "button";
-      setSymbolButton(assignBtn, BTN.add, "Assign hours");
-      assignBtn.addEventListener("click", () => {
-        hoursEditorState.set(intent.id, { mode: "add" });
-        // Peers may have landed while a long fill held SSE; refresh before render.
-        void (async () => {
-          await refreshPeers();
-          await refreshIntents({ force: true });
-        })();
-      });
-      footer.appendChild(assignBtn);
+    appendIntentAssignmentRows(frag, intent, assignments, durationByMixId);
+
+    let blockEnd = null;
+    for (const node of frag.children) {
+      if (node.dataset?.intentId === intent.id) blockEnd = node;
     }
-
-    li.appendChild(footer);
-
-    frag.appendChild(li);
+    if (blockEnd) blockEnd.classList.add("intent-block-end");
   }
 
   const scrollY = window.scrollY;
-  list.replaceChildren(frag);
+  body.replaceChildren(frag);
   window.scrollTo(0, scrollY);
   pendingEditFocus?.focusName();
   await refreshPlayerIntents();
@@ -6415,7 +6427,7 @@ async function refreshAffectedSurfaces(sections, { force = false } = {}) {
   }
   if (wanted.has("peers")) {
     await refreshPeers();
-    // Device picker for Assign hours is derived from peersCache.
+    // Device picker for Add assignment is derived from peersCache.
     if (hoursEditorState.size) {
       await refreshIntents({ force });
     }
