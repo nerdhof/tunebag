@@ -69,10 +69,19 @@ class SequenceProvisioner:
         return self._drafts_for_sequence(intent, catalog, sequence)
 
     def provision_fillup(
-        self, intent: Intent, catalog: CatalogState
+        self,
+        intent: Intent,
+        catalog: CatalogState,
+        *,
+        current: Sequence | None = None,
     ) -> list[EventDraft]:
-        """Keep remaining queued order; drop retired; append only if under budget."""
-        current = catalog.sequences.get(intent.id)
+        """Keep remaining queued order; drop retired; append only if under budget.
+
+        ``current`` defaults to the Catalog Sequence for the Intent. Callers may
+        pass a trimmed Sequence (e.g. Drop) so fillup starts from that list.
+        """
+        if current is None:
+            current = catalog.sequences.get(intent.id)
         sequence = fill_sequence(intent, catalog.mixes_list(), current)
         return self._drafts_for_sequence(intent, catalog, sequence)
 

@@ -195,6 +195,10 @@ class PlayheadBody(BaseModel):
 
 class MarkPlayedBody(BaseModel):
     mix_id: UUID | None = None
+
+
+class DropSequenceBody(BaseModel):
+    mix_id: UUID
     intent_id: UUID | None = None
 
 
@@ -1100,6 +1104,30 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 "name": intent.name,
                 "seed": intent.seed,
             },
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
+        }
+
+    @app.post("/api/intents/{intent_id}/sequence/drop")
+    def drop_from_sequence(intent_id: UUID, body: DropSequenceBody) -> dict:
+        try:
+            sequence = agent.drop_from_sequence(intent_id, body.mix_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "intent_id": str(intent_id),
+            "mix_id": str(body.mix_id),
+            "entries": [
+                {
+                    "mix_id": str(entry.mix_id),
+                    "position": entry.position,
+                    "bucket": entry.bucket.value,
+                }
+                for entry in sequence.entries
+            ],
             "files": len(agent.files()),
             "fill_in_progress": agent.fill_in_progress,
         }

@@ -64,6 +64,7 @@ const BTN = {
   confirmDelete: "💥",
   reject: "✕",
   unreject: "↺",
+  drop: "⊖",
   add: "✚",
   save: "✓",
   cancel: "×",
@@ -3993,6 +3994,68 @@ function formatPlaylogOffset(offset) {
   return String(n);
 }
 
+/** POST Drop from sequence; throws Error with server detail on failure. */
+async function dropFromSequence(intentId, mixId) {
+  const res = await fetch(`/api/intents/${intentId}/sequence/drop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mix_id: mixId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    throw new Error(
+      typeof detail === "string" ? detail : "Drop from sequence failed",
+    );
+  }
+  return data;
+}
+
+/**
+ * Hover-reveal Drop on a sequence `#` cell (Playlog upcoming / Shared sequence).
+ * @param {{ cell: HTMLElement, intentId: string, mixId: string, labelText: string, statusEl?: HTMLElement | null }} opts
+ */
+function mountSequenceDropControl({
+  cell,
+  intentId,
+  mixId,
+  labelText,
+  statusEl = null,
+}) {
+  cell.classList.add("seq-drop-cell");
+  cell.replaceChildren();
+  const stack = document.createElement("div");
+  stack.className = "seq-drop-stack";
+  const label = document.createElement("span");
+  label.className = "seq-drop-label";
+  label.textContent = labelText;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  setSymbolButton(btn, BTN.drop, "Drop from sequence");
+  btn.classList.add("seq-drop-action");
+  btn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    btn.disabled = true;
+    try {
+      await dropFromSequence(intentId, mixId);
+      if (statusEl) statusEl.textContent = "Dropped from sequence";
+      await refreshAffectedSurfaces(["playlog", "intents", "cache"], {
+        force: true,
+      });
+    } catch (err) {
+      if (statusEl) {
+        statusEl.textContent =
+          err instanceof Error ? err.message : "Drop from sequence failed";
+      }
+      console.error(err);
+      btn.disabled = false;
+    }
+  });
+  stack.appendChild(label);
+  stack.appendChild(btn);
+  cell.appendChild(stack);
+}
+
 /** Fill a Length-column cell with Cache status (second playlog line). */
 function fillPlaylogCacheCell(cell, item) {
   cell.className = "playlog-cache-cell";
@@ -4324,7 +4387,17 @@ async function refreshPlaylog({ force = false } = {}) {
 
     const offsetCell = document.createElement("td");
     offsetCell.className = "playlog-offset";
-    offsetCell.textContent = formatPlaylogOffset(offset);
+    if (offset > 0 && intentId) {
+      mountSequenceDropControl({
+        cell: offsetCell,
+        intentId,
+        mixId: item.id,
+        labelText: formatPlaylogOffset(offset),
+        statusEl: document.getElementById("player-status"),
+      });
+    } else {
+      offsetCell.textContent = formatPlaylogOffset(offset);
+    }
     tr.appendChild(offsetCell);
 
     const coverCell = document.createElement("td");
@@ -5522,10 +5595,25 @@ async function refreshIntents({ force = false } = {}) {
         thead.appendChild(headRow);
         table.appendChild(thead);
         const tbody = document.createElement("tbody");
+        const liveCurrentMixId =
+          lastPlayerIntentId === intent.id ? currentMixId : null;
         for (const entry of seq.entries) {
           const tr = document.createElement("tr");
           const pos = document.createElement("td");
-          pos.textContent = String(entry.position + 1);
+          const canDrop =
+            entry.mix_id &&
+            (!liveCurrentMixId || entry.mix_id !== liveCurrentMixId);
+          if (canDrop) {
+            mountSequenceDropControl({
+              cell: pos,
+              intentId: intent.id,
+              mixId: entry.mix_id,
+              labelText: String(entry.position + 1),
+              statusEl: document.getElementById("intent-status"),
+            });
+          } else {
+            pos.textContent = String(entry.position + 1);
+          }
           tr.appendChild(pos);
           const artist = document.createElement("td");
           artist.textContent = entry.artist || "Unknown";

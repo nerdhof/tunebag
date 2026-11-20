@@ -48,6 +48,7 @@ from tunebag.domain import (
     Playhead,
     ReleaseKind,
     Sequence,
+    SequenceEntry,
     SkipPending,
     StarDistribution,
     Stars,
@@ -3108,6 +3109,51 @@ class DeviceAgent:
         updated = intent.model_copy(update={"seed": random.randrange(1 << 31)})
         self._upsert_intent_and_rebuild(updated, fill=True)
         return self.catalog.intents[intent_id]
+
+    def drop_from_sequence(self, intent_id: UUID, mix_id: UUID) -> Sequence:
+        """Trim a Release from one Intent's Sequence, then fillup (may re-append).
+
+        Does not mark Played / Skipped / Reject. Refuses the live current Release
+        for this Intent (use Skip). See ADR-0010.
+        """
+        intent = self.catalog.intents.get(intent_id)
+        if intent is None:
+            raise KeyError(f"unknown intent {intent_id}")
+        current = self.catalog.sequences.get(intent_id)
+        if current is None:
+            raise KeyError(f"sequence not found for intent {intent_id}")
+        if mix_id not in {entry.mix_id for entry in current.entries}:
+            raise ValueError(f"mix {mix_id} is not in sequence for intent {intent_id}")
+        if (
+            mix_id == self._current_mix_id
+            and self._playback.intent_id == intent_id
+        ):
+            raise ValueError("cannot drop the currently playing Release")
+        trimmed = Sequence(
+            intent_id=intent_id,
+            entries=[
+                SequenceEntry(
+                    mix_id=entry.mix_id,
+                    position=entry.position,
+                    bucket=entry.bucket,
+                )
+                for entry in current.entries
+                if entry.mix_id != mix_id
+            ],
+        )
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._journal.hold():
+                    for draft in self._sequence_provisioner.provision_fillup(
+                        intent, self.catalog, current=trimmed
+                    ):
+                        self._append_and_apply(draft.type, draft.payload)
+                    self._prune_unassigned_files()
+                self.fill_caches()
+        sequence = self.catalog.sequences.get(intent_id)
+        if sequence is None:
+            raise KeyError(f"sequence not found for intent {intent_id}")
+        return sequence
 
     def apply_expired_hours(self) -> list[tuple[UUID, UUID]]:
         """Remove device hours whose expires_at has passed; prune exclusive files."""

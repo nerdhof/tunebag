@@ -9,7 +9,7 @@ Implementation may lag; see **Gaps vs current code** at the end.
 | Surface | Job |
 |---------|-----|
 | **Player** | Transport + annotate the *now-playing* Release |
-| **Playlog** | Global completed (Played) past + Intent assignment now/upcoming; cover hover ▶ / ◀ / ⏸; Cache under Length |
+| **Playlog** | Global completed (Played) past + Intent assignment now/upcoming; cover hover ▶ / ◀ / ⏸; upcoming `#` Drop from sequence; Cache under Length |
 | **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release |
 | **Intents** | Define plans; assign device hours; rebuild Sequence; Switch to intent (start/stop that Intent’s playback); Fill now |
 | **Cache** | Inspect File completeness; Metered |
@@ -30,6 +30,7 @@ Canonical UI labels (tips / accessible names). Domain meaning in parentheses whe
 | **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport; Playlog cover hover ▶ / ◀ / ⏸ also Play / Pause. Mark played = Last heard + Played + next; Skip = next without Played; Stop = idle at 0:00 |
 | **Switch to intent** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause) |
 | **Regenerate sequence** | Full rebuild of Sequence / assignments for one Intent (explicit; Played / Skipped / Reject use Sequence fillup instead — keep remaining queue order, append only if device hours need it) |
+| **Drop from sequence** | Remove one Release from this Intent’s Sequence (trim + Sequence fillup); not Played / Skipped / Reject; may re-enter later. Playlog upcoming `#` hover; Intent Shared sequence `#` hover. Not for the live current Release |
 | **Refresh artist** / **Refresh all artists** | Re-ingest from origin for one / all Artists |
 | **Fill now** | Metered override: fill one Intent to its full device budget |
 | **Sync** | Exchange Event logs with reachable trusted Peers (+ maintenance nudge). Not “reload UI” |
@@ -40,7 +41,7 @@ Shared control set wherever a surface’s job includes annotate:
 
 **Rate**, **Tag**, **Reject** (confirm-click), **Un-reject** (when the Release is Rejected).
 
-Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); Player transport verbs; Catalog Rejected filter chip.
+Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); Drop from sequence on Playlog upcoming / Intent Shared sequence `#`; Player transport verbs; Catalog Rejected filter chip.
 
 ## Surface × action matrix
 
@@ -51,6 +52,7 @@ Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); P
 | Reject (confirm) | yes | yes (if not Rejected) | yes (if not Rejected) | — | — | — | — |
 | Un-reject | no | yes (if Rejected) | yes (if Rejected) | — | — | — | — |
 | Play / Pause (row) | — | yes | — | — | — | — | — |
+| Drop from sequence | — | yes (upcoming) | — | yes (Shared sequence) | — | — | — |
 | Play / Pause / Stop / Skip / Mark played / Seek | yes | — | — | — | — | — | — |
 | Switch to intent | — | — | — | yes | — | — | — |
 | Regenerate sequence | — | — | — | yes | — | — | — |
