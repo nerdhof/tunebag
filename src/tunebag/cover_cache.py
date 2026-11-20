@@ -6,6 +6,7 @@ import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
@@ -25,14 +26,39 @@ _YOUTUBE_THUMB_VARIANTS = (
     "default",
 )
 
-# img.hearthis.at often 403s one size while sibling sizes still 200.
+# img.hearthis.at often 403s mid/large square sizes while siblings still 200.
+# Try normal squares first, then page-style slug URLs (better quality), then
+# tiny squares as last resort (e.g. Saetchmo Naughtylist3).
 _HEARTHIS_SIZE_VARIANTS = (
     "w800_h800",
     "w500_h500",
     "w400_h400",
     "w200_h200",
+    "w160_h160",
+)
+_HEARTHIS_TINY_SIZE_VARIANTS = (
+    "w80_h80",
+    "w40_h40",
+)
+# Page HTML uses permalink----wNNN_hNNN_c3a3a3a_… when API squares 403.
+_HEARTHIS_SLUG_SIZE_VARIANTS = (
+    "w880_h880",
+    "w640_h640",
+    "w440_h440",
+    "w320_h320",
+    "w160_h160",
 )
 _HEARTHIS_SIZE_RE = re.compile(r"w\d+_h\d+")
+# …/image_track/ID/w800_h800_q70_…----cropped_<32hex><slug>.jpg
+_HEARTHIS_EMBEDDED_SLUG_RE = re.compile(
+    r"(/image_track/\d+/)(w\d+_h\d+_)"
+    r"(q\d+_ptrue_v2_(?:m\d+)?----cropped_)"
+    r"([a-f0-9]{32})([a-zA-Z][\w-]*)(\.jpg(?:\?.*)?)$"
+)
+_HEARTHIS_IMG_RE = re.compile(r"https://img\.hearthis\.at/[^\s\"'<>\\]+")
+_HEARTHIS_TRACK_ID_RE = re.compile(r"/image_track/(\d+)/")
+_HEARTHIS_DIM_RE = re.compile(r"w(\d+)(?:_h(\d+))?")
+_HEARTHIS_OVERLAY_RE = re.compile(r"_btrue_|_o\d+_")
 
 
 def cover_path(data_dir: Path, mix_id: UUID) -> Path:
@@ -72,20 +98,86 @@ def youtube_cover_fallback_urls(url: str) -> list[str]:
     return out
 
 
+def _hearthis_rewrite_size(url: str, size: str, match: re.Match[str]) -> str | None:
+    if size == match.group(0):
+        return None
+    candidate = url[: match.start()] + size + url[match.end() :]
+    return candidate if candidate != url else None
+
+
 def hearthis_cover_fallback_urls(url: str) -> list[str]:
-    """Alternate hearthis artwork sizes when the primary URL 403s."""
-    match = _HEARTHIS_SIZE_RE.search(url)
-    if match is None:
-        return []
-    found = match.group(0)
+    """Alternate hearthis artwork sizes / slug forms when the primary URL 403s."""
     out: list[str] = []
-    for alt in _HEARTHIS_SIZE_VARIANTS:
-        if alt == found:
-            continue
-        candidate = url[: match.start()] + alt + url[match.end() :]
-        if candidate != url and candidate not in out:
+    match = _HEARTHIS_SIZE_RE.search(url)
+
+    def _add(candidate: str | None) -> None:
+        if candidate is not None and candidate not in out:
             out.append(candidate)
+
+    if match is not None:
+        for alt in _HEARTHIS_SIZE_VARIANTS:
+            _add(_hearthis_rewrite_size(url, alt, match))
+
+    slug = _HEARTHIS_EMBEDDED_SLUG_RE.search(url)
+    if slug is not None:
+        # API:  …/ID/w800_h800_q70_…----cropped_<hash><slug>.jpg
+        # Page: …/ID/<slug>----w640_h640_c3a3a3a_q70_…----cropped_<hash><slug>.jpg
+        for size in _HEARTHIS_SLUG_SIZE_VARIANTS:
+            candidate = (
+                url[: slug.start(2)]
+                + f"{slug.group(5)}----{size}_c3a3a3a_"
+                + slug.group(3)
+                + slug.group(4)
+                + slug.group(5)
+                + slug.group(6)
+            )
+            _add(candidate if candidate != url else None)
+
+    if match is not None:
+        for alt in _HEARTHIS_TINY_SIZE_VARIANTS:
+            _add(_hearthis_rewrite_size(url, alt, match))
     return out
+
+
+def hearthis_track_id_from_cover_url(url: str) -> str | None:
+    match = _HEARTHIS_TRACK_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def is_hearthis_page_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return host == "hearthis.at" or host.endswith(".hearthis.at")
+
+
+def hearthis_cover_urls_from_html(
+    html: str, *, track_id: str | None = None
+) -> list[str]:
+    """Ranked ``img.hearthis.at`` track artwork URLs scraped from a track page."""
+    scored: list[tuple[tuple[int, int, int], str]] = []
+    seen: set[str] = set()
+    for raw in _HEARTHIS_IMG_RE.findall(html):
+        candidate = raw.rstrip(").,;\"'")
+        if candidate in seen or "/image_track/" not in candidate:
+            continue
+        if track_id is not None and f"/image_track/{track_id}/" not in candidate:
+            continue
+        seen.add(candidate)
+        scored.append((_hearthis_page_url_score(candidate), candidate))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [url for _, url in scored]
+
+
+def _hearthis_page_url_score(url: str) -> tuple[int, int, int]:
+    """Prefer near-square covers; deprioritize watermark overlays."""
+    overlay = -2 if _HEARTHIS_OVERLAY_RE.search(url) else 0
+    match = _HEARTHIS_DIM_RE.search(url)
+    if match is None:
+        return (overlay, 0, 0)
+    width = int(match.group(1))
+    height = int(match.group(2) or width)
+    ratio = width / height if height else 0.0
+    square = 1 if 0.7 <= ratio <= 1.3 else 0
+    return (overlay + square, width * height, width)
 
 
 def default_cover_fetcher(url: str) -> bytes:
@@ -122,13 +214,19 @@ class CoverCache:
         path.unlink(missing_ok=True)
         return True
 
-    def ensure(self, mix_id: UUID, url: str | None) -> bool:
+    def ensure(
+        self,
+        mix_id: UUID,
+        url: str | None,
+        *,
+        page_url: str | None = None,
+    ) -> bool:
         """Ensure a local cover exists for ``mix_id``. Soft-fails on network errors."""
         if self.has(mix_id):
             return True
         if not url:
             return False
-        data = self._fetch_with_fallbacks(mix_id, url)
+        data = self._fetch_with_fallbacks(mix_id, url, page_url=page_url)
         if not data:
             return False
         path = self.path(mix_id)
@@ -138,7 +236,13 @@ class CoverCache:
         tmp.replace(path)
         return True
 
-    def _fetch_with_fallbacks(self, mix_id: UUID, url: str) -> bytes | None:
+    def _fetch_with_fallbacks(
+        self,
+        mix_id: UUID,
+        url: str,
+        *,
+        page_url: str | None = None,
+    ) -> bytes | None:
         candidates: list[str] = [url]
         for candidate in (
             *youtube_cover_fallback_urls(url),
@@ -146,6 +250,59 @@ class CoverCache:
         ):
             if candidate not in candidates:
                 candidates.append(candidate)
+        data, last_exc = self._try_candidates(mix_id, candidates)
+        if data:
+            return data
+        page_candidates = self._hearthis_page_candidates(
+            mix_id, url, page_url=page_url, tried=candidates
+        )
+        if page_candidates:
+            data, page_exc = self._try_candidates(mix_id, page_candidates)
+            if data:
+                return data
+            if page_exc is not None:
+                last_exc = page_exc
+        if last_exc is not None:
+            logger.warning(
+                "cover fetch exhausted fallbacks for %s (started %s)", mix_id, url
+            )
+        return None
+
+    def _hearthis_page_candidates(
+        self,
+        mix_id: UUID,
+        cover_url: str,
+        *,
+        page_url: str | None,
+        tried: list[str],
+    ) -> list[str]:
+        if not page_url or not is_hearthis_page_url(page_url):
+            return []
+        try:
+            html_bytes = self._fetch(page_url)
+        except Exception as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            logger.warning(
+                "cover page scrape failed for %s (%s): %s", mix_id, page_url, exc
+            )
+            return []
+        html = html_bytes.decode("utf-8", errors="ignore")
+        track_id = hearthis_track_id_from_cover_url(cover_url)
+        scraped = hearthis_cover_urls_from_html(html, track_id=track_id)
+        out = [candidate for candidate in scraped if candidate not in tried]
+        if out:
+            logger.info(
+                "cover page scrape for %s: %d candidate(s) from %s",
+                mix_id,
+                len(out),
+                page_url,
+            )
+        return out
+
+    def _try_candidates(
+        self, mix_id: UUID, candidates: list[str]
+    ) -> tuple[bytes | None, Exception | None]:
         last_exc: Exception | None = None
         for candidate in candidates:
             try:
@@ -159,10 +316,6 @@ class CoverCache:
                 )
                 continue
             if data:
-                return data
+                return data, last_exc
             logger.warning("cover fetch empty for %s (%s)", mix_id, candidate)
-        if last_exc is not None:
-            logger.warning(
-                "cover fetch exhausted fallbacks for %s (started %s)", mix_id, url
-            )
-        return None
+        return None, last_exc

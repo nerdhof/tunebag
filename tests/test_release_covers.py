@@ -81,9 +81,33 @@ def test_hearthis_cover_fallback_urls_rewrites_sizes() -> None:
     )
     assert any("w500_h500" in u for u in alts)
     assert any("w400_h400" in u for u in alts)
+    assert any("w80_h80" in u for u in alts)
+    assert any("w40_h40" in u for u in alts)
+    # Tiny squares come after mid sizes (last-resort).
+    assert alts.index(next(u for u in alts if "w80_h80" in u)) > alts.index(
+        next(u for u in alts if "w500_h500" in u)
+    )
     assert all("w200_h200" not in u for u in alts)
     assert all(u.endswith("?m=1792104379") for u in alts)
     assert hearthis_cover_fallback_urls("https://hearthis.at/thumb/7.jpg") == []
+
+
+def test_hearthis_cover_fallback_urls_slug_prefixed() -> None:
+    """Older art embeds the track slug after the cropped hash; page URLs use it."""
+    primary = (
+        "https://img.hearthis.at/3/t/s/_/uploads/8338/image_track/41425/"
+        "w800_h800_q70_ptrue_v2_----cropped_"
+        "4b659f1bc4eac1f057fec60b35cfac70naughtylist3.jpg"
+    )
+    alts = hearthis_cover_fallback_urls(primary)
+    slug = (
+        "https://img.hearthis.at/3/t/s/_/uploads/8338/image_track/41425/"
+        "naughtylist3----w640_h640_c3a3a3a_q70_ptrue_v2_----cropped_"
+        "4b659f1bc4eac1f057fec60b35cfac70naughtylist3.jpg"
+    )
+    assert slug in alts
+    # Prefer slug mid-size over tiny square last-resort.
+    assert alts.index(slug) < alts.index(next(u for u in alts if "w80_h80" in u))
 
 
 def test_youtube_cover_url_prefers_largest_thumbnail() -> None:
@@ -203,6 +227,93 @@ def test_cover_cache_falls_back_hearthis_size_on_403(tmp_path: Path) -> None:
     assert cache.has(mix_id)
     assert attempted[0] == primary
     assert any("w500_h500" in u for u in attempted)
+
+
+def test_cover_cache_falls_back_hearthis_tiny_or_slug_on_403(tmp_path: Path) -> None:
+    """Naughtylist-style: mid sizes 403; slug-prefixed or tiny squares still 200."""
+    from uuid import uuid4
+
+    from tunebag.cover_cache import CoverCache
+
+    primary = (
+        "https://img.hearthis.at/3/t/s/_/uploads/8338/image_track/41425/"
+        "w800_h800_q70_ptrue_v2_----cropped_"
+        "4b659f1bc4eac1f057fec60b35cfac70naughtylist3.jpg"
+    )
+    attempted: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        attempted.append(url)
+        if "naughtylist3----w640_h640" in url:
+            return JPEG_BYTES
+        raise httpx.HTTPStatusError(
+            "403",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(403),
+        )
+
+    cache = CoverCache(tmp_path, fetch=fetch)
+    mix_id = uuid4()
+    assert cache.ensure(mix_id, primary)
+    assert cache.has(mix_id)
+    assert any("naughtylist3----w640_h640" in u for u in attempted)
+
+
+def test_hearthis_cover_urls_from_html_ranks_square_track_art() -> None:
+    from tunebag.cover_cache import hearthis_cover_urls_from_html
+
+    html = """
+    <img src="https://img.hearthis.at/x/image_user/1/w64_h64_q70.jpg">
+    <img src="https://img.hearthis.at/x/image_track/13107798/banner----w1200_h629_q100.jpg">
+    <img src="https://img.hearthis.at/x/image_track/13107798/cover----w880_h880_c3a3a3a_q70.jpg">
+    <img src="https://img.hearthis.at/x/image_track/999/other----w640_h640_c3a3a3a_q70.jpg">
+    <img src="https://img.hearthis.at/x/image_track/13107798/w800_h800_btrue_c000000_q20_o30.jpg)">
+    """
+    urls = hearthis_cover_urls_from_html(html, track_id="13107798")
+    assert urls[0].endswith("cover----w880_h880_c3a3a3a_q70.jpg")
+    assert all("/13107798/" in u for u in urls)
+    assert all("/image_user/" not in u for u in urls)
+    assert "btrue" in urls[-1]
+    assert not urls[-1].endswith(")")
+
+
+def test_cover_cache_scrapes_hearthis_page_as_last_resort(tmp_path: Path) -> None:
+    from uuid import uuid4
+
+    from tunebag.cover_cache import CoverCache
+
+    primary = (
+        "https://img.hearthis.at/8/4/5/_/uploads/8338/image_track/13107798/"
+        "w800_h800_q70_ptrue_v2_m1----cropped_1.jpg"
+    )
+    page = "https://hearthis.at/saetchmo/echochamber251113604/"
+    page_art = (
+        "https://img.hearthis.at/8/4/5/_/uploads/8338/image_track/13107798/"
+        "echochamber-604-131125----w880_h880_c3a3a3a_q70_ptrue_v2_m1----cropped_1.jpg"
+    )
+    attempted: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        attempted.append(url)
+        if url == page:
+            return (
+                f'<html><img src="{page_art}"></html>'
+            ).encode()
+        if url == page_art:
+            return JPEG_BYTES
+        raise httpx.HTTPStatusError(
+            "403",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(403),
+        )
+
+    cache = CoverCache(tmp_path, fetch=fetch)
+    mix_id = uuid4()
+    assert cache.ensure(mix_id, primary, page_url=page)
+    assert cache.has(mix_id)
+    assert page in attempted
+    assert page_art in attempted
+    assert attempted.index(page) < attempted.index(page_art)
 
 
 def test_add_artists_caches_cover_and_player_api(tmp_path: Path) -> None:
