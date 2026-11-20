@@ -78,6 +78,8 @@ const BTN = {
   pause: "⏸",
   resume: "▶",
   copy: "⎘",
+  expandSeq: "▼",
+  collapseSeq: "▲",
 };
 
 function setSymbolButton(btn, symbol, label) {
@@ -5255,11 +5257,8 @@ function intentCoverMixIds(seq, limit = 3) {
   return ids;
 }
 
-/**
- * @param {string[]} mixIds
- * @param {{ expanded?: boolean, onToggle?: () => void } | null} [toggle]
- */
-function renderIntentCoverStack(mixIds, toggle = null) {
+/** @param {string[]} mixIds */
+function renderIntentCoverStack(mixIds) {
   const cell = document.createElement("td");
   cell.className = "intent-cover-cell intent-cover-span";
   cell.colSpan = 2;
@@ -5283,28 +5282,31 @@ function renderIntentCoverStack(mixIds, toggle = null) {
     stack.appendChild(placeholder);
   }
   cell.appendChild(stack);
-
-  if (toggle && typeof toggle.onToggle === "function") {
-    const expanded = Boolean(toggle.expanded);
-    cell.classList.add("intent-cover-toggle", "has-tip");
-    cell.tabIndex = 0;
-    cell.setAttribute("role", "button");
-    cell.setAttribute("aria-expanded", expanded ? "true" : "false");
-    cell.setAttribute(
-      "aria-label",
-      expanded ? "Collapse shared sequence" : "Expand shared sequence",
-    );
-    cell.dataset.tip = expanded ? "Collapse sequence" : "Expand sequence";
-    const activate = (event) => {
-      event.preventDefault();
-      toggle.onToggle();
-    };
-    cell.addEventListener("click", activate);
-    cell.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") activate(event);
-    });
-  }
   return cell;
+}
+
+/**
+ * @param {{ expanded?: boolean, onToggle?: () => void } | null} [toggle]
+ * @returns {HTMLButtonElement | null}
+ */
+function renderIntentSeqToggle(toggle) {
+  if (!toggle || typeof toggle.onToggle !== "function") return null;
+  const expanded = Boolean(toggle.expanded);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "intent-seq-toggle";
+  btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+  setSymbolButton(
+    btn,
+    expanded ? BTN.collapseSeq : BTN.expandSeq,
+    expanded ? "Collapse shared sequence" : "Expand shared sequence",
+  );
+  btn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggle.onToggle();
+  });
+  return btn;
 }
 
 /** Empty # + Cover cells for rows under a non-spanning cover. */
@@ -5317,22 +5319,33 @@ function appendIntentLeadCells(tr) {
   tr.appendChild(cover);
 }
 
+/** Lead cells replaced by the sequence toggle (stack-width). */
+function appendIntentToggleLeadCells(tr, toggle) {
+  const cell = document.createElement("td");
+  cell.className = "intent-seq-toggle-cell";
+  cell.colSpan = 2;
+  const btn = renderIntentSeqToggle(toggle);
+  if (btn) cell.appendChild(btn);
+  tr.appendChild(cell);
+}
+
+/** Toggle-only row when the intent has no assignment/editor rows. */
+function appendIntentToggleRow(frag, intent, toggle) {
+  const tr = document.createElement("tr");
+  tr.className = "intent-toggle-row";
+  tr.dataset.intentId = intent.id;
+  appendIntentToggleLeadCells(tr, toggle);
+  const rest = document.createElement("td");
+  rest.colSpan = 2;
+  rest.className = "intent-toggle-rest";
+  tr.appendChild(rest);
+  frag.appendChild(tr);
+}
+
 function renderIntentSeqCover(entry) {
   const cell = document.createElement("td");
   cell.className = "intent-cover-cell intent-seq-cover-cell";
-  if (entry?.mix_id && entry.has_cover) {
-    const img = document.createElement("img");
-    img.className = "intent-seq-cover";
-    img.alt = "";
-    img.decoding = "async";
-    img.src = `/api/mixes/${entry.mix_id}/cover`;
-    cell.appendChild(img);
-  } else {
-    const placeholder = document.createElement("span");
-    placeholder.className = "intent-seq-cover-placeholder";
-    placeholder.setAttribute("aria-hidden", "true");
-    cell.appendChild(placeholder);
-  }
+  cell.appendChild(appendIntentSeqCoverEl(entry));
   return cell;
 }
 
@@ -5343,6 +5356,21 @@ function toggleIntentSequence(intentId) {
     expandedIntentSequences.add(intentId);
   }
   void refreshIntents({ force: true });
+}
+
+function appendIntentSeqCoverEl(entry) {
+  if (entry?.mix_id && entry.has_cover) {
+    const img = document.createElement("img");
+    img.className = "intent-seq-cover";
+    img.alt = "";
+    img.decoding = "async";
+    img.src = `/api/mixes/${entry.mix_id}/cover`;
+    return img;
+  }
+  const placeholder = document.createElement("span");
+  placeholder.className = "intent-seq-cover-placeholder";
+  placeholder.setAttribute("aria-hidden", "true");
+  return placeholder;
 }
 
 function appendIntentSequenceRows(frag, intent, seq) {
@@ -5568,7 +5596,17 @@ function buildIntentActionButtons(intent) {
   return [playBtn, editBtn, regenerateBtn, fillNowBtn, deleteBtn];
 }
 
-function appendIntentAssignmentRows(frag, intent, assignments, durationByMixId) {
+/**
+ * @param {{ expanded?: boolean, onToggle?: () => void } | null} [toggle]
+ * @returns {boolean} true when at least one assignment/editor row was appended
+ */
+function appendIntentAssignmentRows(
+  frag,
+  intent,
+  assignments,
+  durationByMixId,
+  { toggle = null } = {},
+) {
   const assignmentByDevice = new Map();
   for (const asg of assignments) {
     assignmentByDevice.set(String(asg.device_id), asg);
@@ -5576,80 +5614,92 @@ function appendIntentAssignmentRows(frag, intent, assignments, durationByMixId) 
   const editor = hoursEditorState.get(intent.id);
   const hours = intent.device_hours || [];
 
+  /** @type {Array<{ kind: "assignment", dh: object } | { kind: "editor" }>} */
+  const specs = [];
   for (const dh of hours) {
     const editingThis =
       editor && editor.mode === "edit" && editor.deviceId === dh.device_id;
-    if (editingThis) continue;
+    if (!editingThis) specs.push({ kind: "assignment", dh });
+  }
+  if (editor) specs.push({ kind: "editor" });
 
+  for (let i = 0; i < specs.length; i += 1) {
+    const spec = specs[i];
+    const isLast = i === specs.length - 1;
     const tr = document.createElement("tr");
-    tr.className = "intent-assignment-row";
     tr.dataset.intentId = intent.id;
 
-    appendIntentLeadCells(tr);
-
-    const summary = document.createElement("td");
-    summary.className = "intent-assignment-cell muted";
-    const until = hoursUntilExpiry(dh.expires_at);
-    let expiryText = "";
-    if (dh.expires_at) {
-      expiryText =
-        until === "" || until === "0"
-          ? " · expired"
-          : ` · expires in ${until}h`;
-    }
-    const asg = assignmentByDevice.get(String(dh.device_id));
-    const outcomeText = assignmentOutcomeText(asg, durationByMixId);
-    const branch = document.createElement("span");
-    branch.className = "intent-assignment-branch";
-    branch.setAttribute("aria-hidden", "true");
-    branch.textContent = "↦";
-    const label = document.createElement("span");
-    label.className = "intent-assignment-label";
-    label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
-      dh.budget_seconds,
-    )}${outcomeText}${expiryText}`;
-    summary.appendChild(branch);
-    summary.appendChild(label);
-    tr.appendChild(summary);
-
-    const actions = document.createElement("td");
-    if (!editor) {
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      setSymbolButton(editBtn, BTN.edit, "Edit hours");
-      editBtn.addEventListener("click", () => {
-        hoursEditorState.set(intent.id, {
-          mode: "edit",
-          deviceId: dh.device_id,
-        });
-        void refreshIntents();
-      });
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      bindConfirmDelete(deleteBtn, {
-        label: "Remove hours",
-        onConfirm: () => deleteDeviceHours(intent, dh.device_id),
-      });
-      appendIntentActions(actions, editBtn, deleteBtn);
+    if (isLast && toggle) {
+      appendIntentToggleLeadCells(tr, toggle);
     } else {
-      appendIntentActions(actions);
+      appendIntentLeadCells(tr);
     }
-    tr.appendChild(actions);
+
+    if (spec.kind === "assignment") {
+      const dh = spec.dh;
+      tr.className = "intent-assignment-row";
+
+      const summary = document.createElement("td");
+      summary.className = "intent-assignment-cell muted";
+      const until = hoursUntilExpiry(dh.expires_at);
+      let expiryText = "";
+      if (dh.expires_at) {
+        expiryText =
+          until === "" || until === "0"
+            ? " · expired"
+            : ` · expires in ${until}h`;
+      }
+      const asg = assignmentByDevice.get(String(dh.device_id));
+      const outcomeText = assignmentOutcomeText(asg, durationByMixId);
+      const branch = document.createElement("span");
+      branch.className = "intent-assignment-branch";
+      branch.setAttribute("aria-hidden", "true");
+      branch.textContent = "↦";
+      const label = document.createElement("span");
+      label.className = "intent-assignment-label";
+      label.textContent = `${deviceName(dh.device_id)}: ${formatDuration(
+        dh.budget_seconds,
+      )}${outcomeText}${expiryText}`;
+      summary.appendChild(branch);
+      summary.appendChild(label);
+      tr.appendChild(summary);
+
+      const actions = document.createElement("td");
+      if (!editor) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        setSymbolButton(editBtn, BTN.edit, "Edit hours");
+        editBtn.addEventListener("click", () => {
+          hoursEditorState.set(intent.id, {
+            mode: "edit",
+            deviceId: dh.device_id,
+          });
+          void refreshIntents();
+        });
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        bindConfirmDelete(deleteBtn, {
+          label: "Remove hours",
+          onConfirm: () => deleteDeviceHours(intent, dh.device_id),
+        });
+        appendIntentActions(actions, editBtn, deleteBtn);
+      } else {
+        appendIntentActions(actions);
+      }
+      tr.appendChild(actions);
+    } else {
+      tr.className = "intent-hours-editor-row";
+      const editorCell = document.createElement("td");
+      editorCell.colSpan = 2;
+      editorCell.className = "intent-hours-editor-cell";
+      editorCell.appendChild(buildHoursEditor(intent, editor));
+      tr.appendChild(editorCell);
+    }
+
     frag.appendChild(tr);
   }
 
-  if (editor) {
-    const tr = document.createElement("tr");
-    tr.className = "intent-hours-editor-row";
-    tr.dataset.intentId = intent.id;
-    appendIntentLeadCells(tr);
-    const editorCell = document.createElement("td");
-    editorCell.colSpan = 2;
-    editorCell.className = "intent-hours-editor-cell";
-    editorCell.appendChild(buildHoursEditor(intent, editor));
-    tr.appendChild(editorCell);
-    frag.appendChild(tr);
-  }
+  return specs.length > 0;
 }
 
 async function refreshIntents({ force = false } = {}) {
@@ -5797,7 +5847,7 @@ async function refreshIntents({ force = false } = {}) {
       const nameRow = document.createElement("tr");
       nameRow.className = "intent-name-row";
       nameRow.dataset.intentId = intent.id;
-      const coverCell = renderIntentCoverStack(coverIds, coverToggle);
+      const coverCell = renderIntentCoverStack(coverIds);
       coverCell.rowSpan = 2;
       nameRow.appendChild(coverCell);
 
@@ -5884,7 +5934,17 @@ async function refreshIntents({ force = false } = {}) {
       frag.appendChild(metaRow);
     }
 
-    appendIntentAssignmentRows(frag, intent, assignments, durationByMixId);
+    const hasAssignmentRows = appendIntentAssignmentRows(
+      frag,
+      intent,
+      assignments,
+      durationByMixId,
+      { toggle: coverToggle },
+    );
+    // No assignment/editor rows: dedicated row for the toggle (and full-width rule).
+    if (!hasAssignmentRows) {
+      appendIntentToggleRow(frag, intent, coverToggle);
+    }
     if (seqExpanded && seq) {
       appendIntentSequenceRows(frag, intent, seq);
     }
