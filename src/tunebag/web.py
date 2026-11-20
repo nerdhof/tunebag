@@ -180,6 +180,7 @@ class PlayheadBody(BaseModel):
 
 class MarkPlayedBody(BaseModel):
     mix_id: UUID | None = None
+    intent_id: UUID | None = None
 
 
 class RateBody(BaseModel):
@@ -854,13 +855,23 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     @app.post("/api/player/mark-played")
     def player_mark_played(body: MarkPlayedBody) -> dict:
         try:
-            mix = agent.mark_played(body.mix_id)
+            # Companion Mark played: complete current (Last heard + Played) and
+            # advance. ``mix_id`` alone (tests/helpers) marks without advancing.
+            if body.mix_id is not None and body.mix_id != agent.current_mix():
+                mix = agent.mark_played(body.mix_id)
+            else:
+                mix = agent.mark_played_and_continue(body.intent_id)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "ok": True,
             "mix": {"id": str(mix.id), "played": mix.played},
             "playing": agent.is_playing(),
+            "current_mix_id": (
+                str(agent.current_mix())
+                if agent.current_mix() is not None
+                else None
+            ),
         }
 
     @app.get("/api/later")

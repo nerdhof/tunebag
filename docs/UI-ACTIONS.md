@@ -9,7 +9,7 @@ Implementation may lag; see **Gaps vs current code** at the end.
 | Surface | Job |
 |---------|-----|
 | **Player** | Transport + annotate the *now-playing* Release |
-| **Playlog** | Global Last-heard past + Intent assignment now/upcoming; cover hover ▶ / ◀ / ⏸; Cache under Length |
+| **Playlog** | Global completed (Played) past + Intent assignment now/upcoming; cover hover ▶ / ◀ / ⏸; Cache under Length |
 | **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release |
 | **Intents** | Define plans; assign device hours; rebuild Sequence; Switch to intent (start/stop that Intent’s playback); Fill now |
 | **Cache** | Inspect File completeness; Metered |
@@ -27,7 +27,7 @@ Canonical UI labels (tips / accessible names). Domain meaning in parentheses whe
 | **Tag** | Add/remove Tag on a Release |
 | **Reject** | Confirm-click destructive: arm, then confirm → append Reject Event |
 | **Un-reject** | Clear Reject on a Rejected Release (lists only) |
-| **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport (and Mark played); Playlog row ▶ / ◀ / ⏸ also Play / Pause |
+| **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport; Playlog cover hover ▶ / ◀ / ⏸ also Play / Pause. Mark played = Last heard + Played + next; Skip = next without Played; Stop = idle at 0:00 |
 | **Switch to intent** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause) |
 | **Regenerate sequence** | Rebuild Sequence / assignments for one Intent |
 | **Refresh artist** / **Refresh all artists** | Re-ingest from origin for one / all Artists |
@@ -51,7 +51,7 @@ Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); P
 | Reject (confirm) | yes | yes (if not Rejected) | yes (if not Rejected) | — | — | — | — |
 | Un-reject | no | yes (if Rejected) | yes (if Rejected) | — | — | — | — |
 | Play / Pause (row) | — | yes | — | — | — | — | — |
-| Play / Pause / Stop / Skip / Seek / Mark played | yes | — | — | — | — | — | — |
+| Play / Pause / Stop / Skip / Mark played / Seek | yes | — | — | — | — | — | — |
 | Switch to intent | — | — | — | yes | — | — | — |
 | Regenerate sequence | — | — | — | yes | — | — | — |
 | Fill now | — | — | — | yes | — | — | — |
@@ -100,7 +100,7 @@ flowchart LR
 1. **After a user mutation**, refresh affected surfaces via the shared `refreshAffectedSurfaces` path with `force` where an open editor would otherwise skip DOM rebuild.
 2. **View notices** refetch listed sections **without** `force` so in-progress editors (`focusInside`) are preserved.
 3. **Non-Catalog pending** must be API-visible if the UI shows it. Reject no longer uses a pre-commit undo buffer; Soft/Hard use Reject author time on Catalog/API snapshots.
-4. **Activity**, **pairing session**, and **Player** are notice-driven (pairing may keep a short poll only while `pending_confirm` waits on the other device). Player seekbar position ticks locally between notices; Last heard / Played thresholds are watched on the agent while playing.
+4. **Activity**, **pairing session**, and **Player** are notice-driven (pairing may keep a short poll only while `pending_confirm` waits on the other device). Player seekbar position ticks locally between notices; natural end-of-Release is watched on the agent while playing.
 
 ## Out of product UI
 
@@ -117,6 +117,6 @@ Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining com
 
 - Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
 
-Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when the agent watch sees live position cross **Last heard** or **Played**, plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. When Catalog playhead is already at Release end, Play starts at 0. Heartbeat ticks must **not** rebuild Catalog / Playlog and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync). Activity notices refresh Activity only — never Cache. Cache invalidates on intent/assignment/sequence changes (pending/loading/cached overview) and on download start/end plus throttled origin progress; the companion coalesces overlapping Cache refetches so the newest snapshot wins. Peer copies flip status only (no byte progress bar). Playlog also refreshes on `player` and `cache` notices.
+Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when the agent watch sees natural **end of Release** (Last heard + Played), plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. When Catalog playhead is already at Release end, Play starts at 0. Heartbeat ticks must **not** rebuild Catalog / Playlog and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync). Activity notices refresh Activity only — never Cache. Cache invalidates on intent/assignment/sequence changes (pending/loading/cached overview) and on download start/end plus throttled origin progress; the companion coalesces overlapping Cache refetches so the newest snapshot wins. Peer copies flip status only (no byte progress bar). Throttled origin progress marks `cache` only: the companion refetches Cache and **patches** Playlog download cells from that snapshot (no full `/api/playlog` rebuild). Download start/end mark `cache` and `playlog` so Playlog remounts status/playable. Playlog also full-refetches on `player` and explicit `playlog` / Catalog-driven notices.
 
 Follow-up implementation should close the remaining gaps against this contract.

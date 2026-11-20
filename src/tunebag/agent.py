@@ -78,12 +78,10 @@ from tunebag.playback import (
     ContinueTo,
     EmitLastHeard,
     MarkPlayed,
-    PLAYED_THRESHOLD,
     PlaybackIntent,
     PlaybackSupervisor,
     ReportPlayhead,
     clamp_seek_position,
-    last_heard_threshold,
 )
 from tunebag.event_payloads import encode_intent, encode_mix_added
 from tunebag.projection import CatalogState, LocalEffects
@@ -555,14 +553,16 @@ class DeviceAgent:
         limit: int,
         now: datetime,
     ) -> list[UUID]:
-        """Newest Last-heard Releases for Playlog past (Catalog-global).
+        """Newest completed (Played) Releases for Playlog past (Catalog-global).
 
-        Independent of Intent and of whether Files are local. Hard Rejected are
-        omitted; Soft Rejected stay. ``exclude`` drops rows already shown as
-        current/upcoming.
+        Independent of Intent and of whether Files are local. Ordered by Last
+        heard (set at natural end with Played). Hard Rejected are omitted; Soft
+        Rejected stay. ``exclude`` drops rows already shown as current/upcoming.
         """
         heard: list[Mix] = []
         for mix in self.catalog.mixes_list():
+            if not mix.played:
+                continue
             if mix.last_heard_at is None:
                 continue
             if mix.id in exclude:
@@ -630,11 +630,15 @@ class DeviceAgent:
         assignment = self.assignment(intent_id)
         in_assignment = assignment is not None and mix_id in assignment.mix_ids
         retained = self._is_playlog_previous_retained(mix_id)
+        is_live_current = mix_id == self._current_mix_id
         entry: dict[str, Any] = {
             "offset": offset,
             "id": mix_id,
             "artist": artist.name if artist is not None else "Unknown",
+            "artist_url": artist.url if artist is not None else None,
             "title": mix.title,
+            "url": mix.url,
+            "platform": mix.platform.value,
             "duration_seconds": int(mix.duration_seconds),
             "stars": int(mix.stars) if mix.stars is not None else None,
             "tags": list(mix.tags),
@@ -645,10 +649,17 @@ class DeviceAgent:
             "soft_rejected": soft,
             "cache_status": status,
             "has_cover": self.has_cover(mix_id),
+            # Local + not Rejected: assignment/cushion, still-current after a
+            # rebuild, or any past row (revise from Last heard while File stays).
             "playable": (
                 mix_id in local_ids
                 and not mix.rejected
-                and (in_assignment or retained)
+                and (
+                    in_assignment
+                    or retained
+                    or is_live_current
+                    or offset < 0
+                )
             ),
             "wanted_elsewhere": self._mix_wanted_elsewhere(
                 mix_id, except_intent=intent_id
@@ -679,7 +690,7 @@ class DeviceAgent:
     ) -> dict[str, Any]:
         """Playlog: Catalog-global Last-heard past + Intent assignment upcoming.
 
-        Past (−N) is newest Last heard across the Catalog (any Device / Intent).
+        Past (−N) is newest completed (Played) Releases across the Catalog.
         Current (0) and upcoming (+N) are this Intent's assignment order.
         """
         if intent_id not in self.catalog.intents:
@@ -698,7 +709,16 @@ class DeviceAgent:
 
         playing = self.is_playing() and self._playback.intent_id == intent_id
         current = self._current_mix_id
+        # Live current for this Intent stays at 0 even after mark_played (etc.)
+        # drops it from the assignment — otherwise it falls into Last-heard past.
+        live_current = (
+            current is not None
+            and self._playback.intent_id == intent_id
+            and current in self.catalog.mixes
+        )
         if current is not None and current in ordered_ids:
+            anchor = current
+        elif live_current:
             anchor = current
         else:
             anchor = self._play_target_for_intent(intent_id)
@@ -711,7 +731,45 @@ class DeviceAgent:
         included: set[UUID] = set()
 
         # Current + upcoming first so global past does not duplicate queue rows.
-        if anchor_index is not None:
+        if (
+            anchor is not None
+            and anchor_index is None
+            and live_current
+            and anchor == current
+        ):
+            # Still playing / current but no longer in assignment.
+            mix = self.catalog.mixes[anchor]
+            items.append(
+                self._playlog_row(
+                    mix,
+                    offset=0,
+                    intent_id=intent_id,
+                    local_ids=local_ids,
+                    downloads=downloads,
+                    now=now,
+                )
+            )
+            included.add(anchor)
+            upcoming_offset = 1
+            for mid in ordered_ids:
+                if mid in included:
+                    continue
+                mix = self.catalog.mixes.get(mid)
+                if mix is None:
+                    continue
+                items.append(
+                    self._playlog_row(
+                        mix,
+                        offset=upcoming_offset,
+                        intent_id=intent_id,
+                        local_ids=local_ids,
+                        downloads=downloads,
+                        now=now,
+                    )
+                )
+                included.add(mid)
+                upcoming_offset += 1
+        elif anchor_index is not None:
             for i in range(anchor_index, len(ordered_ids)):
                 mid = ordered_ids[i]
                 mix = self.catalog.mixes.get(mid)
@@ -1179,7 +1237,24 @@ class DeviceAgent:
         retained_ok = self._is_playlog_previous_retained(target) and self._has_local_file(
             target
         )
-        if target not in assignment.mix_ids and not retained_ok:
+        # Explicit mix_id: allow revising a still-local past/cushion Release or
+        # the live current after it left the assignment.
+        target_mix = self.catalog.mixes.get(target)
+        explicit_local_ok = (
+            mix_id is not None
+            and target_mix is not None
+            and self._has_local_file(target)
+            and (
+                retained_ok
+                or target == self._current_mix_id
+                or target_mix.played
+            )
+        )
+        if (
+            target not in assignment.mix_ids
+            and not retained_ok
+            and not explicit_local_ok
+        ):
             raise ValueError("mix is not in this device's assignment")
         if not self._has_local_file(target):
             raise ValueError("mix has no local file")
@@ -1219,16 +1294,18 @@ class DeviceAgent:
         return mix
 
     def stop(self, position_seconds: float | None = None) -> None:
-        """Stop local playback without marking the mix played.
+        """Stop local playback without marking the mix played; reset playhead to 0.
 
-        When ``position_seconds`` is provided (companion stop), commit that
-        playhead. Omitting it only flushes prior PLAYHEAD Events — avoids
-        freeze() clock drift overwriting an exact tick in tests/API callers.
+        ``position_seconds`` is accepted for API compatibility but ignored —
+        Stop always commits playhead 0:00 on the current Release. Same-Device
+        Playhead updates are causal LWW, so the rewind is accepted without a
+        special payload flag.
         """
-        if position_seconds is not None and self._current_mix_id is not None:
+        del position_seconds  # API compat; Stop always resets to 0.
+        if self._current_mix_id is not None:
             if self.is_playing():
                 self._playback.freeze()
-            self.report_playhead(float(position_seconds))
+            self.report_playhead(0.0)
         self._playback.stop()
         self._cancel_playback_threshold_watch()
         # Expiry may have deferred deletion of the mix that was playing.
@@ -1338,27 +1415,11 @@ class DeviceAgent:
     def _maybe_commit_threshold_playhead(
         self, mix: Mix | None, position_seconds: float
     ) -> None:
-        """Append playhead when live position crosses Last heard or Played."""
-        if mix is None or not self._playback.playing:
-            return
-        previous = 0.0
-        existing = self.catalog.playheads.get(mix.id)
-        if existing is not None:
-            previous = float(existing.position_seconds)
-        pos = float(position_seconds)
-        heard_at = last_heard_threshold(mix.duration_seconds)
-        need = previous < heard_at <= pos
-        if (
-            not mix.played
-            and mix.duration_seconds > 0
-            and previous < PLAYED_THRESHOLD * float(mix.duration_seconds) <= pos
-        ):
-            need = True
-        if need:
-            self.report_playhead(pos)
+        """No mid-song Last heard / Played; natural end emits those."""
+        return
 
     def _arm_playback_threshold_watch(self) -> None:
-        """While playing, check Last heard / Played every second without UI polls."""
+        """While playing, supervise natural end every second without UI polls."""
         self._cancel_playback_threshold_watch()
 
         def _fire() -> None:
@@ -1398,11 +1459,7 @@ class DeviceAgent:
         return self._playback.intent_id
 
     def report_playhead(self, position_seconds: float) -> Playhead:
-        """Update the playhead for the current mix; mark played at or past 75%.
-
-        Emits Last heard on the rising edge when position crosses
-        min(10s, 2% of duration) from below.
-        """
+        """Update the playhead for the current mix (mid-play; no completion)."""
         mix_id = self._current_mix_id
         if mix_id is None:
             raise ValueError("no current mix")
@@ -1515,12 +1572,11 @@ class DeviceAgent:
                 self._cancel_playback_threshold_watch()
 
     def mark_played(self, mix_id: UUID | None = None) -> Mix:
-        """Mark a mix played (explicit control or auto at 75%).
+        """Mark a mix played (natural end-of-Release, or internal helper).
 
         Rebuilds sequences so the mix goes to the back of the pool and fills the
-        next assignment. Does not stop playback of the current mix. The played
-        file is deleted once a replacement is local and the mix is no longer
-        current.
+        next assignment. Does not stop playback or advance. The played file is
+        deleted once a replacement is local and the mix is no longer current.
         """
         target = mix_id if mix_id is not None else self._current_mix_id
         if target is None:
@@ -1538,6 +1594,43 @@ class DeviceAgent:
                     )
                 )
         return self.catalog.mixes[target]
+
+    def mark_played_and_continue(
+        self, intent_id: UUID | None = None
+    ) -> Mix:
+        """Companion Mark played: Last heard + Played, then next local (wrap).
+
+        Unlike Skip, does not schedule Skipped. Unlike natural end, wraps like
+        Skip when choosing the next local File. If there is no other local
+        Release, stays on the current one after marking.
+        """
+        current = self._current_mix_id
+        if current is None:
+            raise ValueError("no mix to mark played")
+        if current not in self.catalog.mixes:
+            raise KeyError(f"unknown mix {current}")
+        mix = self.catalog.mixes[current]
+        resolved = (
+            intent_id if intent_id is not None else self._playback.intent_id
+        )
+        with self._view_notice_batch():
+            if self.is_playing():
+                self._playback.freeze()
+            self.report_playhead(float(mix.duration_seconds))
+            self._append_and_apply(
+                EventType.LAST_HEARD, {"mix_id": str(current)}
+            )
+            marked = self.mark_played(current)
+            if resolved is None or resolved not in self.catalog.intents:
+                return marked
+            next_id = self._next_local_assigned(
+                resolved, current, wrap=True
+            )
+            if next_id is None:
+                return marked
+            result = self.play(resolved, next_id)
+            self._schedule_auto_sync()
+            return result
 
     def mix(self, mix_id: UUID) -> Mix | None:
         return self.catalog.mixes.get(mix_id)
@@ -3287,13 +3380,14 @@ class DeviceAgent:
                 "downloaded_bytes": 0,
                 "total_bytes": None,
             }
-        self._mark_view_sections(UIViewSection.CACHE)
+        # Start/end remount Playlog status/playable; progress ticks stay CACHE-only.
+        self._mark_view_sections(UIViewSection.CACHE, UIViewSection.PLAYLOG)
         try:
             action()
         finally:
             with self._download_lock:
                 self._downloads.pop(mix_id, None)
-            self._mark_view_sections(UIViewSection.CACHE)
+            self._mark_view_sections(UIViewSection.CACHE, UIViewSection.PLAYLOG)
 
     def _origin_fetch_allowed(
         self,

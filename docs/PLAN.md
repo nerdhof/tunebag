@@ -52,7 +52,7 @@ Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating d
 
 ### Player (ours only for signals)
 
-- Played = past 75% or explicit Mark played.
+- Played = natural end of the Release or Mark played (with Last heard); no mid-song %. Mark played advances; Skip does not mark Played; Stop resets playhead to 0.
 - Playhead syncs; latest wins.
 - Rating and reject are separate.
 - Tags editable from list and player; suggest existing tags.

@@ -125,7 +125,7 @@ def test_http_play_with_mix_id_resumes_at_catalog_playhead(tmp_path: Path) -> No
         platform_id="resume",
     )
     laptop.report_playhead(900)
-    laptop.stop()
+    laptop.pause()  # keep playhead; Stop would reset to 0
     recorder.plays.clear()
     client = TestClient(create_app(laptop))
 
@@ -193,6 +193,8 @@ def test_playlog_ui_contract_play_controls_and_annotate() -> None:
     assert "rowSpan" not in playlog_fn
     assert "playlog-release" in js
     assert "${artist} - ${title}" in js
+    assert "createSourcePageLink" in playlog_fn
+    assert 'page: sourcePage' in playlog_fn or 'page: sourcePage,' in playlog_fn
     assert "scrollPlaylogDefaultView" in js
     assert "updatePlaylogStickyMetrics" in js
     assert "playlogCurrentIsStuck" in js
@@ -209,6 +211,7 @@ def test_playlog_ui_contract_play_controls_and_annotate() -> None:
     assert "/api/mixes/${mix.id}/reject" in js
     assert "/api/mixes/${mix.id}/un-reject" in js
     assert '"◀"' in playlog_fn or '"▶"' in playlog_fn
+    assert "isLiveCurrent" in playlog_fn
     assert "playlogPlayMix" in js
     assert "/api/player/play" in js
     assert "/api/mixes/${item.id}/cover" in playlog_fn

@@ -609,12 +609,24 @@ def _playhead_should_apply(
     event: Event,
     position: float,
 ) -> bool:
-    """Hybrid Playhead merge using signed author time (event.created_at)."""
+    """Playhead merge: same-Device causal LWW; cross-Device hybrid conflict rule.
+
+    Same Device (``existing.device_id == event.device_id``): later author time /
+    seq wins — rewinds (Stop → 0, seek back) are accepted. The near-window
+    higher-position rule applies only when two Devices conflict.
+    """
     key: MergeKey = ("playhead", str(event.payload["mix_id"]))
     incoming = _merge_win_for(event)
     if existing is None:
         state.merge_wins[key] = incoming
         return True
+    if existing.device_id == event.device_id:
+        if event.created_at > existing.updated_at:
+            state.merge_wins[key] = incoming
+            return True
+        if event.created_at < existing.updated_at:
+            return False
+        return _merge_beats(state, key, event)
     delta = abs((event.created_at - existing.updated_at).total_seconds())
     if delta <= PLAYHEAD_NEAR_SECONDS:
         if position > existing.position_seconds:

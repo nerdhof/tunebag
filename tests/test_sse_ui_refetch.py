@@ -152,3 +152,21 @@ def test_sse_refetch_preserves_tag_editor_focus() -> None:
 
     playlog = _js_function_body(js, "async function refreshPlaylog")
     assert "focusInside(body)" in playlog
+
+
+def test_cache_notice_patches_playlog_without_full_refetch() -> None:
+    """CACHE-only notices refresh files and patch Playlog bars; no /api/playlog."""
+    root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
+    js = (root / "app.js").read_text()
+
+    assert "function patchPlaylogCacheFromFiles" in js
+    files_now = _js_function_body(js, "async function refreshFilesNow")
+    assert "patchPlaylogCacheFromFiles(data)" in files_now
+
+    affected = _js_function_body(js, "async function refreshAffectedSurfaces")
+    cache_idx = affected.index('if (wanted.has("cache"))')
+    # Next sibling branch after cache (activity), or end of function.
+    next_branch = affected.find("\n  if (wanted.has(", cache_idx + 1)
+    cache_branch = affected[cache_idx : next_branch if next_branch != -1 else None]
+    assert "await refreshFiles" in cache_branch
+    assert "refreshPlaylog" not in cache_branch

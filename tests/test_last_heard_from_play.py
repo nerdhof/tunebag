@@ -1,4 +1,4 @@
-"""Issue 01 (play-history): Last heard from play — DeviceAgent + mixes API + UI contract."""
+"""Issue 01 (play-history): Last heard + Played at natural end — DeviceAgent + API + UI."""
 
 from __future__ import annotations
 
@@ -101,12 +101,16 @@ def _play_ready(
     return mix_id
 
 
-def test_crossing_meaningful_listen_threshold_records_last_heard(
-    tmp_path: Path,
-) -> None:
-    """Position reaching min(10s, 2% duration) emits Last heard on rising edge only."""
-    laptop, _phone, source, clock = _pair(tmp_path)
-    # duration 1000 → 2% = 20 → threshold = min(10, 20) = 10
+def _finish_natural_end(agent: DeviceAgent) -> None:
+    """Simulate the audio file ending so supervise emits Last heard + Played."""
+    agent._cancel_playback_threshold_watch()
+    agent._playback._player.stop()
+    agent._supervise_playback()
+
+
+def test_mid_play_does_not_record_last_heard(tmp_path: Path) -> None:
+    """Playhead updates mid-Release leave Last heard and Played unset."""
+    laptop, _phone, source, _clock = _pair(tmp_path)
     mix_id = _play_ready(
         laptop,
         source,
@@ -115,104 +119,93 @@ def test_crossing_meaningful_listen_threshold_records_last_heard(
         platform_id="a",
     )
 
-    laptop.report_playhead(9)
+    laptop.report_playhead(500)
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.last_heard_at is None
-
-    clock.advance(1)
-    laptop.report_playhead(10)
-    mix = next(m for m in laptop.mixes() if m.id == mix_id)
-    assert mix.last_heard_at == clock()
-
-    first_heard = mix.last_heard_at
-    clock.advance(30)
-    laptop.report_playhead(200)
-    mix = next(m for m in laptop.mixes() if m.id == mix_id)
-    assert mix.last_heard_at == first_heard
+    assert mix.played is False
 
 
-def test_live_position_crossing_threshold_commits_last_heard(
-    tmp_path: Path,
-) -> None:
-    """Agent threshold watch commits playhead when live clock crosses Last heard."""
+def test_natural_end_records_last_heard_and_played(tmp_path: Path) -> None:
+    """Natural end of Release sets Last heard and Played together."""
     laptop, _phone, source, clock = _pair(tmp_path)
     mix_id = _play_ready(
         laptop,
         source,
         title="Set A",
         duration_seconds=1000,
-        platform_id="live-heard",
+        platform_id="end-a",
+    )
+
+    clock.advance(1)
+    _finish_natural_end(laptop)
+
+    mix = next(m for m in laptop.mixes() if m.id == mix_id)
+    assert mix.last_heard_at == clock()
+    assert mix.played is True
+    head = laptop.playhead(mix_id)
+    assert head is not None
+    assert head.position_seconds == 1000.0
+
+
+def test_supervise_watch_commits_on_natural_end(tmp_path: Path) -> None:
+    """Agent end watch commits when the player dies while still playing."""
+    laptop, _phone, source, clock = _pair(tmp_path)
+    mix_id = _play_ready(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=1000,
+        platform_id="live-end",
     )
     laptop._cancel_playback_threshold_watch()
-    # Seed below threshold so the live crossing is the rising edge.
-    laptop.report_playhead(1)
+    laptop.report_playhead(100)
     assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
 
-    clock.advance(10)
-    # playback_position stays read-only for thresholds.
+    clock.advance(5)
+    # Idle GET path must not complete the Release.
     laptop.playback_position()
     assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
 
+    laptop._playback._player.stop()
     laptop._playback_threshold_tick()
 
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.last_heard_at == clock()
-    head = laptop.playhead(mix_id)
-    assert head is not None
-    assert head.position_seconds >= 10
+    assert mix.played is True
     laptop._cancel_playback_threshold_watch()
 
 
-def test_last_heard_threshold_uses_two_percent_when_lower(
-    tmp_path: Path,
-) -> None:
-    """On a short Mix, threshold is 2% of duration (not the 10s cap)."""
-    laptop, _phone, source, clock = _pair(tmp_path)
-    # duration 200 → 2% = 4 → threshold = min(10, 4) = 4
+def test_mark_played_helper_does_not_invent_last_heard(tmp_path: Path) -> None:
+    """Internal mark_played (no continue) sets Played without Last heard."""
+    laptop, _phone, source, _clock = _pair(tmp_path)
     mix_id = _play_ready(
-        laptop,
-        source,
-        title="Short Set",
-        duration_seconds=200,
-        platform_id="short",
-    )
-
-    laptop.report_playhead(3)
-    assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
-
-    clock.advance(1)
-    laptop.report_playhead(4)
-    assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at == clock()
-
-
-def test_last_heard_independent_of_played(tmp_path: Path) -> None:
-    """Crossing meaningful-listen does not require Played; mark_played does not invent Last heard."""
-    laptop, _phone, source, clock = _pair(tmp_path)
-    mix_id = _play_ready(
-        laptop,
-        source,
-        title="Set A",
-        duration_seconds=1000,
-        platform_id="a",
-    )
-
-    clock.advance(1)
-    laptop.report_playhead(10)
-    mix = next(m for m in laptop.mixes() if m.id == mix_id)
-    assert mix.last_heard_at == clock()
-    assert mix.played is False
-
-    other = _play_ready(
         laptop,
         source,
         title="Set B",
         duration_seconds=1000,
         platform_id="b",
     )
-    laptop.mark_played(other)
-    other_mix = next(m for m in laptop.mixes() if m.id == other)
-    assert other_mix.played is True
-    assert other_mix.last_heard_at is None
+    laptop.mark_played(mix_id)
+    mix = next(m for m in laptop.mixes() if m.id == mix_id)
+    assert mix.played is True
+    assert mix.last_heard_at is None
+
+
+def test_mark_played_and_continue_sets_last_heard(tmp_path: Path) -> None:
+    """Companion Mark played records Last heard + Played together."""
+    laptop, _phone, source, clock = _pair(tmp_path)
+    mix_id = _play_ready(
+        laptop,
+        source,
+        title="Set C",
+        duration_seconds=1000,
+        platform_id="c",
+    )
+    clock.advance(1)
+    laptop.mark_played_and_continue()
+    mix = next(m for m in laptop.mixes() if m.id == mix_id)
+    assert mix.played is True
+    assert mix.last_heard_at == clock()
 
 
 def test_last_heard_survives_peer_sync_and_event_log_rebuild(
@@ -243,22 +236,20 @@ def test_last_heard_survives_peer_sync_and_event_log_rebuild(
 
     laptop.play(intent.id, mix_id)
     clock.advance(5)
-    laptop.report_playhead(10)
+    _finish_natural_end(laptop)
     heard = clock()
     laptop.sync()
     phone.sync()
     assert next(m for m in phone.mixes() if m.id == mix_id).last_heard_at == heard
 
-    # Later rising edge from phone wins by signed author time.
-    # Past the playhead near-window so a below-threshold seek can stick.
+    # Later natural end from phone wins by signed author time.
     laptop.disconnect(phone)
     phone.disconnect(laptop)
     clock.advance(121)
     phone.play(intent.id, mix_id)
-    phone.report_playhead(5)
     clock.advance(1)
     later = clock()
-    phone.report_playhead(10)
+    _finish_natural_end(phone)
     assert next(m for m in phone.mixes() if m.id == mix_id).last_heard_at == later
 
     laptop.connect(phone)
@@ -310,7 +301,7 @@ def test_mixes_api_exposes_last_heard_without_backfill(tmp_path: Path) -> None:
     agent.play(intent.id, heard_id)
     clock.advance(1)
     heard_at = clock()
-    agent.report_playhead(10)
+    _finish_natural_end(agent)
 
     agent.play(intent.id, played_only)
     agent.mark_played(played_only)
@@ -320,6 +311,7 @@ def test_mixes_api_exposes_last_heard_without_backfill(tmp_path: Path) -> None:
     assert res.status_code == 200
     by_id = {row["id"]: row for row in res.json()["mixes"]}
     assert by_id[str(heard_id)]["last_heard_at"] == heard_at.isoformat()
+    assert by_id[str(heard_id)]["played"] is True
     assert by_id[str(played_only)]["last_heard_at"] is None
     assert by_id[str(played_only)]["played"] is True
 
@@ -334,4 +326,7 @@ def test_playlog_ui_contract_assignment_table() -> None:
     assert "refreshPlaylog" in js
     assert "/api/playlog" in js
     assert "Playlog" in html
-    assert "<th>Cache</th>" in html
+    assert "<th>Length</th>" in html
+    assert "completed (Played)" in html
+    assert 'id="player-mark"' in html
+    assert "Mark played" in html

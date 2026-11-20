@@ -1623,7 +1623,7 @@ const PLATFORM_SVG = {
 };
 
 /**
- * Platform icon link to an artist or release page (catalog + player).
+ * Platform icon link to an artist or release page (catalog + player + playlog).
  * @param {string|null|undefined} platform
  * @param {string|null|undefined} href
  * @param {{ page?: "artist"|"release" }} [options]
@@ -4072,6 +4072,53 @@ function fillPlaylogCacheCell(cell, item) {
   cell.textContent = "−";
 }
 
+/**
+ * Patch Playlog cache/download cells from a Cache `/api/files` snapshot.
+ * Used on throttled CACHE progress notices so we do not full-refetch `/api/playlog`.
+ */
+function patchPlaylogCacheFromFiles(data) {
+  const playlogBody = document.getElementById("playlog-body");
+  if (!playlogBody) return;
+
+  const byId = new Map();
+  for (const group of data.groups || []) {
+    for (const file of group.mixes || []) {
+      if (!file?.id) continue;
+      byId.set(file.id, {
+        cache_status: file.status || "pending",
+        downloaded_bytes: file.downloaded_bytes,
+        total_bytes: file.total_bytes,
+        size_bytes: file.size_bytes,
+      });
+    }
+  }
+  for (const dl of data.downloads || []) {
+    if (!dl?.mix_id) continue;
+    const prev = byId.get(dl.mix_id) || {};
+    byId.set(dl.mix_id, {
+      ...prev,
+      cache_status: prev.cache_status || "loading",
+      downloaded_bytes: dl.downloaded_bytes,
+      total_bytes: dl.total_bytes,
+    });
+  }
+  if (!byId.size) return;
+
+  for (const tr of playlogBody.querySelectorAll("tr.playlog-row[data-mix-id]")) {
+    const mixId = tr.dataset.mixId;
+    const info = byId.get(mixId);
+    if (!info) continue;
+    const cell = tr.querySelector(".playlog-cache-cell");
+    if (!cell) continue;
+    fillPlaylogCacheCell(cell, {
+      ...info,
+      offset: Number(tr.dataset.offset) || 0,
+      rejected: tr.classList.contains("mix-rejected"),
+      soft_rejected: tr.classList.contains("playlog-soft-rejected"),
+    });
+  }
+}
+
 async function playlogPlayMix(mixId) {
   const intentId = document.getElementById("player-intent")?.value;
   const status = document.getElementById("player-status");
@@ -4292,10 +4339,12 @@ async function refreshPlaylog({ force = false } = {}) {
       coverStack.appendChild(placeholder);
     }
     const canPlay = Boolean(item.playable);
+    const isLiveCurrent =
+      Boolean(data.current_mix_id) && item.id === data.current_mix_id;
     let actionSymbol = null;
     let actionLabel = null;
     let actionHandler = null;
-    if (offset === 0 && playing) {
+    if (playing && isLiveCurrent) {
       actionSymbol = "⏸";
       actionLabel = "Pause";
       actionHandler = () => playlogPause();
@@ -4328,7 +4377,20 @@ async function refreshPlaylog({ force = false } = {}) {
     releaseLine.className = "playlog-release";
     const artist = item.artist || "Unknown";
     const title = item.title || "";
-    releaseLine.textContent = title ? `${artist} - ${title}` : artist;
+    releaseLine.appendChild(
+      document.createTextNode(title ? `${artist} - ${title}` : artist),
+    );
+    const releaseUrl = item.url || "";
+    const artistUrl = item.artist_url || "";
+    const sourceHref = releaseUrl || artistUrl;
+    const sourcePage = releaseUrl ? "release" : "artist";
+    const sourceLink = createSourcePageLink(item.platform, sourceHref, {
+      page: sourcePage,
+    });
+    if (sourceLink) {
+      releaseLine.appendChild(document.createTextNode(" "));
+      releaseLine.appendChild(sourceLink);
+    }
     const annotateSlot = document.createElement("div");
     annotateSlot.className = "playlog-annotate";
     const starsRoot = document.createElement("div");
@@ -4723,6 +4785,7 @@ async function refreshFilesNow({ force = false } = {}) {
       "No assigned audio yet — create an intent with hours, or use Fill now on an Intent";
     tr.appendChild(td);
     body.appendChild(tr);
+    patchPlaylogCacheFromFiles(data);
     return;
   }
 
@@ -4844,6 +4907,7 @@ async function refreshFilesNow({ force = false } = {}) {
       body.appendChild(tr);
     }
   }
+  patchPlaylogCacheFromFiles(data);
 }
 
 async function saveDeviceHours(intentId, deviceId, hoursValue, expiresValue) {
@@ -6008,6 +6072,33 @@ document.getElementById("player-play").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("player-mark").addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const intentId = document.getElementById("player-intent").value;
+  status.textContent = "Marking played…";
+  try {
+    const body = intentId ? { intent_id: intentId } : {};
+    const res = await fetch("/api/player/mark-played", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      status.textContent = data.detail || "Mark played failed";
+      return;
+    }
+    status.textContent = "";
+    lastPlayheadCommitAt = Date.now();
+    playheadPlayedNotifiedForMix = data.mix?.id || null;
+    await refreshPlayer();
+    await refreshFiles();
+  } catch (err) {
+    status.textContent = "Mark played request failed";
+    console.error(err);
+  }
+});
+
 document.getElementById("player-skip").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   const intentId = document.getElementById("player-intent").value;
@@ -6041,13 +6132,12 @@ document.getElementById("player-stop").addEventListener("click", async () => {
     await fetch("/api/player/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        position_seconds: Math.max(0, lastKnownPositionSeconds),
-      }),
+      body: JSON.stringify({}),
     });
-    status.textContent = "Stopped (release left in place if under 75%)";
+    status.textContent = "Stopped";
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
+    lastKnownPositionSeconds = 0;
     await refreshPlayer();
   } catch (err) {
     status.textContent = "Stop request failed";
@@ -6115,34 +6205,6 @@ if (playerSeekbar) {
   });
 }
 
-document.getElementById("player-mark").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
-  status.textContent = "Marking played…";
-  try {
-    const res = await fetch("/api/player/mark-played", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      status.textContent = data.detail || "Mark played failed";
-      return;
-    }
-    status.textContent = "Marked played";
-    if (data.mix?.id) {
-      playheadPlayedNotifiedForMix = data.mix.id;
-    }
-    await refreshPlayer();
-    await refreshMixes();
-    await refreshFiles();
-    await refreshIntents();
-  } catch (err) {
-    status.textContent = "Mark played request failed";
-    console.error(err);
-  }
-});
-
 async function rateCurrentPlayerMix(stars) {
   const status = document.getElementById("player-status");
   const player = await (await fetch("/api/player")).json();
@@ -6207,10 +6269,9 @@ async function refreshAffectedSurfaces(sections, { force = false } = {}) {
     }
   }
   if (wanted.has("cache")) {
+    // Progress ticks are CACHE-only; Playlog bars patch from the files snapshot.
+    // Download start/end also mark playlog so full remount happens via that branch.
     await refreshFiles({ force });
-    if (!wanted.has("playlog") && !wanted.has("mixes")) {
-      await refreshPlaylog({ force });
-    }
   }
   if (wanted.has("activity")) {
     await refreshActivity();

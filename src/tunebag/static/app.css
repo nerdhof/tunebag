@@ -2130,6 +2130,21 @@ button.artist-suggest:hover {
   padding-bottom: 0.2rem;
 }
 
+#playlog-table .playlog-release .artist-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-left: 0.15rem;
+  vertical-align: middle;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+#playlog-table .playlog-release .artist-link:hover {
+  text-decoration: underline;
+}
+
 #playlog-table .playlog-annotate {
   display: flex;
   flex-wrap: wrap;

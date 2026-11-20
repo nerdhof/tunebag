@@ -91,9 +91,12 @@ def _intent_with_mixes(
     return intent.id, ids
 
 
-def _seed_last_heard(agent: DeviceAgent, mix_id: UUID, when: datetime) -> None:
+def _seed_completed(agent: DeviceAgent, mix_id: UUID, when: datetime) -> None:
+    """Mark a Release completed for Playlog past (Played + Last heard)."""
     mix = agent.catalog.mixes[mix_id]
-    agent.catalog.add_mix(mix.model_copy(update={"last_heard_at": when}))
+    agent.catalog.add_mix(
+        mix.model_copy(update={"last_heard_at": when, "played": True})
+    )
 
 
 def test_playlog_offsets_anchor_on_current_mix(tmp_path: Path) -> None:
@@ -118,6 +121,77 @@ def test_playlog_offsets_anchor_on_current_mix(tmp_path: Path) -> None:
     assert snap["playing"] is True
 
 
+def test_playlog_keeps_live_current_after_mark_played_leaves_assignment(
+    tmp_path: Path,
+) -> None:
+    """mark_played may drop the Release from assignment; Playlog keeps it at 0."""
+    agent, source, _clk = _agent(tmp_path)
+    # Short budget so only two of four assigned; played head can leave the window.
+    ids: list[UUID] = []
+    for i in range(4):
+        ids.append(
+            _add_mix(
+                agent,
+                source,
+                title=f"Pool {i}",
+                platform_id=f"pool-{i}",
+                duration_seconds=1000,
+            )
+        )
+    intent = agent.create_intent(
+        "Live current",
+        seed=1,
+        device_hours=[(agent.device_id, 2000)],
+    )
+    intent_id = intent.id
+    agent.fill_caches()
+    assignment = agent.assignment(intent_id)
+    assert assignment is not None
+    assert len(assignment.mix_ids) == 2
+    head = assignment.mix_ids[0]
+    agent.play(intent_id, head)
+    assert agent.is_playing()
+    # mark_played rebuilds sequences; skip prune races in this unit test.
+    agent._prune_unassigned_files = lambda: None  # type: ignore[method-assign]
+    agent.mark_played(head)
+
+    assignment_after = agent.assignment(intent_id)
+    assert assignment_after is not None
+    assert head not in assignment_after.mix_ids
+    assert agent.current_mix() == head
+    assert agent.is_playing()
+
+    snap = agent.playlog(intent_id)
+    by_id = {row["id"]: row for row in snap["items"]}
+    assert by_id[head]["offset"] == 0
+    assert snap["anchor_mix_id"] == head
+    assert snap["playing"] is True
+    assert head not in {
+        row["id"] for row in snap["items"] if int(row["offset"]) < 0
+    }
+
+
+def test_playlog_past_local_file_is_playable(tmp_path: Path) -> None:
+    """Cached Last-heard past rows expose playable so ◀ can revise them."""
+    clock = FakeClock()
+    agent, source, _clk = _agent(tmp_path, clock=clock)
+    intent_id, queue_ids = _intent_with_mixes(agent, source, 2)
+    agent.fill_caches()
+    heard = _add_mix(
+        agent, source, title="Heard past", platform_id="heard-past", duration_seconds=100
+    )
+    # Keep File without putting it on the playing Intent assignment.
+    agent._store_local_file(heard, b"audio:heard-past")
+    _seed_completed(agent, heard, clock())
+    agent.play(intent_id, queue_ids[0])
+
+    row = next(r for r in agent.playlog(intent_id)["items"] if r["id"] == heard)
+    assert row["offset"] == -1
+    assert row["playable"] is True
+    agent.play(intent_id, heard)
+    assert agent.current_mix() == heard
+
+
 def test_playlog_past_is_global_last_heard_across_intents(tmp_path: Path) -> None:
     """Past (−N) is Catalog Last heard newest-first, not Intent-local."""
     clock = FakeClock()
@@ -134,12 +208,12 @@ def test_playlog_past_is_global_last_heard_across_intents(tmp_path: Path) -> Non
     assert assignment is not None
     head, tail = assignment.mix_ids[0], assignment.mix_ids[1]
 
-    _seed_last_heard(agent, other, clock())
+    _seed_completed(agent, other, clock())
     clock.advance(60)
-    _seed_last_heard(agent, tail, clock())
+    _seed_completed(agent, tail, clock())
     clock.advance(60)
     # Newest overall, but becomes current → excluded from past.
-    _seed_last_heard(agent, head, clock())
+    _seed_completed(agent, head, clock())
 
     agent.play(intent_id, head)
     snap = agent.playlog(intent_id)
@@ -193,7 +267,7 @@ def test_playlog_past_limit_caps_last_heard_window(tmp_path: Path) -> None:
             artist_name="DJ Example",
         )
         clock.advance(10)
-        _seed_last_heard(agent, mix.id, clock())
+        _seed_completed(agent, mix.id, clock())
         heard_ids.append(mix.id)
 
     clock.advance(1)
@@ -220,7 +294,7 @@ def test_playlog_row_cache_status_and_playable_fields(tmp_path: Path) -> None:
     assignment = agent.assignment(intent_id)
     assert assignment is not None
     ordered = list(assignment.mix_ids)
-    _seed_last_heard(agent, ordered[0], clock())
+    _seed_completed(agent, ordered[0], clock())
     agent.play(intent_id, ordered[1])
     agent.remove_local_file(ordered[0])
 
@@ -266,7 +340,10 @@ def test_playlog_api_http_matches_agent_snapshot(tmp_path: Path) -> None:
         "offset",
         "id",
         "artist",
+        "artist_url",
         "title",
+        "url",
+        "platform",
         "cache_status",
         "has_cover",
         "playable",
@@ -275,6 +352,8 @@ def test_playlog_api_http_matches_agent_snapshot(tmp_path: Path) -> None:
         "last_heard_at",
     ):
         assert key in fields
+    assert fields["platform"]
+    assert fields["url"]
 
     res_default = client.get("/api/playlog")
     assert res_default.status_code == 200

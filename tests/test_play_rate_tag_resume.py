@@ -148,7 +148,89 @@ def test_mark_played_counts_as_played_without_waiting(tmp_path: Path) -> None:
     assert laptop.current_mix() == mix_id
 
 
-def test_listening_past_75_percent_counts_as_played(tmp_path: Path) -> None:
+def test_mark_played_and_continue_advances_without_skipped(tmp_path: Path) -> None:
+    laptop, _phone, source = _pair(tmp_path)
+    a = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=1000,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    b = _add_mix(
+        laptop,
+        source,
+        title="Set B",
+        duration_seconds=1000,
+        platform_id="b",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 4000)],
+    )
+    laptop.fill_caches()
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    assert set(assignment.mix_ids) == {a, b}
+    head = assignment.mix_ids[0]
+    nxt_id = assignment.mix_ids[1]
+    laptop.play(intent.id, head)
+
+    playing = laptop.mark_played_and_continue()
+
+    finished = next(m for m in laptop.mixes() if m.id == head)
+    assert finished.played is True
+    assert finished.last_heard_at is not None
+    assert finished.skipped is False
+    assert len(laptop.pending_skips()) == 0
+    assert playing.id == nxt_id
+    assert laptop.current_mix() == nxt_id
+    assert laptop.is_playing() is True
+
+
+def test_skip_does_not_mark_played(tmp_path: Path) -> None:
+    laptop, _phone, source = _pair(tmp_path)
+    a = _add_mix(
+        laptop,
+        source,
+        title="Set A",
+        duration_seconds=1000,
+        platform_id="a",
+        stars=Stars.FIVE,
+    )
+    b = _add_mix(
+        laptop,
+        source,
+        title="Set B",
+        duration_seconds=1000,
+        platform_id="b",
+        stars=Stars.FIVE,
+    )
+    intent = laptop.create_intent(
+        "Play",
+        seed=1,
+        device_hours=[(laptop.device_id, 4000)],
+    )
+    laptop.fill_caches()
+    assignment = laptop.assignment(intent.id)
+    assert assignment is not None
+    head = assignment.mix_ids[0]
+    nxt_id = assignment.mix_ids[1]
+    laptop.play(intent.id, head)
+
+    laptop.skip()
+
+    abandoned = next(m for m in laptop.mixes() if m.id == head)
+    assert abandoned.played is False
+    assert abandoned.last_heard_at is None
+    assert laptop.current_mix() == nxt_id
+    assert head in {p.mix_id for p in laptop.pending_skips()}
+
+
+def test_mid_play_playhead_does_not_count_as_played(tmp_path: Path) -> None:
     laptop, _phone, source = _pair(tmp_path)
     mix_id = _add_mix(
         laptop,
@@ -166,17 +248,14 @@ def test_listening_past_75_percent_counts_as_played(tmp_path: Path) -> None:
     laptop.fill_caches()
     laptop.play(intent.id, mix_id)
 
-    laptop.report_playhead(749)
-    assert next(m for m in laptop.mixes() if m.id == mix_id).played is False
-
     laptop.report_playhead(750)
-
-    assert next(m for m in laptop.mixes() if m.id == mix_id).played is True
+    assert next(m for m in laptop.mixes() if m.id == mix_id).played is False
+    assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
     assert laptop.is_playing() is True
     assert laptop.current_mix() == mix_id
 
 
-def test_stop_before_75_percent_leaves_mix_in_sequence_and_on_disk(
+def test_stop_before_end_leaves_mix_in_sequence_and_on_disk(
     tmp_path: Path,
 ) -> None:
     laptop, _phone, source = _pair(tmp_path)
@@ -201,6 +280,9 @@ def test_stop_before_75_percent_leaves_mix_in_sequence_and_on_disk(
 
     assert laptop.is_playing() is False
     assert next(m for m in laptop.mixes() if m.id == mix_id).played is False
+    head = laptop.playhead(mix_id)
+    assert head is not None
+    assert head.position_seconds == 0.0
     assignment = laptop.assignment(intent.id)
     assert assignment is not None
     assert mix_id in assignment.mix_ids
@@ -609,9 +691,9 @@ def test_playback_position_advances_with_clock(tmp_path: Path) -> None:
     assert laptop.playback_position() == 45.0
 
     laptop.stop()
-    assert laptop.playback_position() == 45.0
+    assert laptop.playback_position() == 0.0
     now = now + timedelta(seconds=10)
-    assert laptop.playback_position() == 45.0
+    assert laptop.playback_position() == 0.0
 
 
 def test_seek_while_playing_restarts_player_at_offset(tmp_path: Path) -> None:
@@ -671,7 +753,7 @@ def test_seek_while_stopped_updates_playhead_without_play(tmp_path: Path) -> Non
     assert laptop.playhead(mix_id).position_seconds == 120
 
 
-def test_seek_past_75_percent_marks_played(tmp_path: Path) -> None:
+def test_seek_mid_release_does_not_mark_played(tmp_path: Path) -> None:
     recorder = _RecordingPlayer()
     laptop, _phone, source = _pair(tmp_path, player=recorder)
     mix_id = _add_mix(
@@ -692,7 +774,8 @@ def test_seek_past_75_percent_marks_played(tmp_path: Path) -> None:
 
     laptop.seek(750)
 
-    assert next(m for m in laptop.mixes() if m.id == mix_id).played is True
+    assert next(m for m in laptop.mixes() if m.id == mix_id).played is False
+    assert next(m for m in laptop.mixes() if m.id == mix_id).last_heard_at is None
     assert laptop.is_playing() is True
     assert laptop.current_mix() == mix_id
 

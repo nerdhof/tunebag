@@ -13,7 +13,6 @@ from tunebag.playback import (
     MarkPlayed,
     PlaybackSupervisor,
     ReportPlayhead,
-    last_heard_threshold,
 )
 from tunebag.player import NullPlayer
 
@@ -115,48 +114,44 @@ def _supervisor(
     return PlaybackSupervisor(rec, clk, locate_audio=locate), rec, clk, files
 
 
-def test_note_position_emits_last_heard_on_rising_edge(tmp_path: Path) -> None:
+def test_note_position_mid_play_is_playhead_only(tmp_path: Path) -> None:
     mix = _mix(duration=1000)
-    # 2% of 1000 = 20; cap is 10 → threshold 10.
-    assert last_heard_threshold(1000) == 10.0
-    supervisor, _player, _clock, files = _supervisor(tmp_path)
-    path = tmp_path / "mix.bin"
-    path.write_bytes(b"audio")
-    files[mix.id] = [path]
-    intent_id = new_id()
-    supervisor.start(mix, 0.0, intent_id=intent_id, continue_next_id=None)
-
-    below = supervisor.note_position(mix, 9.0, previous_position=0.0)
-    assert [type(i) for i in below] == [ReportPlayhead]
-    assert below[0].position_seconds == 9.0  # type: ignore[union-attr]
-
-    cross = supervisor.note_position(mix, 10.0, previous_position=9.0)
-    assert [type(i) for i in cross] == [ReportPlayhead, EmitLastHeard]
-    assert isinstance(cross[1], EmitLastHeard)
-    assert cross[1].mix_id == mix.id
-
-    again = supervisor.note_position(mix, 11.0, previous_position=10.0)
-    assert [type(i) for i in again] == [ReportPlayhead]
-
-
-def test_note_position_marks_played_at_75_percent(tmp_path: Path) -> None:
-    mix = _mix(duration=100)
     supervisor, _player, _clock, files = _supervisor(tmp_path)
     path = tmp_path / "mix.bin"
     path.write_bytes(b"audio")
     files[mix.id] = [path]
     supervisor.start(mix, 0.0, intent_id=new_id(), continue_next_id=None)
 
-    under = supervisor.note_position(mix, 74.0, previous_position=0.0)
-    assert not any(isinstance(i, MarkPlayed) for i in under)
-
-    over = supervisor.note_position(mix, 75.0, previous_position=74.0)
-    assert any(isinstance(i, MarkPlayed) for i in over)
-    played = next(i for i in over if isinstance(i, MarkPlayed))
-    assert played.mix_id == mix.id
+    intents = supervisor.note_position(mix, 500.0, previous_position=0.0)
+    assert [type(i) for i in intents] == [ReportPlayhead]
+    assert intents[0].position_seconds == 500.0  # type: ignore[union-attr]
+    assert not any(isinstance(i, EmitLastHeard) for i in intents)
+    assert not any(isinstance(i, MarkPlayed) for i in intents)
 
 
-def test_album_track_end_advances_and_reports_timeline(tmp_path: Path) -> None:
+def test_release_end_emits_last_heard_and_played(tmp_path: Path) -> None:
+    mix = _mix(duration=100)
+    supervisor, player, _clock, files = _supervisor(tmp_path)
+    path = tmp_path / "mix.bin"
+    path.write_bytes(b"audio")
+    files[mix.id] = [path]
+    supervisor.start(mix, 0.0, intent_id=new_id(), continue_next_id=None)
+
+    player.finish()
+    intents = supervisor.supervise(mix, previous_position=40.0)
+
+    assert supervisor.playing is False
+    assert [type(i) for i in intents] == [
+        ReportPlayhead,
+        EmitLastHeard,
+        MarkPlayed,
+    ]
+    assert intents[0].position_seconds == 100.0  # type: ignore[union-attr]
+    assert intents[1].mix_id == mix.id  # type: ignore[union-attr]
+    assert intents[2].mix_id == mix.id  # type: ignore[union-attr]
+
+
+def test_album_track_end_advances_without_completion(tmp_path: Path) -> None:
     album = _album()
     supervisor, player, _clock, files = _supervisor(tmp_path)
     track_paths = []
@@ -174,8 +169,8 @@ def test_album_track_end_advances_and_reports_timeline(tmp_path: Path) -> None:
     assert player.plays[-1] == (track_paths[1], 0.0)
     assert supervisor.album_index == 1
     assert supervisor.playing is True
-    # Timeline 60 crosses Last heard threshold min(10, 2% of 180)=3.6.
-    assert [type(i) for i in intents] == [ReportPlayhead, EmitLastHeard]
+    # Mid-album advance: playhead only (completion waits for last track).
+    assert [type(i) for i in intents] == [ReportPlayhead]
     assert intents[0].position_seconds == 60.0  # type: ignore[union-attr]
 
 
@@ -203,7 +198,8 @@ def test_album_end_emits_continue_to(tmp_path: Path) -> None:
 
     assert supervisor.playing is False
     assert any(isinstance(i, ReportPlayhead) for i in intents)
-    assert any(isinstance(i, MarkPlayed) for i in intents)  # 180 >= 75% of 180
+    assert any(isinstance(i, EmitLastHeard) for i in intents)
+    assert any(isinstance(i, MarkPlayed) for i in intents)
     cont = next(i for i in intents if isinstance(i, ContinueTo))
     assert cont.intent_id == intent_id
     assert cont.mix_id == next_id
@@ -229,16 +225,3 @@ def test_mix_end_uses_fallback_next_when_stash_cleared(tmp_path: Path) -> None:
     cont = next(i for i in intents if isinstance(i, ContinueTo))
     assert cont.mix_id == fallback
     assert cont.intent_id == intent_id
-
-
-def test_live_position_advances_with_clock(tmp_path: Path) -> None:
-    mix = _mix(duration=3600)
-    clock = FakeClock()
-    supervisor, _player, _clock, files = _supervisor(tmp_path, clock=clock)
-    path = tmp_path / "mix.bin"
-    path.write_bytes(b"audio")
-    files[mix.id] = [path]
-    supervisor.start(mix, 100.0, intent_id=new_id(), continue_next_id=None)
-
-    clock.advance(12.5)
-    assert supervisor.live_position(mix) == 112.5

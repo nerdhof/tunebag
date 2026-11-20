@@ -17,18 +17,8 @@ from tunebag.domain import Mix, ReleaseKind
 from tunebag.player import AudioPlayer
 from tunebag.release_layout import album_timeline_location
 
-PLAYED_THRESHOLD = 0.75
-# Meaningful listen: position reaches min(10s, 2% of duration); rising edge only.
-LAST_HEARD_CAP_SECONDS = 10.0
-LAST_HEARD_DURATION_FRACTION = 0.02
-
-
-def last_heard_threshold(duration_seconds: int) -> float:
-    """Meaningful-listen threshold: min(10s, 2% of duration)."""
-    return min(
-        LAST_HEARD_CAP_SECONDS,
-        LAST_HEARD_DURATION_FRACTION * float(duration_seconds),
-    )
+# Legacy name kept for imports; Played is end-of-Release only (not a mid-song %).
+PLAYED_THRESHOLD = 1.0
 
 
 @dataclass(frozen=True)
@@ -135,7 +125,7 @@ class PlaybackSupervisor:
         *,
         previous_position: float,
     ) -> list[PlaybackIntent]:
-        """Update local position/anchors; emit Playhead / Last heard / MarkPlayed intents."""
+        """Update local position/anchors; emit Playhead only (completion is end-of-Release)."""
         pos = float(position_seconds)
         self.position = pos
         if self.has_live_anchor:
@@ -229,9 +219,13 @@ class PlaybackSupervisor:
         self.playing = False
         self.album_index = None
         self._clear_anchor()
-        intents = self.note_position(
-            mix, end, previous_position=previous_position
-        )
+        # End-of-Release only: playhead + Last heard + Played (no mid-song %).
+        intents: list[PlaybackIntent] = [
+            ReportPlayhead(mix_id=mix.id, position_seconds=end),
+            EmitLastHeard(mix_id=mix.id),
+        ]
+        if not mix.played:
+            intents.append(MarkPlayed(mix_id=mix.id))
         if next_id is not None and intent_id is not None:
             intents.append(ContinueTo(intent_id=intent_id, mix_id=next_id))
         return intents
@@ -243,19 +237,10 @@ class PlaybackSupervisor:
         *,
         previous_position: float,
     ) -> list[PlaybackIntent]:
-        intents: list[PlaybackIntent] = [
+        # Mid-play: playhead only. Last heard / Played wait for natural end.
+        return [
             ReportPlayhead(mix_id=mix.id, position_seconds=position_seconds)
         ]
-        threshold = last_heard_threshold(mix.duration_seconds)
-        if previous_position < threshold <= position_seconds:
-            intents.append(EmitLastHeard(mix_id=mix.id))
-        if (
-            not mix.played
-            and mix.duration_seconds > 0
-            and position_seconds >= PLAYED_THRESHOLD * mix.duration_seconds
-        ):
-            intents.append(MarkPlayed(mix_id=mix.id))
-        return intents
 
     def _start_audio(self, mix: Mix, timeline_seconds: float) -> None:
         path, offset = self._locate_audio(mix, float(timeline_seconds))

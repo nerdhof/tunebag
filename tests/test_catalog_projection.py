@@ -148,6 +148,42 @@ def test_playhead_beyond_two_minutes_prefers_later_author_time() -> None:
     assert state.playheads[mix_id].position_seconds == 50.0
 
 
+def test_playhead_same_device_accepts_rewind_within_near_window() -> None:
+    """Same-Device Stop/seek-back wins; hybrid higher-position is cross-Device only."""
+    local = uuid4()
+    state = CatalogState()
+    _, mix_id = _seed_mix(state, local_device_id=local)
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+
+    apply(
+        state,
+        _event(
+            EventType.PLAYHEAD,
+            {"mix_id": str(mix_id), "position_seconds": 100.0},
+            device_id=local,
+            created_at=t0,
+            seq=3,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    apply(
+        state,
+        _event(
+            EventType.PLAYHEAD,
+            {"mix_id": str(mix_id), "position_seconds": 0.0},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=30),
+            seq=4,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+
+    assert state.playheads[mix_id].position_seconds == 0.0
+    assert state.playheads[mix_id].device_id == local
+
+
 def test_artist_delete_is_sticky_against_later_mix_add() -> None:
     local = uuid4()
     peer = uuid4()

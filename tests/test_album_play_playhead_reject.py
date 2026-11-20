@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
+import pytest
+
 from tunebag.agent import DeviceAgent
 from tunebag.domain import Platform, ReleaseKind, Stars
 from tunebag.player import NullPlayer
@@ -179,16 +181,16 @@ def test_resume_mid_album_maps_timeline_to_track_offset(tmp_path: Path) -> None:
     laptop.fill_caches()
     laptop.play(intent_id, album_id)
     laptop.report_playhead(650)
-    laptop.stop()
+    laptop.pause()  # keep playhead; Stop would reset to 0
 
     laptop.play(intent_id, album_id)
 
     path, start = recorder.plays[-1]
     assert path == _track_path(laptop, album_id, 1)
-    assert start == 50.0
+    assert start == pytest.approx(50.0, abs=0.05)
     head = laptop.playhead(album_id)
     assert head is not None
-    assert head.position_seconds == 650.0
+    assert head.position_seconds == pytest.approx(650.0, abs=0.05)
 
 
 def test_playhead_sync_lets_peer_resume_mid_album(tmp_path: Path) -> None:
@@ -219,17 +221,17 @@ def test_playhead_sync_lets_peer_resume_mid_album(tmp_path: Path) -> None:
     phone.fill_caches()
     laptop.play(intent.id, album_id)
     laptop.report_playhead(650)
-    laptop.stop()
+    laptop.pause()  # keep playhead for peer resume; Stop would reset to 0
     phone.sync()
 
     phone.play(intent.id, album_id)
 
     path, start = phone_player.plays[-1]
     assert path == _track_path(phone, album_id, 1)
-    assert start == 50.0
+    assert start == pytest.approx(50.0, abs=0.05)
     head = phone.playhead(album_id)
     assert head is not None
-    assert head.position_seconds == 650.0
+    assert head.position_seconds == pytest.approx(650.0, abs=0.05)
 
 
 def test_seek_across_track_boundary_restarts_correct_file(tmp_path: Path) -> None:
@@ -332,21 +334,18 @@ def test_album_end_auto_continues_to_next_local_release(tmp_path: Path) -> None:
     assert recorder.plays[-1][0] == tmp_path / "laptop" / "blobs" / str(other.id)
 
 
-def test_listening_past_75_percent_of_album_marks_played(tmp_path: Path) -> None:
-    # Summed duration 1800; 75% = 1350.
+def test_mid_album_playhead_does_not_mark_played(tmp_path: Path) -> None:
+    """Mid-timeline playhead never completes an Album; Played waits for natural end."""
     source = _bandcamp_album_source()
     laptop, _phone, _ = _pair(tmp_path, source=source)
     album_id, intent_id = _add_and_assign_album(laptop, source)
     laptop.fill_caches()
     laptop.play(intent_id, album_id)
 
-    laptop.report_playhead(1349)
-    assert next(m for m in laptop.mixes() if m.id == album_id).played is False
-
     laptop.report_playhead(1350)
-
     album = next(m for m in laptop.mixes() if m.id == album_id)
-    assert album.played is True
+    assert album.played is False
+    assert album.last_heard_at is None
     assert album.kind is ReleaseKind.ALBUM
     assert laptop.is_playing() is True
     assert laptop.current_mix() == album_id

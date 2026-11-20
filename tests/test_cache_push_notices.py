@@ -80,14 +80,25 @@ def test_download_wrap_and_progress_mark_cache(tmp_path: Path) -> None:
     seen: list[UIViewSection] = []
 
     def action() -> None:
-        seen.extend(_sections(agent))
+        # Start already marked CACHE+PLAYLOG; drain before progress.
+        start_sections = set(_sections(agent))
+        assert UIViewSection.CACHE in start_sections
+        assert UIViewSection.PLAYLOG in start_sections
+        seen.extend(start_sections)
         agent._on_download_progress(mix.id, 512, 1024)
-        seen.extend(_sections(agent))
+        progress_sections = _sections(agent)
+        seen.extend(progress_sections)
+        assert UIViewSection.CACHE in progress_sections
+        assert UIViewSection.PLAYLOG not in progress_sections
 
     agent._with_download(mix.id, action)
-    seen.extend(_sections(agent))
+    end_sections = set(_sections(agent))
+    seen.extend(end_sections)
 
     assert seen.count(UIViewSection.CACHE) >= 3
+    # Start/end remount Playlog; throttled progress stays CACHE-only.
+    assert UIViewSection.PLAYLOG in end_sections
+    assert seen.count(UIViewSection.PLAYLOG) == 2
     assert agent.download_progress is None
 
 
@@ -99,7 +110,9 @@ def test_companion_cache_refresh_coalesces_latest_wins() -> None:
     assert "filesRefreshEpoch" in js
     assert "async function refreshFilesNow" in js
     assert "async function refreshFiles" in js
-    assert "/static/app.js?v=74" in html
+    assert "function patchPlaylogCacheFromFiles" in js
+    assert "patchPlaylogCacheFromFiles(data)" in js
+    assert "/static/app.js?v=75" in html
 
     # Activity must not drive Cache; Cache notices do.
     start = js.index("async function refreshActivity")
@@ -107,3 +120,11 @@ def test_companion_cache_refresh_coalesces_latest_wins() -> None:
     end = rest.find("\nasync function ")
     body = rest[: end if end != -1 else len(rest)]
     assert "refreshFiles" not in body
+
+    # CACHE-only notices must not full-refetch Playlog.
+    affected = js[js.index("async function refreshAffectedSurfaces") :]
+    affected = affected[: affected.find("\nasync function ")]
+    cache_branch = affected[affected.index('if (wanted.has("cache"))') :]
+    cache_branch = cache_branch[: cache_branch.find("\n  if (wanted.has(")]
+    assert "refreshFiles" in cache_branch
+    assert "refreshPlaylog" not in cache_branch

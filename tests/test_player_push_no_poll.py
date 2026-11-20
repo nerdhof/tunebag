@@ -81,7 +81,7 @@ def test_play_and_pause_emit_player_notice(tmp_path: Path) -> None:
     assert mix.id in agent.catalog.mixes
 
 
-def test_threshold_watch_tick_commits_last_heard_without_playback_position(
+def test_end_watch_tick_commits_last_heard_without_playback_position(
     tmp_path: Path,
 ) -> None:
     clock = FakeClock()
@@ -92,12 +92,14 @@ def test_threshold_watch_tick_commits_last_heard_without_playback_position(
     assert agent.catalog.mixes[mix.id].last_heard_at is None
 
     clock.advance(10)
-    # Idle GET path must not commit thresholds.
+    # Idle GET path must not complete the Release.
     agent.playback_position()
     assert agent.catalog.mixes[mix.id].last_heard_at is None
 
+    agent._playback._player.stop()
     agent._playback_threshold_tick()
     assert agent.catalog.mixes[mix.id].last_heard_at == clock()
+    assert agent.catalog.mixes[mix.id].played is True
     agent._cancel_playback_threshold_watch()
 
 
@@ -111,7 +113,7 @@ def test_companion_drops_player_poll_and_activity_files_coupling() -> None:
     assert "setPlayerLocalClock" in js
     assert "fillInProgressFromEntries" not in js
     assert "requestFilesRefresh" not in js
-    assert "/static/app.js?v=74" in html
+    assert "/static/app.js?v=76" in html
 
     # refreshActivity must not pull Cache.
     start = js.index("async function refreshActivity")

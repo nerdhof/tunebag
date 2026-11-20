@@ -137,16 +137,18 @@ def test_seek_flushes_playhead_to_peer_via_auto_sync(tmp_path: Path) -> None:
     assert head.position_seconds == 900
 
 
-def test_stop_with_position_flushes_playhead_to_peer(tmp_path: Path) -> None:
+def test_stop_resets_playhead_to_zero_and_flushes_to_peer(tmp_path: Path) -> None:
     laptop, phone, source = _pair(tmp_path)
     mix = _add_and_play(laptop, phone, source)
-    laptop.stop(position_seconds=120)
+    laptop.report_playhead(120)
+    laptop.stop(position_seconds=120)  # position arg ignored; Stop → 0
     laptop.wait_for_sync()
     phone.wait_for_sync()
 
     head = phone.playhead(mix.id)
     assert head is not None
-    assert head.position_seconds == 120
+    assert head.position_seconds == 0.0
+    assert laptop.playhead(mix.id).position_seconds == 0.0
 
 
 def test_companion_playhead_heartbeat_is_five_minutes() -> None:
@@ -156,5 +158,6 @@ def test_companion_playhead_heartbeat_is_five_minutes() -> None:
     assert "PLAYHEAD_COMMIT_MS = 5 * 60 * 1000" in js
     assert "PLAYER_POLL_MS" not in js
     assert "setPlayerLocalClock" in js
-    assert "position_seconds: Math.max(0, lastKnownPositionSeconds)" in js
-    assert "/static/app.js?v=74" in html
+    assert "player-mark" in html
+    assert "/api/player/mark-played" in js
+    assert "/static/app.js?v=76" in html

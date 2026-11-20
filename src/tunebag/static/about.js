@@ -219,7 +219,7 @@
       points: [
         "Plays Files from the Cache (ffplay / afplay).",
         "Closing the companion page does not stop playback.",
-        "Playhead, Played, and Last heard are written from listening here.",
+        "Playhead updates while listening; Played and Last heard commit together at natural end or Mark played. Skip advances without Played; Stop resets to 0:00.",
       ],
     },
   ];
