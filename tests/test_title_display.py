@@ -46,6 +46,17 @@ from tunebag.web import create_app
         ("Init (Official Visualizer)", "Nine Inch Nails", "Init"),
         ("Song (Audio Only)", None, "Song"),
         ("Song [Official Music Video]", None, "Song"),
+        (
+            '"Dignity" (OFFICIAL VISUALIZER TRACK)',
+            None,
+            '"Dignity"',
+        ),
+        ("Song (Official Visualizer Track)", None, "Song"),
+        ("Song (Official Music Video HD)", None, "Song"),
+        ("Song (Official Lyrics Video)", None, "Song"),
+        ("Song (Offizielles Muiskvideo)", None, "Song"),
+        ("Song (HD version)", None, "Song"),
+        ("Song (Animated Music Video)", None, "Song"),
         ("", None, ""),
         ("   ", None, ""),
     ],
@@ -66,6 +77,7 @@ def test_display_title_strips_packaging(
         "I Am Not Alone (Original Motion Picture Soundtrack)",
         "Song (Instrumental)",
         "Song (2019 Remix)",
+        "Song (Bonus Track)",
     ],
 )
 def test_display_title_keeps_meaningful_suffixes(raw: str) -> None:

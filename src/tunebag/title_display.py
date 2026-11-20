@@ -5,43 +5,49 @@ from __future__ import annotations
 import re
 
 # Entire bracket / paren inner text that is upload packaging, not song identity.
+# Optional trailing "track" / resolution covers forms like
+# "(OFFICIAL VISUALIZER TRACK)" and "(Official Music Video HD)".
+_PACKAGING_KIND = r"""
+    (?:
+        lyrics?\s*video
+      | lyric\s*videos?
+      | music\s*video
+      | video
+      | audio
+      | visuali[sz]er
+      | version
+    )
+    (?:\s+track)?
+"""
+
 _PACKAGING_INNER = re.compile(
-    r"""(?ix)
+    rf"""(?ix)
     ^\s*
     (?:
         # EN official* packaging
         official
-        (?:\s+
-            (?:
-                (?:hd|4k|8k|hq)\s+
-              )?
-            (?:
-                lyric\s*video
-              | music\s*video
-              | video
-              | audio
-              | visuali[sz]er
-              | version
-            )
-        )?
-      | (?:official\s+)?(?:music\s+)?(?:lyric\s*)?video
-      | lyric\s*videos?
-      | lyrics?\s*video
+        (?:\s+(?:hd|4k|8k|hq))?
+        (?:\s+(?:{_PACKAGING_KIND}))?
+        (?:\s+(?:hd|4k|8k|hq))?
+      | (?:official\s+)?(?:{_PACKAGING_KIND})
       | audio(?:\s+only)?
-      | visuali[sz]er
       | performance\s+video
+      | animated\s+music\s+video
+      | promo\s+video
       | 360\s+reality\s+audio\s*/\s*official\s+audio
-      # DE
+      # DE (incl. common "Muiskvideo" typo)
       | offizielles?
         (?:\s+
             (?:
-                musikvideo
+                (?:musik|muisk)video
               | video
-                (?:\s*[-–—]\s*refurbished\s*\d{4})?
+                (?:\s*[-–—]\s*refurbished\s*\d{{4}})?
               | version
             )
         )?
-      # resolution-only tags
+        (?:\s+(?:hd|4k|8k|hq))?
+      # resolution-only / HD version tags
+      | (?:hd|4k|8k|hq)\s+version
       | (?:4k|8k|1080p|720p|480p|hd|hq)
     )
     \s*$
@@ -52,21 +58,17 @@ _BRACKET_GROUP = re.compile(r"[\(\[\{]([^\)\]\}]*)[\)\]\}]")
 
 # Trailing unbracketed packaging after a separator or space.
 _TRAILING_PACKAGING = re.compile(
-    r"""(?ix)
+    rf"""(?ix)
     (?:
         \s*[-–—|:]\s*
       | \s+
     )
     (?:
-        (?:offizielles?|official)\s*
-        (?:
-            (?:hd|4k|8k|hq)?\s*
-            (?:lyric\s*)?(?:musik)?video
-          | audio
-          | visuali[sz]er
-          | version
-        )
-      | (?:official\s+)?(?:music\s+)?(?:lyric\s*)?video
+        (?:offizielles?|official)
+        (?:\s+(?:hd|4k|8k|hq))?
+        (?:\s+(?:{_PACKAGING_KIND}|(?:musik|muisk)video))?
+        (?:\s+(?:hd|4k|8k|hq))?
+      | (?:official\s+)?(?:{_PACKAGING_KIND})
       | lyric\s*videos?
       | lyrics?\s*video
     )
