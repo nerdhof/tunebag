@@ -3204,7 +3204,7 @@ function syncPlayerSeekClipRise() {
 }
 
 const PLAYER_COVER_MIN_REM = 4.5;
-const PLAYER_COVER_MAX_REM = 9.25;
+const PLAYER_COVER_MAX_REM = 11;
 /** Target share of now-row width when title stays beside the cover. */
 const PLAYER_COVER_SIDE_FRACTION = 0.35;
 /** Target share when stacked (title under cover). */
