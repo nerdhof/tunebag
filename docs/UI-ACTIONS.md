@@ -9,13 +9,22 @@ Implementation may lag; see **Gaps vs current code** at the end.
 | Surface | Job |
 |---------|-----|
 | **Player** | Transport + annotate the *now-playing* Release |
-| **Playlog** | Global completed (Played) past + Intent assignment now/upcoming; cover hover ▶ / ◀ / ⏸; upcoming `#` Drop from sequence; Cache under Length |
+| **Playlog** | Global completed (Played) past + Intent assignment now/upcoming; Queued Intent select + Play now; cover hover ▶ / ◀ / ⏸; upcoming `#` Drop from sequence; Cache under Length |
 | **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release |
-| **Intents** | Define plans; assign device hours; rebuild Sequence; Switch to intent (start/stop that Intent’s playback); Fill now |
+| **Intents** | Define plans; assign device hours; rebuild Sequence; cover hover Switch to intent; Fill now |
 | **Cache** | Inspect File completeness; Metered |
 | **Activity** | Observe local agent work (fills, syncs) — read-only |
 | **Peers** | Trust lifecycle (pair/unpair) + Sync |
 | **About** | Domain explanation — not an action surface |
+
+## Shell layout
+
+Companion `index.html` chrome (not action surfaces themselves):
+
+1. **Sticky status bar** — `[icon menu]` · `device vX.Y.Z ⇄N` · cache (`N ♪ · duration · size`). Quiet degraded cue on version. Progressive hide on narrow viewports; hover `title` keeps full text.
+2. **Player** — document-order below status (not sticky); no section title.
+3. **Focus tabs** — Playlog (default) | Intents | Catalog | Cache; hash-backed (`#playlog` …); icon-only labels on small screens. Per-tab Filters left / Actions right when present. Playlog Filters: `[select] [▶ Play now]` (Queued Intent select + play; no label).
+4. **Activity** + **Peers** — always below the focus pane (not tabs).
 
 ## Verb glossary
 
@@ -28,7 +37,7 @@ Canonical UI labels (tips / accessible names). Domain meaning in parentheses whe
 | **Reject** | Confirm-click destructive: arm, then confirm → append Reject Event |
 | **Un-reject** | Clear Reject on a Rejected Release (lists only) |
 | **Play** / **Pause** / **Stop** / **Skip** / **Mark played** / **Seek** | Player transport; Playlog cover hover ▶ / ◀ / ⏸ also Play / Pause. Mark played = Last heard + Played + next; Skip = next without Played; Stop = idle at 0:00 |
-| **Switch to intent** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause) |
+| **Switch to intent** / **Play now** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause). Intents cover hover uses Switch to intent; Playlog Queued Intent control uses Play now |
 | **Regenerate sequence** | Full rebuild of Sequence / assignments for one Intent (explicit; Played / Skipped / Reject use Sequence fillup instead — keep remaining queue order, append only if device hours need it) |
 | **Drop from sequence** | Confirm-click (⊖ → 💥): remove one Release from this Intent’s Sequence (trim + Sequence fillup); not Played / Skipped / Reject; may re-enter later. After confirm the row greys out and Drop is hidden until refresh. Playlog upcoming `#` hover; Intent Shared sequence `#` hover. Not for the live current Release |
 | **Refresh artist** / **Refresh all artists** | Re-ingest from origin for one / all Artists |
@@ -41,7 +50,7 @@ Shared control set wherever a surface’s job includes annotate:
 
 **Rate**, **Tag**, **Reject** (confirm-click), **Un-reject** (when the Release is Rejected).
 
-Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); Drop from sequence on Playlog upcoming / Intent Shared sequence `#`; Player transport verbs; Catalog Rejected filter chip.
+Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); Switch to intent on Intent cover hover; Drop from sequence on Playlog upcoming / Intent Shared sequence `#`; Player transport verbs; Catalog Rejected filter chip.
 
 ## Surface × action matrix
 
@@ -54,7 +63,7 @@ Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸); D
 | Play / Pause (row) | — | yes | — | — | — | — | — |
 | Drop from sequence | — | yes (upcoming) | — | yes (Shared sequence) | — | — | — |
 | Play / Pause / Stop / Skip / Mark played / Seek | yes | — | — | — | — | — | — |
-| Switch to intent | — | — | — | yes | — | — | — |
+| Switch to intent / Play now | — | yes (Queued Intent filter row) | — | yes (cover hover) | — | — | — |
 | Regenerate sequence | — | — | — | yes | — | — | — |
 | Fill now | — | — | — | yes | — | — | — |
 | Refresh artist(s) | — | — | yes | — | — | — | — |
@@ -115,9 +124,7 @@ Not user verbs in this contract (APIs may still exist until an implementation pa
 
 ## Gaps vs current code
 
-Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Intent verbs / Fill cleanup (ui-actions 05):
-
-- Section ⓘ copy in `index.html` may lag (SoundCloud-only ingest wording)
+Truth for product semantics is this doc + `CONTEXT.md` + ADR-0007. Remaining companion gaps after Intent verbs / Fill cleanup (ui-actions 05) and the shell restructure are tracked in follow-up work; About concepts live on `/about`.
 
 Playhead Events commit on pause / stop (with position) / seek / skip / track-or-release boundary, when the agent watch sees natural **end of Release** (Last heard + Played), plus a **5‑minute** companion heartbeat while playing. Play/resume flushes prior playhead to peers without rewriting an equal-position Event. When Catalog playhead is already at Release end, Play starts at 0. Heartbeat ticks must **not** rebuild Catalog / Playlog and must **not** drive Sync / Activity chatter (peers flush on boundaries, threshold Events, or manual Sync). Activity notices refresh Activity only — never Cache. Cache invalidates on intent/assignment/sequence changes (pending/loading/cached overview) and on download start/end plus throttled origin progress; the companion coalesces overlapping Cache refetches so the newest snapshot wins. Peer copies flip status only (no byte progress bar). Throttled origin progress marks `cache` only: the companion refetches Cache and **patches** Playlog download cells from that snapshot (no full `/api/playlog` rebuild). Download start/end mark `cache` and `playlog` so Playlog remounts status/playable. Playlog also full-refetches on `player` and explicit `playlog` / Catalog-driven notices.
 

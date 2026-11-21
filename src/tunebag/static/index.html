@@ -7,62 +7,63 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=89" />
+    <link rel="stylesheet" href="/static/app.css?v=95" />
   </head>
   <body>
-    <nav class="section-nav" aria-label="Jump to section">
-      <div class="section-nav-inner">
-        <a href="#player" title="Player"><span class="nav-symbol" aria-hidden="true">▶</span><span class="nav-label">player</span></a>
-        <a href="#playlog" title="Playlog"><span class="nav-symbol" aria-hidden="true">◷</span><span class="nav-label">playlog</span></a>
-        <a href="#intents" title="Intents"><span class="nav-symbol" aria-hidden="true">⬡</span><span class="nav-label">intents</span></a>
-        <a href="#cache" title="Cache"><span class="nav-symbol" aria-hidden="true">⬇</span><span class="nav-label">cache</span></a>
-        <a href="#catalog" title="Catalog"><span class="nav-symbol" aria-hidden="true">▤</span><span class="nav-label">catalog</span></a>
-        <a href="#activity" title="Activity"><span class="nav-symbol" aria-hidden="true">!</span><span class="nav-label">activity</span></a>
-        <a href="#peers" title="Peers"><span class="nav-symbol" aria-hidden="true">⇄</span><span class="nav-label">peers</span></a>
-        <a href="/about" title="About concepts"><span class="nav-symbol" aria-hidden="true">?</span><span class="nav-label">about</span></a>
-      </div>
-    </nav>
-    <main>
-      <h1>Tunebag</h1>
-      <p class="lede">
-        Music packed for every device. Companion player for play, rating, reject, tags, and playhead.
-      </p>
-      <section id="status">
-        <p class="status-left"><span class="status-label">API:</span> <span id="health">checking…</span></p>
-        <p class="status-mid"><span class="status-label">Device:</span> <span id="device-name">…</span></p>
-        <p class="status-right"><span class="status-label">Cached audio:</span> <strong id="cache-count">…</strong></p>
-      </section>
-      <section id="player">
-        <!-- Intent shares the Player heading row; wraps below if it collides. -->
-        <div class="player-heading-row">
-          <h2 class="section-heading">
-            <span class="section-symbol" aria-hidden="true">▶</span> Player
-            <span class="section-info">
-              <button
-                type="button"
-                class="section-info-btn"
-                aria-label="About Player"
-                aria-expanded="false"
+    <header id="app-chrome" class="app-chrome">
+      <div class="app-chrome-inner">
+        <div class="status-left">
+          <details class="app-menu">
+            <summary class="app-menu-btn" aria-label="Open menu" title="Menu">
+              <img
+                src="/static/favicon.svg?v=2"
+                alt=""
+                width="20"
+                height="20"
+                class="app-menu-icon"
+              />
+            </summary>
+            <nav class="app-menu-panel" aria-label="App menu">
+              <a href="#playlog" data-focus-tab="playlog">Playlog</a>
+              <a href="#intents" data-focus-tab="intents">Intents</a>
+              <a href="#catalog" data-focus-tab="catalog">Catalog</a>
+              <a href="#cache" data-focus-tab="cache">Cache</a>
+              <a href="#activity">Activity</a>
+              <a href="#peers">Peers</a>
+              <a href="/about">About</a>
+              <a
+                href="https://github.com/wabu/tunebag"
+                rel="noopener noreferrer"
+                target="_blank"
+                >GitHub</a
               >
-                ⓘ
-              </button>
-              <span class="section-info-tip" role="tooltip">
-                The agent plays cached audio locally via ffplay (or afplay). Closing this page does not
-                stop playback. Rate and tag here or from the catalog list.
-              </span>
-            </span>
-          </h2>
-          <div class="player-top">
-            <select
-              id="player-intent"
-              title="Which intent sequence to play"
-              aria-label="Intent"
-            ></select>
-          </div>
+            </nav>
+          </details>
         </div>
+        <div class="status-mid" id="status-peers" title="">
+          <span id="device-name" class="status-device">…</span>
+          <span id="health" class="status-version" title="API health">…</span>
+          <span class="status-peers-sep" aria-hidden="true">⇄</span>
+          <span id="peer-count" class="status-peer-count">0</span>
+        </div>
+        <div class="status-right" id="status-cache" title="">
+          <span id="cache-count" class="status-cache-count">…</span>
+          <span class="status-cache-duration-wrap">
+            <span class="status-cache-sep" aria-hidden="true">·</span>
+            <span id="cache-duration" class="status-cache-duration">…</span>
+          </span>
+          <span class="status-cache-size-wrap">
+            <span class="status-cache-sep" aria-hidden="true">·</span>
+            <span id="cache-size" class="status-cache-size">…</span>
+          </span>
+        </div>
+      </div>
+    </header>
+    <main>
+      <section id="player">
         <!-- Cover | title+meta; JS stacks title under cover when the title won't fit on one line. -->
         <div class="player-now-row">
-          <img id="player-cover" class="player-cover" alt="" hidden width="224" height="224" />
+          <img id="player-cover" class="player-cover" alt="" hidden width="148" height="148" />
           <div class="player-below-text">
             <p id="player-now">Nothing playing</p>
             <div class="form-row player-meta" aria-label="Rate and tag">
@@ -121,271 +122,286 @@
         <p id="player-reject-status" class="muted" hidden></p>
         <p id="player-status" class="muted" role="status"></p>
       </section>
-      <section id="playlog">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">◷</span> Playlog
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Playlog"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Past is completed (Played) Releases (any Device / Intent). Now and upcoming
-              follow the selected Intent’s assignment. Hover the cover for ▶ / ◀ / ⏸;
-              upcoming # for Drop from sequence. Cover spans Release + rate/tag
-              (artist - title). Current sticks to the top/bottom while scrolling; while
-              stuck, click empty space on it to jump back to the default view (−2 at top).
-              Cache sits under Length. Soft Rejected show ✕ and size; Hard Rejected are
-              omitted from past.
-            </span>
-          </span>
-        </h2>
-        <div id="playlog-table-wrap">
-          <table id="playlog-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th class="playlog-cover-col" aria-label="Cover"></th>
-                <th>Release</th>
-                <th>Length</th>
-              </tr>
-            </thead>
-            <tbody id="playlog-body"></tbody>
-          </table>
-        </div>
-      </section>
-      <section id="intents">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">⬡</span> Intents
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Intents"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              An intent is a shared plan: tag filter, optional artist filter, source toggles, and rating distribution.
-              Assign hours (and optional expiry) per device after creating; devices share one seeded sequence, and the
-              smaller budget is the opening stretch. Switch to intent starts or continues that plan’s playback
-              (pauses when it is already playing). Click the arrow on the last assignment row to expand the shared
-              sequence; # offers Drop from sequence (not the live current Release). Regenerate sequence rebuilds
-              assignments; Fill now tops one intent to its full device budget on a metered link.
-            </span>
-          </span>
-        </h2>
-        <div id="intent-table-wrap">
-          <table id="intent-table">
-            <thead>
-              <tr>
-                <th class="intent-num-col" aria-label="#">#</th>
-                <th class="intent-cover-col" aria-label="Cover"></th>
-                <th>Name</th>
-                <th class="intent-actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody id="intent-table-body"></tbody>
-          </table>
-        </div>
-        <form id="intent-form">
-          <div id="intent-create-composer" class="add-form-fields intent-composer" hidden></div>
-          <div class="form-row add-form-actions">
-            <button
-              type="button"
-              id="intent-expand"
-              aria-label="Create intent"
-              data-tip="Create intent"
-            >
-              ✚
-            </button>
-          </div>
-        </form>
-        <p id="intent-status" class="muted" role="status"></p>
-      </section>
-      <section id="cache">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">⬇</span> Cache
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Cache"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Audio on this device for its assigned hours. Creating or updating an intent fills
-              automatically; use Fill now on an Intent to top up once while metered. On a metered link,
-              origin downloads stay at the current release plus one ahead per intent; peer copies still fill.
-            </span>
-          </span>
-        </h2>
-        <div class="controls">
-          <label
-            class="metered-toggle"
-            title="Simulate a metered link: origin downloads stay at current + one ahead"
-          >
-            <input type="checkbox" id="metered-toggle" />
-            Metered link (simulated)
-          </label>
-        </div>
-        <p id="fill-status" class="muted" role="status"></p>
-        <div id="cache-table-wrap">
-          <table id="cache-table">
-            <thead>
-              <tr>
-                <th>Artist</th>
-                <th>Release</th>
-                <th>Length</th>
-                <th>Size</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="cache-body"></tbody>
-          </table>
-        </div>
-      </section>
-      <section id="catalog">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">▤</span> Catalog
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Catalog"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Browse and filter the full Catalog; manage Artists (ingest/refresh/delete). Annotate any
-              Release: Rate, tag, Reject (confirm-click) or Un-reject. Soft Rejected stay visible (muted)
-              for 5 minutes; Hard Rejected only with the Rejected filter on.
-            </span>
-          </span>
-        </h2>
-        <div class="catalog-toolbar">
+
+      <div id="focus" class="focus-region">
+        <div
+          class="focus-tabs"
+          role="tablist"
+          aria-label="Focus"
+        >
           <button
             type="button"
-            id="catalog-show-rejected"
-            class="source-toggle"
-            aria-pressed="false"
-            title="Show rejected releases (muted)"
-            aria-label="Show rejected releases"
+            role="tab"
+            id="tab-playlog"
+            class="focus-tab"
+            aria-selected="true"
+            aria-controls="playlog"
+            data-focus-tab="playlog"
+            title="Playlog"
           >
-            ♲
+            <span class="focus-tab-symbol" aria-hidden="true">◷</span>
+            <span class="focus-tab-label">Playlog</span>
           </button>
-          <div
-            id="catalog-source-filters"
-            class="catalog-source-filters"
-            title="Show releases from these sources (none = any)"
-          ></div>
-          <div
-            id="catalog-star-filters"
-            class="catalog-star-filters"
-            title="Minimum rating (click again to clear)"
-          ></div>
-          <div
-            id="catalog-tag-filters"
-            class="catalog-tag-filters"
-            title="Show releases that have all of these tags (empty = any)"
-          ></div>
-        </div>
-        <div id="catalog-table-wrap">
-          <table id="catalog-table">
-            <thead>
-              <tr>
-                <th>Release</th>
-                <th>Length</th>
-                <th>Rating</th>
-                <th>Tags</th>
-              </tr>
-            </thead>
-            <tbody id="catalog-body"></tbody>
-          </table>
-        </div>
-        <form id="artists-form" class="form-row">
-          <div class="add-form-fields add-form-fields-inline" hidden>
-            <label class="inline-field grow">
-              Artist URL
-              <input
-                id="artist-urls"
-                type="text"
-                placeholder="https://soundcloud.com/… or https://hearthis.at/…/"
-                autocomplete="off"
-              />
-            </label>
-            <label class="inline-field">
-              Min duration (minutes)
-              <input
-                id="min-duration-minutes"
-                type="number"
-                min="0"
-                step="1"
-                value="20"
-              />
-            </label>
-          </div>
-          <button type="submit" id="artists-submit" aria-label="Add artists" data-tip="Add artists">✚</button>
-          <button type="button" id="artists-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
           <button
             type="button"
-            id="refresh-all-artists"
-            aria-label="Refresh all artists"
-            data-tip="Refresh all"
+            role="tab"
+            id="tab-intents"
+            class="focus-tab"
+            aria-selected="false"
+            aria-controls="intents"
+            data-focus-tab="intents"
+            title="Intents"
           >
-            ↻
+            <span class="focus-tab-symbol" aria-hidden="true">⬡</span>
+            <span class="focus-tab-label">Intents</span>
           </button>
-        </form>
-        <p id="artists-status" class="muted" role="status"></p>
-      </section>
+          <button
+            type="button"
+            role="tab"
+            id="tab-catalog"
+            class="focus-tab"
+            aria-selected="false"
+            aria-controls="catalog"
+            data-focus-tab="catalog"
+            title="Catalog"
+          >
+            <span class="focus-tab-symbol" aria-hidden="true">▤</span>
+            <span class="focus-tab-label">Catalog</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="tab-cache"
+            class="focus-tab"
+            aria-selected="false"
+            aria-controls="cache"
+            data-focus-tab="cache"
+            title="Cache"
+          >
+            <span class="focus-tab-symbol" aria-hidden="true">⬇</span>
+            <span class="focus-tab-label">Cache</span>
+          </button>
+        </div>
+
+        <section
+          id="playlog"
+          class="focus-pane"
+          role="tabpanel"
+          aria-labelledby="tab-playlog"
+          data-focus-pane="playlog"
+        >
+          <div class="focus-toolbar">
+            <div class="focus-toolbar-filters">
+              <div
+                class="playlog-queued-intent"
+                role="group"
+                aria-label="Queued intent"
+              >
+                <select
+                  id="player-intent"
+                  class="playlog-intent-select"
+                  title="Which intent sequence to show and play"
+                  aria-label="Queued intent"
+                ></select>
+                <button
+                  type="button"
+                  id="playlog-intent-play"
+                  aria-label="Play now"
+                  data-tip="Play now"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+          </div>
+          <div id="playlog-table-wrap">
+            <table id="playlog-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th class="playlog-cover-col" aria-label="Cover"></th>
+                  <th>Release</th>
+                  <th>Length</th>
+                </tr>
+              </thead>
+              <tbody id="playlog-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section
+          id="intents"
+          class="focus-pane"
+          role="tabpanel"
+          aria-labelledby="tab-intents"
+          data-focus-pane="intents"
+          hidden
+        >
+          <div class="focus-toolbar">
+            <div class="focus-toolbar-actions">
+              <form id="intent-form">
+                <div id="intent-create-composer" class="add-form-fields intent-composer" hidden></div>
+                <div class="form-row add-form-actions">
+                  <button
+                    type="button"
+                    id="intent-expand"
+                    aria-label="Create intent"
+                    data-tip="Create intent"
+                  >
+                    ✚
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+          <div id="intent-table-wrap">
+            <table id="intent-table">
+              <thead>
+                <tr>
+                  <th class="intent-num-col" aria-label="#">#</th>
+                  <th class="intent-cover-col" aria-label="Cover"></th>
+                  <th>Name</th>
+                  <th class="intent-actions-col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="intent-table-body"></tbody>
+            </table>
+          </div>
+          <p id="intent-status" class="muted" role="status"></p>
+        </section>
+
+        <section
+          id="catalog"
+          class="focus-pane"
+          role="tabpanel"
+          aria-labelledby="tab-catalog"
+          data-focus-pane="catalog"
+          hidden
+        >
+          <div class="focus-toolbar">
+            <div class="focus-toolbar-filters catalog-toolbar">
+              <button
+                type="button"
+                id="catalog-show-rejected"
+                class="source-toggle"
+                aria-pressed="false"
+                title="Show rejected releases (muted)"
+                aria-label="Show rejected releases"
+              >
+                ♲
+              </button>
+              <div
+                id="catalog-source-filters"
+                class="catalog-source-filters"
+                title="Show releases from these sources (none = any)"
+              ></div>
+              <div
+                id="catalog-star-filters"
+                class="catalog-star-filters"
+                title="Minimum rating (click again to clear)"
+              ></div>
+              <div
+                id="catalog-tag-filters"
+                class="catalog-tag-filters"
+                title="Show releases that have all of these tags (empty = any)"
+              ></div>
+            </div>
+            <div class="focus-toolbar-actions">
+              <form id="artists-form" class="form-row">
+                <div class="add-form-fields add-form-fields-inline" hidden>
+                  <label class="inline-field grow">
+                    Artist URL
+                    <input
+                      id="artist-urls"
+                      type="text"
+                      placeholder="https://soundcloud.com/… or https://hearthis.at/…/"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label class="inline-field">
+                    Min duration (minutes)
+                    <input
+                      id="min-duration-minutes"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value="20"
+                    />
+                  </label>
+                </div>
+                <button type="submit" id="artists-submit" aria-label="Add artists" data-tip="Add artists">✚</button>
+                <button type="button" id="artists-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
+                <button
+                  type="button"
+                  id="refresh-all-artists"
+                  aria-label="Refresh all artists"
+                  data-tip="Refresh all"
+                >
+                  ↻
+                </button>
+              </form>
+            </div>
+          </div>
+          <div id="catalog-table-wrap">
+            <table id="catalog-table">
+              <thead>
+                <tr>
+                  <th>Release</th>
+                  <th>Length</th>
+                  <th>Rating</th>
+                  <th>Tags</th>
+                </tr>
+              </thead>
+              <tbody id="catalog-body"></tbody>
+            </table>
+          </div>
+          <p id="artists-status" class="muted" role="status"></p>
+        </section>
+
+        <section
+          id="cache"
+          class="focus-pane"
+          role="tabpanel"
+          aria-labelledby="tab-cache"
+          data-focus-pane="cache"
+          hidden
+        >
+          <div class="focus-toolbar">
+            <div class="focus-toolbar-filters">
+              <label
+                class="metered-toggle"
+                title="Simulate a metered link: origin downloads stay at current + one ahead"
+              >
+                <input type="checkbox" id="metered-toggle" />
+                Metered link (simulated)
+              </label>
+            </div>
+          </div>
+          <p id="fill-status" class="muted" role="status"></p>
+          <div id="cache-table-wrap">
+            <table id="cache-table">
+              <thead>
+                <tr>
+                  <th>Artist</th>
+                  <th>Release</th>
+                  <th>Length</th>
+                  <th>Size</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="cache-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
       <section id="activity">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">!</span> Activity
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Activity"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Live progress from artist listing, sync, and downloads.
-            </span>
-          </span>
-        </h2>
+        <h2 class="footer-heading">Activity</h2>
         <ul id="activity-list" aria-live="polite"></ul>
       </section>
       <section id="peers">
-        <h2 class="section-heading">
-          <span class="section-symbol" aria-hidden="true">⇄</span> Peers
-          <span class="section-info">
-            <button
-              type="button"
-              class="section-info-btn"
-              aria-label="About Peers"
-              aria-expanded="false"
-            >
-              ⓘ
-            </button>
-            <span class="section-info-tip" role="tooltip">
-              Paired devices that can sync catalogs and copy cached audio. Add a peer by
-              starting a session on one device and entering its PIN on the other (or scanning
-              the ephemeral QR). Both devices must Confirm the matching code before trust is
-              written.
-            </span>
-          </span>
-        </h2>
+        <h2 class="footer-heading">Peers</h2>
         <ul id="peer-list"></ul>
         <button type="button" id="sync-btn" aria-label="Sync catalog" data-tip="Sync catalog">⇄</button>
         <p id="sync-status" class="muted" role="status"></p>
@@ -487,6 +503,6 @@
         <p id="pair-status" class="muted" role="status"></p>
       </section>
     </main>
-    <script src="/static/app.js?v=76"></script>
+    <script src="/static/app.js?v=82"></script>
   </body>
 </html>

@@ -22,31 +22,33 @@ def _js_function_body(js: str, signature: str) -> str:
 
 
 def test_intent_row_verbs_match_ui_actions_glossary() -> None:
-    js, html = _static()
+    js, _html = _static()
 
     set_btn = _js_function_body(js, "function setIntentPlayButton(btn, playingThis)")
     assert '"Switch to intent"' in set_btn
     assert '"Pause"' in set_btn
     assert '"Play"' not in set_btn
 
-    # Intent row wiring: pause when already playing, else playIntent (select + play).
-    intent_list_start = js.index('playBtn.className = "intent-play"')
-    intent_list_end = js.index("const meta = document.createElement(\"div\");", intent_list_start)
-    intent_block = js[intent_list_start:intent_list_end]
-    assert "isIntentCurrentlyPlaying(intent.id)" in intent_block
-    assert "pausePlayback()" in intent_block
-    assert "playIntent(intent.id)" in intent_block
-    assert 'setSymbolButton(regenerateBtn, BTN.refresh, "Regenerate sequence")' in intent_block
-    assert 'setSymbolButton(fillNowBtn, BTN.fill, "Fill now")' in intent_block
-    assert "/refresh-sequence" in intent_block
-    assert "/fill-now" in intent_block
-    assert 'refreshAffectedSurfaces(["intents", "cache"], { force: true })' in intent_block
-    assert 'refreshAffectedSurfaces(["cache", "intents"], { force: true })' in intent_block
+    # Switch to intent is on the Intent cover hover control (not the right Actions column).
+    cover = _js_function_body(
+        js, "function renderIntentCoverStack(mixIds, { intent = null } = {})"
+    )
+    assert 'className = "intent-cover-action intent-play"' in cover
+    assert "switchToIntentFromRow(intent)" in cover
 
-    tips = html
-    assert "Switch to intent" in tips
-    assert "Regenerate sequence" in tips
-    assert "Fill now" in tips
+    switch = _js_function_body(js, "async function switchToIntentFromRow(intent)")
+    assert "isIntentCurrentlyPlaying(intent.id)" in switch
+    assert "pausePlayback()" in switch
+    assert "playIntent(intent.id)" in switch
+
+    actions = _js_function_body(js, "function buildIntentActionButtons(intent)")
+    assert "intent-play" not in actions
+    assert 'setSymbolButton(regenerateBtn, BTN.refresh, "Regenerate sequence")' in actions
+    assert 'setSymbolButton(fillNowBtn, BTN.fill, "Fill now")' in actions
+    assert "/refresh-sequence" in actions
+    assert "/fill-now" in actions
+    assert 'refreshAffectedSurfaces(["intents", "cache"], { force: true })' in actions
+    assert 'refreshAffectedSurfaces(["cache", "intents"], { force: true })' in actions
 
 
 def test_cache_ui_has_no_global_fill() -> None:
@@ -58,7 +60,7 @@ def test_cache_ui_has_no_global_fill() -> None:
     # Metered + per-Intent Fill now remain.
     assert 'id="metered-toggle"' in html
     assert "/fill-now" in js
-    assert "Fill now" in html
+    assert "Fill now" in js
 
 
 def test_switch_regenerate_fill_use_shared_refresh_path() -> None:

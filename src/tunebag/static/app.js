@@ -1439,6 +1439,156 @@ function initSectionInfo() {
   });
 }
 
+const FOCUS_TABS = ["playlog", "intents", "catalog", "cache"];
+const SCROLL_HASHES = new Set(["activity", "peers", "player"]);
+
+function closeAppMenu() {
+  const menu = document.querySelector(".app-menu");
+  if (menu) menu.open = false;
+}
+
+function setFocusTab(tabId, { updateHash = true } = {}) {
+  const id = FOCUS_TABS.includes(tabId) ? tabId : "playlog";
+  for (const pane of document.querySelectorAll("[data-focus-pane]")) {
+    const active = pane.dataset.focusPane === id;
+    pane.hidden = !active;
+  }
+  for (const tab of document.querySelectorAll(".focus-tab")) {
+    const active = tab.dataset.focusTab === id;
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+  }
+  if (updateHash) {
+    const next = `#${id}`;
+    if (location.hash !== next) {
+      history.replaceState(null, "", next);
+    }
+  }
+  closeAppMenu();
+  if (id === "playlog") {
+    requestAnimationFrame(() => {
+      updatePlaylogStickyMetrics();
+      syncPlaylogCurrentStuck();
+    });
+  }
+}
+
+function applyLocationHash() {
+  const raw = (location.hash || "").replace(/^#/, "");
+  if (FOCUS_TABS.includes(raw)) {
+    setFocusTab(raw, { updateHash: false });
+    return;
+  }
+  if (SCROLL_HASHES.has(raw)) {
+    const el = document.getElementById(raw);
+    if (el) {
+      requestAnimationFrame(() => {
+        el.scrollIntoView({ block: "start" });
+      });
+    }
+    return;
+  }
+  if (!raw) {
+    setFocusTab("playlog", { updateHash: false });
+  }
+}
+
+function initFocusTabs() {
+  const tablist = document.querySelector(".focus-tabs");
+  if (!tablist) return;
+  tablist.addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-focus-tab]");
+    if (!tab || !tablist.contains(tab)) return;
+    event.preventDefault();
+    setFocusTab(tab.dataset.focusTab);
+  });
+  tablist.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const tabs = [...tablist.querySelectorAll(".focus-tab")];
+    const current = tabs.findIndex((t) => t.getAttribute("aria-selected") === "true");
+    if (current < 0) return;
+    event.preventDefault();
+    const delta = event.key === "ArrowRight" ? 1 : -1;
+    const next = tabs[(current + delta + tabs.length) % tabs.length];
+    next?.focus();
+    if (next?.dataset.focusTab) setFocusTab(next.dataset.focusTab);
+  });
+  window.addEventListener("hashchange", () => applyLocationHash());
+  applyLocationHash();
+}
+
+function initAppMenu() {
+  const menu = document.querySelector(".app-menu");
+  if (!menu) return;
+  menu.addEventListener("click", (event) => {
+    const link = event.target.closest("a[href]");
+    if (!link || !menu.contains(link)) return;
+    const href = link.getAttribute("href") || "";
+    if (href.startsWith("#")) {
+      const id = href.slice(1);
+      if (FOCUS_TABS.includes(id)) {
+        event.preventDefault();
+        setFocusTab(id);
+        return;
+      }
+      if (SCROLL_HASHES.has(id)) {
+        event.preventDefault();
+        closeAppMenu();
+        const el = document.getElementById(id);
+        if (el) {
+          history.replaceState(null, "", href);
+          el.scrollIntoView({ block: "start" });
+        }
+      }
+    } else {
+      closeAppMenu();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!menu.open) return;
+    if (menu.contains(event.target)) return;
+    closeAppMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAppMenu();
+  });
+}
+
+function updateStatusPeersChrome() {
+  const countEl = document.getElementById("peer-count");
+  const mid = document.getElementById("status-peers");
+  if (countEl) countEl.textContent = String(peersCache.length);
+  if (!mid) return;
+  const device =
+    document.getElementById("device-name")?.textContent?.trim() || "device";
+  const version =
+    document.getElementById("health")?.textContent?.trim() || "";
+  const names = peersCache.map((p) => p.name).filter(Boolean);
+  const peerPart = names.length
+    ? `${peersCache.length} peer${peersCache.length === 1 ? "" : "s"}: ${names.join(", ")}`
+    : "0 peers";
+  mid.title = [device, version, `⇄ ${peerPart}`].filter(Boolean).join(" ");
+}
+
+function updateStatusCacheChrome(summary) {
+  const count = Number(summary?.count) || 0;
+  const duration = formatDuration(summary?.duration_seconds || 0);
+  const size = formatBytes(summary?.size_bytes || 0);
+  const countEl = document.getElementById("cache-count");
+  const durationEl = document.getElementById("cache-duration");
+  const sizeEl = document.getElementById("cache-size");
+  const wrap = document.getElementById("status-cache");
+  if (countEl) countEl.textContent = count > 0 ? `${count} ♪` : "0 ♪";
+  if (durationEl) durationEl.textContent = count > 0 ? duration : "0:00";
+  if (sizeEl) sizeEl.textContent = count > 0 ? size : "0 B";
+  if (wrap) {
+    wrap.title =
+      count > 0
+        ? `${count} ♪ · ${duration} · ${size}`
+        : "No cached audio";
+  }
+}
+
 const CHANCE_IDS = [
   "chance-five",
   "chance-four",
@@ -2169,8 +2319,13 @@ async function refreshHealth() {
   try {
     const res = await fetch("/api/health");
     const data = await res.json();
-    el.textContent = data.ok ? `ok (v${data.version})` : "degraded";
-    nameEl.textContent = data.device || "unknown";
+    const version = data.version != null ? `v${data.version}` : "v?";
+    if (el) {
+      el.textContent = version;
+      el.classList.toggle("is-degraded", !data.ok);
+      el.title = data.ok ? `API ok (${version})` : `API degraded (${version})`;
+    }
+    if (nameEl) nameEl.textContent = data.device || "unknown";
     localDeviceId = data.device_id || null;
     currentMixId = data.current_mix_id || null;
     if (meteredToggle) {
@@ -2178,7 +2333,11 @@ async function refreshHealth() {
     }
     applyTrustedPeersList(peersCache);
   } catch (err) {
-    el.textContent = "unreachable";
+    if (el) {
+      el.textContent = "offline";
+      el.classList.add("is-degraded");
+      el.title = "API unreachable";
+    }
     console.error(err);
   }
 }
@@ -2323,6 +2482,7 @@ function fillPairCandidateSelect(candidates, previousValue) {
 
 function applyTrustedPeersList(peers) {
   peersCache = peers || [];
+  updateStatusPeersChrome();
   const list = document.getElementById("peer-list");
   if (!list) return;
   list.innerHTML = "";
@@ -3044,7 +3204,7 @@ function syncPlayerSeekClipRise() {
 }
 
 const PLAYER_COVER_MIN_REM = 4.5;
-const PLAYER_COVER_MAX_REM = 14;
+const PLAYER_COVER_MAX_REM = 9.25;
 /** Target share of now-row width when title stays beside the cover. */
 const PLAYER_COVER_SIDE_FRACTION = 0.35;
 /** Target share when stacked (title under cover). */
@@ -3117,26 +3277,7 @@ function syncPlayerNowStack() {
   row.classList.add("is-stacked");
 }
 
-/**
- * When intent wraps under ▶ Player ⓘ, stretch the select to full width.
- * Use heading bottom vs intent top — offsetTop alone false-positives when
- * align-items:center makes the taller select sit lower on the same row.
- */
-function syncPlayerIntentWrap() {
-  const row = document.querySelector("#player .player-heading-row");
-  const heading = row?.querySelector(".section-heading");
-  const top = row?.querySelector(".player-top");
-  if (!row || !heading || !top) return;
-  // Measure without the wrapped styles so flex wrap decides naturally.
-  row.classList.remove("intent-wrapped");
-  const headingBottom = heading.getBoundingClientRect().bottom;
-  const topTop = top.getBoundingClientRect().top;
-  const wrapped = topTop >= headingBottom - 1;
-  row.classList.toggle("intent-wrapped", wrapped);
-}
-
 function syncPlayerChrome() {
-  syncPlayerIntentWrap();
   syncPlayerNowStack();
   syncPlayerSeekClipRise();
 }
@@ -4595,9 +4736,11 @@ async function refreshPlayerIntents() {
   if (select.dataset.playlogBound !== "1") {
     select.dataset.playlogBound = "1";
     select.addEventListener("change", () => {
+      syncPlaylogIntentPlayButton();
       void refreshPlaylog({ force: true });
     });
   }
+  syncPlaylogIntentPlayButton();
 }
 
 function updateRejectControls(data) {
@@ -4670,6 +4813,16 @@ function setIntentPlayButton(btn, playingThis) {
   btn.dataset.playing = playingThis ? "true" : "false";
 }
 
+function syncPlaylogIntentPlayButton() {
+  const btn = document.getElementById("playlog-intent-play");
+  if (!btn) return;
+  const selected = document.getElementById("player-intent")?.value || "";
+  const playingThis = Boolean(selected) && isIntentCurrentlyPlaying(selected);
+  // Playlog action tip: Play now (selected Intent); Pause when that Intent is live.
+  setSymbolButton(btn, playingThis ? BTN.pause : BTN.play, playingThis ? "Pause" : "Play now");
+  btn.dataset.playing = playingThis ? "true" : "false";
+}
+
 function syncPlayerIntentSelect(intentId) {
   const select = document.getElementById("player-intent");
   if (!select || !intentId) return;
@@ -4684,13 +4837,16 @@ function updateIntentPlayButtons(playing, intentId) {
   if (lastPlayerIntentId) {
     syncPlayerIntentSelect(lastPlayerIntentId);
   }
-  for (const btn of document.querySelectorAll("#intent-table .intent-play")) {
+  for (const btn of document.querySelectorAll(
+    "#intent-table .intent-cover-action.intent-play",
+  )) {
     const playingThis =
       lastPlayerPlaying &&
       lastPlayerIntentId != null &&
       btn.dataset.intentId === lastPlayerIntentId;
     setIntentPlayButton(btn, playingThis);
   }
+  syncPlaylogIntentPlayButton();
 }
 
 function isIntentCurrentlyPlaying(intentId) {
@@ -4887,16 +5043,13 @@ async function refreshFilesNow({ force = false } = {}) {
   if (!force && focusInside(body)) return;
   const res = await fetch("/api/files");
   const data = await res.json();
-  const countEl = document.getElementById("cache-count");
-  if (countEl) {
-    countEl.textContent = formatCacheSummary(
-      data.cache_summary || {
-        count: data.files.length,
-        duration_seconds: 0,
-        size_bytes: 0,
-      },
-    );
-  }
+  updateStatusCacheChrome(
+    data.cache_summary || {
+      count: data.files.length,
+      duration_seconds: 0,
+      size_bytes: 0,
+    },
+  );
   body.innerHTML = "";
   const groups = Array.isArray(data.groups) ? data.groups : [];
   if (!groups.length) {
@@ -5257,8 +5410,11 @@ function intentCoverMixIds(seq, limit = 3) {
   return ids;
 }
 
-/** @param {string[]} mixIds */
-function renderIntentCoverStack(mixIds) {
+/**
+ * @param {string[]} mixIds
+ * @param {{ intent?: { id: string, name: string } | null }} [options]
+ */
+function renderIntentCoverStack(mixIds, { intent = null } = {}) {
   const cell = document.createElement("td");
   cell.className = "intent-cover-cell intent-cover-span";
   cell.colSpan = 2;
@@ -5281,8 +5437,49 @@ function renderIntentCoverStack(mixIds) {
     placeholder.setAttribute("aria-hidden", "true");
     stack.appendChild(placeholder);
   }
+  if (intent) {
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "intent-cover-action intent-play";
+    playBtn.dataset.intentId = intent.id;
+    const playingThis =
+      lastPlayerPlaying &&
+      lastPlayerIntentId != null &&
+      lastPlayerIntentId === intent.id;
+    setIntentPlayButton(playBtn, playingThis);
+    playBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void switchToIntentFromRow(intent);
+    });
+    stack.appendChild(playBtn);
+  }
   cell.appendChild(stack);
   return cell;
+}
+
+/** Switch to intent / Pause from an Intent cover (or legacy row control). */
+async function switchToIntentFromRow(intent) {
+  const status = document.getElementById("intent-status");
+  try {
+    if (isIntentCurrentlyPlaying(intent.id)) {
+      const ok = await pausePlayback();
+      if (status) {
+        status.textContent = ok
+          ? `Paused “${intent.name}”`
+          : document.getElementById("player-status")?.textContent || "Pause failed";
+      }
+      return;
+    }
+    const ok = await playIntent(intent.id);
+    if (status) {
+      status.textContent = ok
+        ? `Playing “${intent.name}”`
+        : document.getElementById("player-status")?.textContent || "Play failed";
+    }
+  } catch (err) {
+    if (status) status.textContent = "Switch to intent request failed";
+    console.error(err);
+  }
 }
 
 /**
@@ -5478,37 +5675,6 @@ function appendIntentActions(cell, ...buttons) {
 }
 
 function buildIntentActionButtons(intent) {
-  const playBtn = document.createElement("button");
-  playBtn.type = "button";
-  playBtn.className = "intent-play";
-  playBtn.dataset.intentId = intent.id;
-  const playingThis =
-    lastPlayerPlaying && lastPlayerIntentId != null && lastPlayerIntentId === intent.id;
-  setIntentPlayButton(playBtn, playingThis);
-  playBtn.addEventListener("click", async () => {
-    const status = document.getElementById("intent-status");
-    try {
-      if (isIntentCurrentlyPlaying(intent.id)) {
-        const ok = await pausePlayback();
-        if (status) {
-          status.textContent = ok
-            ? `Paused “${intent.name}”`
-            : document.getElementById("player-status")?.textContent || "Pause failed";
-        }
-        return;
-      }
-      const ok = await playIntent(intent.id);
-      if (status) {
-        status.textContent = ok
-          ? `Playing “${intent.name}”`
-          : document.getElementById("player-status")?.textContent || "Play failed";
-      }
-    } catch (err) {
-      if (status) status.textContent = "Switch to intent request failed";
-      console.error(err);
-    }
-  });
-
   const editBtn = document.createElement("button");
   editBtn.type = "button";
   setSymbolButton(editBtn, BTN.edit, "Edit intent");
@@ -5593,7 +5759,8 @@ function buildIntentActionButtons(intent) {
     },
   });
 
-  return [playBtn, editBtn, regenerateBtn, fillNowBtn, deleteBtn];
+  // Switch to intent lives on the cover stack hover control.
+  return [editBtn, regenerateBtn, fillNowBtn, deleteBtn];
 }
 
 /**
@@ -5847,7 +6014,7 @@ async function refreshIntents({ force = false } = {}) {
       const nameRow = document.createElement("tr");
       nameRow.className = "intent-name-row";
       nameRow.dataset.intentId = intent.id;
-      const coverCell = renderIntentCoverStack(coverIds);
+      const coverCell = renderIntentCoverStack(coverIds, { intent });
       coverCell.rowSpan = 2;
       nameRow.appendChild(coverCell);
 
@@ -6454,6 +6621,21 @@ document.getElementById("player-play").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("playlog-intent-play")?.addEventListener("click", async () => {
+  const status = document.getElementById("player-status");
+  const intentId = document.getElementById("player-intent")?.value || "";
+  try {
+    if (intentId && isIntentCurrentlyPlaying(intentId)) {
+      await pausePlayback();
+      return;
+    }
+    await playIntent(intentId);
+  } catch (err) {
+    if (status) status.textContent = "Play now request failed";
+    console.error(err);
+  }
+});
+
 document.getElementById("player-mark").addEventListener("click", async () => {
   const status = document.getElementById("player-status");
   const intentId = document.getElementById("player-intent").value;
@@ -6721,6 +6903,8 @@ function connectViewNotices() {
   markStaticSymbolButtons();
   initSectionInfo();
   initSectionNav();
+  initAppMenu();
+  initFocusTabs();
   initActionTips();
   const expandBtn = document.getElementById("intent-expand");
   if (expandBtn) setSymbolButton(expandBtn, BTN.add, "Create intent");
@@ -6772,9 +6956,7 @@ function connectViewNotices() {
   if (typeof ResizeObserver === "function") {
     const chromeObserver = new ResizeObserver(() => syncPlayerChrome());
     const playerNowRow = document.querySelector("#player .player-now-row");
-    const playerHeading = document.querySelector("#player .player-heading-row");
     if (playerNowRow) chromeObserver.observe(playerNowRow);
-    if (playerHeading) chromeObserver.observe(playerHeading);
     const playlogWrap = document.getElementById("playlog-table-wrap");
     if (playlogWrap) {
       const playlogObserver = new ResizeObserver(() => {

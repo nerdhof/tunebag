@@ -524,10 +524,8 @@ def test_player_ui_has_cover_slot() -> None:
     assert ".player-cover" in css
     assert "renderPlayerCover" in js
     assert "has_cover" in js
-    # Intent on Player heading row; cover + title in .player-now-row above seek.
-    assert 'class="player-heading-row"' in html
+    # Cover + title in .player-now-row above seek; Queued Intent lives on Playlog Actions.
     assert 'class="player-now-row"' in html
-    assert "player-heading-row" in css
     assert "player-now-row" in css
     assert "syncPlayerNowStack" in js
     assert "measurePlayerTitleIntrinsicWidth" in js
@@ -535,15 +533,18 @@ def test_player_ui_has_cover_slot() -> None:
     assert "--player-cover-size" in css
     assert 'setProperty("--player-cover-size"' in js
     assert "PLAYER_COVER_MIN_REM" in js
-    assert "syncPlayerIntentWrap" in js
     assert "is-stacked" in css
-    assert "intent-wrapped" in css
     assert "white-space: nowrap" in css  # title single-line beside cover
-    intent_at = html.index('id="player-intent"')
+    assert 'class="playlog-queued-intent"' in html
+    assert 'id="playlog-intent-play"' in html
+    assert "playlog-queued-intent-label" not in html
+    assert "focus-toolbar-filters" in html[html.index('id="playlog"') : html.index('id="playlog-table"')]
+    assert "syncPlaylogIntentPlayButton" in js
     cover_at = html.index('id="player-cover"')
     text_at = html.index('class="player-below-text"')
     clip_at = html.index('class="player-clip"')
-    assert intent_at < cover_at < text_at < clip_at
+    intent_at = html.index('id="player-intent"')
+    assert cover_at < text_at < clip_at < intent_at
     assert 'id="player-seekbar"' in html[clip_at:]
     # Seek labels clip via raised .player-clip; tags stay outside that clip.
     assert "--player-seek-clip-rise" in css
