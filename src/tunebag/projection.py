@@ -365,6 +365,7 @@ def apply(
         state.deleted_artists.add(artist_id)
         removed_mix_ids = state.delete_artist(artist_id)
         effects.delete_files.extend(removed_mix_ids)
+        _strip_deleted_artist_from_intents(state, event, artist_id, effects)
         return state, effects
     if event.type is EventType.MIX_ADDED:
         _apply_mix_added(state, payload)
@@ -664,6 +665,34 @@ def _flush_pending_intent_projection(state: CatalogState, intent_id: UUID) -> No
             state.set_assignment(assignment)
 
 
+def _strip_deleted_artist_from_intents(
+    state: CatalogState,
+    event: Event,
+    artist_id: UUID,
+    effects: LocalEffects,
+) -> None:
+    """Drop deleted artist from intent filters; remove artistless intents.
+
+    When the last ``artist_ids`` entry is removed, delete the intent and advance
+    the intent merge beat with this artist-delete event so an older
+    ``INTENT_UPSERTED`` cannot resurrect it. Multi-artist intents keep the
+    remaining ids (no merge-beat change).
+    """
+    for intent in list(state.intents.values()):
+        if artist_id not in intent.artist_ids:
+            continue
+        remaining = [aid for aid in intent.artist_ids if aid != artist_id]
+        if remaining:
+            state.upsert_intent(intent.model_copy(update={"artist_ids": remaining}))
+            continue
+        _merge_beats(state, ("intent", str(intent.id)), event)
+        state.delete_intent(intent.id)
+        state.pending_sequences.pop(intent.id, None)
+        for key in [k for k in state.pending_assignments if k[0] == intent.id]:
+            del state.pending_assignments[key]
+        effects.remove_intent_folders.append(intent.id)
+
+
 def _apply_device_paired(
     state: CatalogState,
     event: Event,
@@ -810,6 +839,13 @@ def _apply_intent_upserted(
         intent = decode_intent(payload).model_copy(
             update={"device_hours": merged_hours}
         )
+        cleaned_artists = [
+            artist_id
+            for artist_id in intent.artist_ids
+            if artist_id not in state.deleted_artists
+        ]
+        if cleaned_artists != list(intent.artist_ids):
+            intent = intent.model_copy(update={"artist_ids": cleaned_artists})
         state.upsert_intent(intent)
         _flush_pending_intent_projection(state, intent_id)
     elif existing is not None and hours_changed:

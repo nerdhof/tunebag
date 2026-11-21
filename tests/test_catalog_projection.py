@@ -542,6 +542,32 @@ def test_replay_order_does_not_change_converged_catalog() -> None:
     assert reverse.mixes[mix_id].played is True
 
 
+def _intent_payload(
+    intent_id: UUID,
+    *,
+    name: str = "Plan",
+    artist_ids: list[UUID] | None = None,
+    seed: int = 1,
+) -> dict:
+    return {
+        "id": str(intent_id),
+        "name": name,
+        "tags": [],
+        "artist_ids": [str(aid) for aid in (artist_ids or [])],
+        "platforms": [Platform.SOUNDCLOUD.value],
+        "distribution": {
+            "five": 0.3,
+            "four": 0.2,
+            "three": 0.1,
+            "two": 0.05,
+            "one": 0.05,
+            "unrated": 0.3,
+        },
+        "device_hours": [],
+        "seed": seed,
+    }
+
+
 def test_intent_delete_removes_folder_effect() -> None:
     local = uuid4()
     state = CatalogState()
@@ -551,23 +577,7 @@ def test_intent_delete_removes_folder_effect() -> None:
         state,
         _event(
             EventType.INTENT_UPSERTED,
-            {
-                "id": str(intent_id),
-                "name": "Plan",
-                "tags": [],
-                "artist_ids": [],
-                "platforms": [Platform.SOUNDCLOUD.value],
-                "distribution": {
-                    "five": 0.3,
-                    "four": 0.2,
-                    "three": 0.1,
-                    "two": 0.05,
-                    "one": 0.05,
-                    "unrated": 0.3,
-                },
-                "device_hours": [],
-                "seed": 1,
-            },
+            _intent_payload(intent_id),
             device_id=local,
             created_at=t0,
             seq=1,
@@ -589,3 +599,201 @@ def test_intent_delete_removes_folder_effect() -> None:
     )
     assert intent_id not in state.intents
     assert effects.remove_intent_folders == [intent_id]
+
+
+def test_artist_delete_removes_artistless_intent() -> None:
+    local = uuid4()
+    state = CatalogState()
+    artist_id, _ = _seed_mix(state, local_device_id=local)
+    intent_id = new_id()
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    apply(
+        state,
+        _event(
+            EventType.INTENT_UPSERTED,
+            _intent_payload(intent_id, artist_ids=[artist_id]),
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=3,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    assert intent_id in state.intents
+
+    _, effects = apply(
+        state,
+        _event(
+            EventType.ARTIST_DELETED,
+            {"id": str(artist_id)},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=3),
+            seq=4,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    assert intent_id not in state.intents
+    assert effects.remove_intent_folders == [intent_id]
+
+    # Older upsert cannot resurrect the artistless intent.
+    apply(
+        state,
+        _event(
+            EventType.INTENT_UPSERTED,
+            _intent_payload(intent_id, artist_ids=[artist_id], seed=2),
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=3,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    assert intent_id not in state.intents
+
+
+def test_artist_delete_strips_artist_from_multi_artist_intent() -> None:
+    local = uuid4()
+    state = CatalogState()
+    artist_a, _ = _seed_mix(state, local_device_id=local)
+    artist_b = new_id()
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    apply(
+        state,
+        _event(
+            EventType.ARTIST_ADDED,
+            {
+                "id": str(artist_b),
+                "platform": Platform.SOUNDCLOUD.value,
+                "platform_id": "artist-2",
+                "name": "Other",
+                "url": "https://example.com/other",
+            },
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=3,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    intent_id = new_id()
+    apply(
+        state,
+        _event(
+            EventType.INTENT_UPSERTED,
+            _intent_payload(intent_id, artist_ids=[artist_a, artist_b]),
+            device_id=local,
+            created_at=t0 + timedelta(seconds=3),
+            seq=4,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+
+    _, effects = apply(
+        state,
+        _event(
+            EventType.ARTIST_DELETED,
+            {"id": str(artist_a)},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=4),
+            seq=5,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    assert intent_id in state.intents
+    assert state.intents[intent_id].artist_ids == [artist_b]
+    assert effects.remove_intent_folders == []
+
+
+def test_replay_artist_delete_repairs_orphan_artist_filter() -> None:
+    """Existing ARTIST_DELETED in the log strips/removes intents on replay."""
+    local = uuid4()
+    artist_id = new_id()
+    mix_id = new_id()
+    intent_id = new_id()
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    events = [
+        _event(
+            EventType.ARTIST_ADDED,
+            {
+                "id": str(artist_id),
+                "platform": Platform.SOUNDCLOUD.value,
+                "platform_id": "artist-1",
+                "name": "DJ Example",
+                "url": "https://example.com/artist",
+            },
+            device_id=local,
+            created_at=t0,
+            seq=1,
+        ),
+        _event(
+            EventType.MIX_ADDED,
+            {
+                "id": str(mix_id),
+                "artist_id": str(artist_id),
+                "platform": Platform.SOUNDCLOUD.value,
+                "platform_id": "mix-1",
+                "title": "Shared",
+                "url": "https://example.com/mix",
+                "duration_seconds": 3600,
+            },
+            device_id=local,
+            created_at=t0 + timedelta(seconds=1),
+            seq=2,
+        ),
+        _event(
+            EventType.INTENT_UPSERTED,
+            _intent_payload(intent_id, artist_ids=[artist_id]),
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=3,
+        ),
+        _event(
+            EventType.ARTIST_DELETED,
+            {"id": str(artist_id)},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=3),
+            seq=4,
+        ),
+    ]
+    state = CatalogState()
+    _, effects = replay(state, events, local_device_id=local, now=t0)
+    assert artist_id not in state.artists
+    assert intent_id not in state.intents
+    assert intent_id in effects.remove_intent_folders
+
+
+def test_intent_upsert_drops_deleted_artist_ids() -> None:
+    local = uuid4()
+    state = CatalogState()
+    artist_id, _ = _seed_mix(state, local_device_id=local)
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    apply(
+        state,
+        _event(
+            EventType.ARTIST_DELETED,
+            {"id": str(artist_id)},
+            device_id=local,
+            created_at=t0 + timedelta(seconds=2),
+            seq=3,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    intent_id = new_id()
+    apply(
+        state,
+        _event(
+            EventType.INTENT_UPSERTED,
+            _intent_payload(intent_id, artist_ids=[artist_id]),
+            device_id=local,
+            created_at=t0 + timedelta(seconds=3),
+            seq=4,
+        ),
+        local_device_id=local,
+        now=t0,
+    )
+    assert intent_id in state.intents
+    assert state.intents[intent_id].artist_ids == []
