@@ -1530,11 +1530,17 @@ function setFocusTab(tabId, { updateHash = true } = {}) {
     }
   }
   closeAppMenu();
+  if (id !== "playlog") {
+    // Other tabs use normal soft collapse from stick (no −2 freeze band).
+    playlogCollapseFreezeDepthPx = 0;
+  }
   requestAnimationFrame(() => {
     syncFocusTabsHeightVar();
     if (id === "playlog") {
       updatePlaylogStickyMetrics();
       syncPlaylogCurrentStuck();
+    } else {
+      schedulePlayerCollapse();
     }
   });
 }
@@ -3292,6 +3298,11 @@ let playerCollapseKey = "";
 /** Last focus-tabs / toolbar heights written (avoid thrash). */
 let focusTabsHeightPx = -1;
 let focusToolbarHeightPx = -1;
+/**
+ * Sticky scroll depth (px) at Playlog default (−2) view. Soft collapse only
+ * applies to depth past this freeze (approach B). 0 = no freeze.
+ */
+let playlogCollapseFreezeDepthPx = 0;
 
 /**
  * Intrinsic one-line width of #player-now.
@@ -3443,13 +3454,18 @@ function syncPlayerCollapse() {
   const depth = pinTop - sentinel.getBoundingClientRect().top;
   const stuck = depth >= -1;
 
+  // Approach B: stay expanded through the Playlog default (−2) band; soft
+  // collapse only from scroll depth past that freeze anchor.
+  const collapseDepth = Math.max(0, depth - playlogCollapseFreezeDepthPx);
+
   let coverScale = 1;
   let labelFactor = 1;
-  if (stuck && depth > 0) {
-    const coverT = smoothstep01(depth / PLAYER_COLLAPSE_COVER_RANGE_PX);
+  if (stuck && collapseDepth > 0) {
+    const coverT = smoothstep01(collapseDepth / PLAYER_COLLAPSE_COVER_RANGE_PX);
     coverScale = 1 - 0.5 * coverT;
     const labelT = smoothstep01(
-      (depth - PLAYER_COLLAPSE_COVER_RANGE_PX) / PLAYER_COLLAPSE_LABEL_RANGE_PX,
+      (collapseDepth - PLAYER_COLLAPSE_COVER_RANGE_PX) /
+        PLAYER_COLLAPSE_LABEL_RANGE_PX,
     );
     labelFactor = 1 - labelT;
   }
@@ -3536,6 +3552,17 @@ function focusChromeTopPx() {
     parse("--focus-tabs-height", 0) +
     parse("--focus-toolbar-height", 0)
   );
+}
+
+/** Current sticky collapse depth (px past pin), or 0 if not stuck. */
+function playerCollapseDepthPx() {
+  const sentinel = ensurePlayerStickySentinel();
+  const chrome = document.querySelector(".app-chrome");
+  if (!sentinel) return 0;
+  const pinTop = chrome
+    ? chrome.getBoundingClientRect().bottom
+    : 2.75 * playerRootFontPx();
+  return Math.max(0, pinTop - sentinel.getBoundingClientRect().top);
 }
 
 function setSeekLabelHeadroom(seekRow, tracks, artist) {
@@ -4658,7 +4685,11 @@ async function playlogPause() {
   }
 }
 
-/** Scroll page so offset −2 sits under sticky focus chrome + thead (current near mid-view). */
+/**
+ * Scroll page so offset −2 sits under sticky focus chrome + thead, with the
+ * player frozen expanded at that band (approach B). Soft collapse only after
+ * scrolling further past this freeze depth.
+ */
 function scrollPlaylogDefaultView() {
   const wrap = document.getElementById("playlog-table-wrap");
   const body = document.getElementById("playlog-body");
@@ -4673,12 +4704,23 @@ function scrollPlaylogDefaultView() {
       rows.find((row) => row.dataset.offset === "0") ||
       rows[0];
   }
+
+  // Hold player fully expanded while we land −2 under the tall chrome.
+  playlogCollapseFreezeDepthPx = Number.POSITIVE_INFINITY;
+  syncPlayerCollapse();
+  syncFocusTabsHeightVar();
+
   const head = wrap.querySelector("thead");
   const headH = head ? head.getBoundingClientRect().height : 0;
   const pin = focusChromeTopPx() + headH;
   const delta = target.getBoundingClientRect().top - pin;
-  if (Math.abs(delta) < 1) return;
-  window.scrollBy(0, delta);
+  if (Math.abs(delta) >= 1) {
+    window.scrollBy(0, delta);
+  }
+
+  playlogCollapseFreezeDepthPx = playerCollapseDepthPx();
+  syncPlayerCollapse();
+  syncFocusTabsHeightVar();
 }
 
 /** Sticky current sits under thead; measure once per layout. */
@@ -4770,7 +4812,6 @@ function ensurePlaylogScrollChrome() {
   const wrap = document.getElementById("playlog-table-wrap");
   if (!wrap || wrap.dataset.playlogChromeWired === "1") return;
   wrap.dataset.playlogChromeWired = "1";
-  // Table uses page scroll; stuck-current tracking listens on window.
   wrap.addEventListener("click", onPlaylogWrapClick);
 }
 
