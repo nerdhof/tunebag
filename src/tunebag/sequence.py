@@ -13,6 +13,7 @@ from collections import defaultdict
 from uuid import UUID
 
 from tunebag.domain import (
+    UNTAGGED_TAG,
     Intent,
     Mix,
     Platform,
@@ -52,12 +53,14 @@ def matches_filter(
     artists = list(artist_ids or [])
     if artists and mix.artist_id not in set(artists):
         return False
-    if tags:
-        return not set(tags).isdisjoint(set(mix.tags))
-    # Empty tags: untagged-only when no artist filter; otherwise all tags OK.
-    if not artists:
+    real_tags = [t for t in tags if t != UNTAGGED_TAG]
+    if not tags:
+        # Empty = no tag filter (tagged and untagged).
+        return True
+    if not real_tags:
+        # Only UNTAGGED_TAG → untagged-only.
         return len(mix.tags) == 0
-    return True
+    return not set(real_tags).isdisjoint(set(mix.tags))
 
 
 def eligible_by_bucket(

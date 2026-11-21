@@ -38,6 +38,7 @@ from tunebag.discovery import (
     NullLanDiscovery,
 )
 from tunebag.domain import (
+    UNTAGGED_TAG,
     Artist,
     Assignment,
     Device,
@@ -335,7 +336,7 @@ class DeviceAgent:
             return False
         self.create_intent(
             "Explore",
-            tags=[],
+            tags=[UNTAGGED_TAG],
             distribution=EXPLORE_DISTRIBUTION,
             seed=EXPLORE_SEED,
             intent_id=EXPLORE_INTENT_ID,
@@ -3069,11 +3070,13 @@ class DeviceAgent:
     ) -> Intent:
         hours = _device_hours_from_spec(list(device_hours or []))
         self._require_known_devices([dh.device_id for dh in hours])
+        resolved_artists = list(artist_ids or [])
+        self._require_known_artists(resolved_artists)
         intent = Intent(
             id=intent_id if intent_id is not None else new_id(),
             name=name,
             tags=list(tags or []),
-            artist_ids=list(artist_ids or []),
+            artist_ids=resolved_artists,
             platforms=(
                 list(platforms) if platforms is not None else default_intent_platforms()
             ),
@@ -3159,7 +3162,9 @@ class DeviceAgent:
         if tags is not None:
             updates["tags"] = list(tags)
         if artist_ids is not None:
-            updates["artist_ids"] = list(artist_ids)
+            resolved_artists = list(artist_ids)
+            self._require_known_artists(resolved_artists)
+            updates["artist_ids"] = resolved_artists
         if platforms is not None:
             updates["platforms"] = list(platforms)
         if distribution is not None:
@@ -3270,6 +3275,12 @@ class DeviceAgent:
             return
         bad = ", ".join(str(device_id) for device_id in unknown)
         raise ValueError(f"unknown device_id(s) for hours: {bad}")
+
+    def _require_known_artists(self, artist_ids: list[UUID]) -> None:
+        """Reject intent artist filters that are not in the Catalog."""
+        for artist_id in artist_ids:
+            if artist_id not in self.catalog.artists:
+                raise KeyError(f"unknown artist {artist_id}")
 
     def _prune_unassigned_files(self) -> None:
         """Drop local blobs no remaining assignment wants (except currently playing).

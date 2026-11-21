@@ -10,7 +10,7 @@ from tunebag.agent import (
     EXPLORE_SEED,
     DeviceAgent,
 )
-from tunebag.domain import Platform
+from tunebag.domain import UNTAGGED_TAG, Platform
 from tunebag.source import ArtistListing, FakeSource, Upload
 
 
@@ -38,7 +38,7 @@ def test_first_boot_seeds_explore_intent(tmp_path: Path) -> None:
     assert explore.id == EXPLORE_INTENT_ID
     assert explore.seed == EXPLORE_SEED
     assert explore.name == "Explore"
-    assert explore.tags == []
+    assert explore.tags == [UNTAGGED_TAG]
     assert explore.distribution.five == 0.1
     assert explore.distribution.four == 0.1
     assert explore.distribution.three == 0.1

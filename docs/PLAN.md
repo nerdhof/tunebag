@@ -27,7 +27,7 @@ Ratings are 1–5. Unrated mixes may still enter a tagged sequence. The rating d
 
 ### Intents
 
-- Tags on an intent mean OR (mix has any of them). Empty tags with empty artist filter = untagged only (exploratory). Empty tags with artists set = that artist’s tagged and untagged releases. Artist filter is OR on `artist_ids`.
+- Tags on an intent mean OR (mix has any of them). Empty tags = no tag filter. Intent-only sentinel `—` alone = untagged only (default Explore / new create). Artist filter is OR on `artist_ids`.
 - Rating distribution is always a draw probability, at any budget.
 - One seeded sequence fills until its duration is at least the largest device budget, and may include the mix that crosses that budget. Smaller budgets take the prefix (2h phone ≡ first 2h of 8h laptop).
 - Empty bucket → skip and rescale remaining probabilities.

@@ -59,6 +59,10 @@ class AlbumTrack(BaseModel):
     size_bytes: int | None = None
 
 
+# Intent-only sentinel: tags=["—"] means untagged-only. Not a catalog/mix tag.
+UNTAGGED_TAG = "—"
+
+
 class Mix(BaseModel):
     """A Catalog Release (Mix or Album). Wire/API may still say mix."""
 
@@ -91,7 +95,7 @@ class Mix(BaseModel):
         out: list[str] = []
         for tag in tags:
             cleaned = tag.strip().lower()
-            if cleaned and cleaned not in seen:
+            if cleaned and cleaned != UNTAGGED_TAG and cleaned not in seen:
                 seen.add(cleaned)
                 out.append(cleaned)
         return out
@@ -164,7 +168,8 @@ class Intent(BaseModel):
 
     id: UUID = Field(default_factory=new_id)
     name: str
-    tags: list[str] = Field(default_factory=list)  # OR; empty+no artists = untagged only
+    # OR of real tags; empty = no tag filter; [UNTAGGED_TAG] only = untagged-only.
+    tags: list[str] = Field(default_factory=list)
     artist_ids: list[UUID] = Field(default_factory=list)  # OR; empty = no artist filter
     platforms: list[Platform] = Field(default_factory=default_intent_platforms)
     distribution: StarDistribution = Field(default_factory=StarDistribution)
@@ -175,7 +180,24 @@ class Intent(BaseModel):
     @field_validator("tags")
     @classmethod
     def normalize_tags(cls, tags: list[str]) -> list[str]:
-        return Mix.normalize_tags(tags)
+        seen: set[str] = set()
+        out: list[str] = []
+        has_untagged = False
+        for tag in tags:
+            cleaned = tag.strip().lower()
+            if not cleaned:
+                continue
+            if cleaned == UNTAGGED_TAG:
+                has_untagged = True
+                continue
+            if cleaned not in seen:
+                seen.add(cleaned)
+                out.append(cleaned)
+        if out:
+            return out
+        if has_untagged:
+            return [UNTAGGED_TAG]
+        return []
 
     @field_validator("platforms")
     @classmethod

@@ -1111,6 +1111,13 @@ form.add-form-open .add-form-fields-inline {
   z-index: 1;
 }
 
+.tag-chip.is-untagged {
+  --tag-chip-border: color-mix(in srgb, var(--muted) 70%, transparent);
+  --tag-chip-fill: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+  font-weight: 400;
+}
+
 button.tag-chip-add {
   position: relative;
   z-index: 1;

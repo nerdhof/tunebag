@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from tunebag.domain import (
+    UNTAGGED_TAG,
     DeviceHours,
     Intent,
     Mix,
@@ -114,7 +115,23 @@ def test_build_sequence_fills_at_least_budget_with_overshoot() -> None:
     assert total == 8 * 3600 + 20 * 60
 
 
-def test_matches_filter_empty_tags_untagged_only_without_artists() -> None:
+def test_intent_normalize_tags_keeps_untagged_sentinel_alone() -> None:
+    intent = Intent(
+        name="E",
+        tags=[UNTAGGED_TAG, "  ", UNTAGGED_TAG],
+        seed=1,
+    )
+    assert intent.tags == [UNTAGGED_TAG]
+    mixed = Intent(
+        name="M",
+        tags=[UNTAGGED_TAG, "Deep", UNTAGGED_TAG],
+        seed=1,
+    )
+    assert mixed.tags == ["deep"]
+    assert Mix.normalize_tags([UNTAGGED_TAG, "deep"]) == ["deep"]
+
+
+def test_matches_filter_empty_tags_means_no_tag_filter() -> None:
     artist = uuid4()
     untagged = Mix(
         artist_id=artist,
@@ -134,7 +151,30 @@ def test_matches_filter_empty_tags_untagged_only_without_artists() -> None:
         tags=["deep"],
     )
     assert matches_filter(untagged, []) is True
-    assert matches_filter(tagged, []) is False
+    assert matches_filter(tagged, []) is True
+
+
+def test_matches_filter_untagged_sentinel_only() -> None:
+    artist = uuid4()
+    untagged = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="u",
+        title="U",
+        url="https://example.com/u",
+        duration_seconds=60,
+    )
+    tagged = Mix(
+        artist_id=artist,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="t",
+        title="T",
+        url="https://example.com/t",
+        duration_seconds=60,
+        tags=["deep"],
+    )
+    assert matches_filter(untagged, [UNTAGGED_TAG]) is True
+    assert matches_filter(tagged, [UNTAGGED_TAG]) is False
 
 
 def test_matches_filter_empty_tags_with_artist_allows_tagged_and_untagged() -> None:

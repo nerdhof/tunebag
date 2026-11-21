@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from tunebag.agent import DeviceAgent
-from tunebag.domain import Platform, StarDistribution, Stars
+from tunebag.domain import UNTAGGED_TAG, Platform, StarDistribution, Stars
 
 
 class _FakeClock:
@@ -80,7 +80,7 @@ def test_intent_has_name_tags_and_default_star_chances() -> None:
     assert intent.id in {i.id for i in laptop.intents()}
 
 
-def test_several_tags_require_all_empty_tags_match_only_untagged() -> None:
+def test_several_tags_or_untagged_sentinel_and_empty_no_filter() -> None:
     laptop, _phone = _pair()
     both = _add_mix(
         laptop,
@@ -90,7 +90,7 @@ def test_several_tags_require_all_empty_tags_match_only_untagged() -> None:
         tags=["deep", "house"],
         stars=Stars.FIVE,
     )
-    _add_mix(
+    deep_only = _add_mix(
         laptop,
         title="Only deep",
         duration_seconds=3600,
@@ -114,17 +114,27 @@ def test_several_tags_require_all_empty_tags_match_only_untagged() -> None:
     )
     tagged_seq = laptop.sequence(tagged_intent.id)
     assert tagged_seq is not None
-    assert [e.mix_id for e in tagged_seq.entries] == [both]
+    assert set(e.mix_id for e in tagged_seq.entries) == {both, deep_only}
 
     exploratory = laptop.create_intent(
         "Exploratory",
-        tags=[],
+        tags=[UNTAGGED_TAG],
         seed=1,
         device_hours=[(laptop.device_id, 7200)],
     )
     explor_seq = laptop.sequence(exploratory.id)
     assert explor_seq is not None
     assert [e.mix_id for e in explor_seq.entries] == [untagged]
+
+    open_intent = laptop.create_intent(
+        "Open",
+        tags=[],
+        seed=1,
+        device_hours=[(laptop.device_id, 3 * 3600)],
+    )
+    open_seq = laptop.sequence(open_intent.id)
+    assert open_seq is not None
+    assert set(e.mix_id for e in open_seq.entries) == {both, deep_only, untagged}
 
 
 def test_artist_filter_excludes_other_artists() -> None:
@@ -193,6 +203,38 @@ def test_update_intent_artist_ids() -> None:
     updated = laptop.update_intent(intent.id, artist_ids=[mix_b.artist_id])
     assert updated.artist_ids == [mix_b.artist_id]
     assert [e.mix_id for e in laptop.sequence(intent.id).entries] == [mix_b.id]
+
+
+def test_create_intent_rejects_unknown_artist() -> None:
+    laptop, _phone = _pair()
+    with pytest.raises(KeyError, match="unknown artist"):
+        laptop.create_intent(
+            "Ghost",
+            artist_ids=[uuid4()],
+            device_hours=[(laptop.device_id, 3600)],
+        )
+
+
+def test_delete_artist_removes_artist_only_intent() -> None:
+    laptop, _phone = _pair()
+    mix = laptop.add_mix(
+        title="Only",
+        url="https://example.com/only",
+        duration_seconds=3600,
+        platform=Platform.SOUNDCLOUD,
+        platform_id="only",
+        artist_name="Solo",
+    )
+    intent = laptop.create_intent(
+        "Solo plan",
+        tags=[],
+        artist_ids=[mix.artist_id],
+        seed=1,
+        device_hours=[(laptop.device_id, 7200)],
+    )
+    laptop.delete_artist(mix.artist_id)
+    assert intent.id not in {i.id for i in laptop.intents()}
+    assert mix.artist_id not in {a.id for a in laptop.artists()}
 
 
 def test_rejected_excluded_and_empty_bucket_skipped() -> None:

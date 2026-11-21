@@ -113,10 +113,36 @@ let catalogTagsCache = [];
 /** @type {{id: string, name: string}[]} */
 let catalogArtistsCache = [];
 
+/** Intent-only sentinel: tags=["—"] means untagged-only. Not a catalog/mix tag. */
+const UNTAGGED_TAG = "—";
+
 function normalizeTag(tag) {
   return String(tag || "")
     .trim()
     .toLowerCase();
+}
+
+/**
+ * Normalize intent filter tags: real tags OR-only; bare UNTAGGED_TAG kept;
+ * sentinel dropped when any real tag is present.
+ * @param {string[]} tags
+ * @returns {string[]}
+ */
+function normalizeIntentTags(tags) {
+  const out = [];
+  let hasUntagged = false;
+  for (const tag of tags || []) {
+    const cleaned = normalizeTag(tag);
+    if (!cleaned) continue;
+    if (cleaned === UNTAGGED_TAG) {
+      hasUntagged = true;
+      continue;
+    }
+    if (!out.includes(cleaned)) out.push(cleaned);
+  }
+  if (out.length) return out;
+  if (hasUntagged) return [UNTAGGED_TAG];
+  return [];
 }
 
 function normalizeArtistNeedle(text) {
@@ -273,7 +299,7 @@ function tagChipColors(tag, allTags) {
  * @returns {HTMLElement}
  */
 function renderTagChipsDisplay(tags, allTags) {
-  const cleaned = (tags || []).map(normalizeTag).filter(Boolean);
+  const cleaned = normalizeIntentTags(tags || []);
   const chipsEl = document.createElement("div");
   chipsEl.className = "tag-chips";
   if (!cleaned.length) {
@@ -283,16 +309,23 @@ function renderTagChipsDisplay(tags, allTags) {
     chipsEl.appendChild(empty);
     return chipsEl;
   }
-  const context = allTags != null ? [...allTags, ...cleaned] : cleaned;
+  const realTags = cleaned.filter((tag) => tag !== UNTAGGED_TAG);
+  const context =
+    allTags != null ? [...allTags, ...realTags] : realTags;
   const slots = assignTagChipSlots(context);
   for (const tag of cleaned) {
-    const slot = slots.get(tag) ?? tagChipHash(tag) % TAG_CHIP_PALETTE.length;
-    const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
     const chip = document.createElement("span");
     chip.className = "tag-chip";
-    chip.style.setProperty("--tag-chip-border", border);
-    chip.style.setProperty("--tag-chip-fill", fill);
     chip.dataset.tag = tag;
+    if (tag === UNTAGGED_TAG) {
+      chip.classList.add("is-untagged");
+      chip.title = "Untagged only";
+    } else {
+      const slot = slots.get(tag) ?? tagChipHash(tag) % TAG_CHIP_PALETTE.length;
+      const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
+      chip.style.setProperty("--tag-chip-border", border);
+      chip.style.setProperty("--tag-chip-fill", fill);
+    }
     const label = document.createElement("span");
     label.className = "tag-chip-label";
     label.textContent = tag;
@@ -311,12 +344,18 @@ function renderTagChipsDisplay(tags, allTags) {
  *   onRemove: (tag: string) => Promise<void> | void,
  *   getCatalogTags?: () => string[],
  *   confirmRemove?: boolean,
+ *   untaggedSentinel?: boolean,
  * }} options
  */
 function mountTagEditor(root, options) {
   const getCatalogTags = options.getCatalogTags || (() => catalogTagsCache);
   const confirmRemove = options.confirmRemove !== false;
-  let tags = (options.tags || []).map(normalizeTag).filter(Boolean);
+  const untaggedSentinel = options.untaggedSentinel === true;
+  let tags = untaggedSentinel
+    ? normalizeIntentTags(options.tags || [])
+    : (options.tags || [])
+        .map(normalizeTag)
+        .filter((tag) => tag && tag !== UNTAGGED_TAG);
   let confirming = null;
   let picking = false;
   let filterText = "";
@@ -359,7 +398,12 @@ function mountTagEditor(root, options) {
   function suggestionRows() {
     const owned = new Set(tags);
     const needle = normalizeTag(filterText);
-    const catalog = getCatalogTags().map(normalizeTag).filter(Boolean);
+    if (untaggedSentinel && needle === UNTAGGED_TAG) {
+      return [];
+    }
+    const catalog = getCatalogTags()
+      .map(normalizeTag)
+      .filter((tag) => tag && tag !== UNTAGGED_TAG);
     const catalogSet = new Set(catalog);
     const matches = catalog.filter(
       (tag) => !owned.has(tag) && (!needle || tag.includes(needle)),
@@ -372,7 +416,7 @@ function mountTagEditor(root, options) {
       return 0;
     });
     const rows = matches.slice(0, 6).map((tag) => ({ tag, create: false }));
-    if (needle && !owned.has(needle)) {
+    if (needle && needle !== UNTAGGED_TAG && !owned.has(needle)) {
       if (!rows.some((row) => row.tag === needle)) {
         const create = !catalogSet.has(needle);
         if (rows.length < 6) rows.push({ tag: needle, create });
@@ -385,8 +429,11 @@ function mountTagEditor(root, options) {
   async function addTag(tag) {
     const cleaned = normalizeTag(tag);
     if (!cleaned || tags.includes(cleaned) || saving) return;
+    if (cleaned === UNTAGGED_TAG) return;
     const prev = [...tags];
-    tags = [...tags, cleaned];
+    tags = untaggedSentinel
+      ? [...tags.filter((t) => t !== UNTAGGED_TAG), cleaned]
+      : [...tags, cleaned];
     picking = false;
     filterText = "";
     clearConfirm();
@@ -410,6 +457,13 @@ function mountTagEditor(root, options) {
     if (!cleaned || !tags.includes(cleaned) || saving) return;
     const prev = [...tags];
     tags = tags.filter((t) => t !== cleaned);
+    if (
+      untaggedSentinel &&
+      tags.length === 0 &&
+      cleaned !== UNTAGGED_TAG
+    ) {
+      tags = [UNTAGGED_TAG];
+    }
     clearConfirm();
     saving = true;
     syncBusyClass();
@@ -490,7 +544,7 @@ function mountTagEditor(root, options) {
       ...getCatalogTags().map(normalizeTag).filter(Boolean),
       ...tags,
       ...extra.map(normalizeTag).filter(Boolean),
-    ];
+    ].filter((tag) => tag && tag !== UNTAGGED_TAG);
   }
 
   function renderSuggestions() {
@@ -546,14 +600,19 @@ function mountTagEditor(root, options) {
     const slots = assignTagChipSlots(colorContextTags());
     const frag = document.createDocumentFragment();
     for (const tag of tags) {
-      const slot =
-        slots.get(tag) ?? tagChipHash(tag) % TAG_CHIP_PALETTE.length;
-      const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
       const chip = document.createElement("span");
       chip.className = "tag-chip";
-      chip.style.setProperty("--tag-chip-border", border);
-      chip.style.setProperty("--tag-chip-fill", fill);
       chip.dataset.tag = tag;
+      if (tag === UNTAGGED_TAG) {
+        chip.classList.add("is-untagged");
+        chip.title = "Untagged only";
+      } else {
+        const slot =
+          slots.get(tag) ?? tagChipHash(tag) % TAG_CHIP_PALETTE.length;
+        const [border, fill] = tagChipSwatchCss(TAG_CHIP_PALETTE[slot]);
+        chip.style.setProperty("--tag-chip-border", border);
+        chip.style.setProperty("--tag-chip-fill", fill);
+      }
       const label = document.createElement("span");
       label.className = "tag-chip-label";
       label.textContent = tag;
@@ -563,6 +622,8 @@ function mountTagEditor(root, options) {
       remove.className = "tag-chip-x";
       // pointerdown (not click): player poll remounts chips between mousedown and
       // click, which can deliver the click to a different tag's ×.
+      const removeLabel =
+        tag === UNTAGGED_TAG ? "Clear untagged-only filter" : `Remove “${tag}”`;
       if (confirmRemove && confirming === tag) {
         remove.classList.add("confirm-pending", "is-armed");
         remove.textContent = BTN.confirmDelete;
@@ -575,7 +636,7 @@ function mountTagEditor(root, options) {
         });
       } else {
         remove.textContent = "×";
-        remove.setAttribute("aria-label", `Remove “${tag}”`);
+        remove.setAttribute("aria-label", removeLabel);
         remove.addEventListener("pointerdown", (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -694,7 +755,11 @@ function mountTagEditor(root, options) {
   return {
     setTags(next) {
       if (isBusy()) return;
-      const normalized = (next || []).map(normalizeTag).filter(Boolean);
+      const normalized = untaggedSentinel
+        ? normalizeIntentTags(next || [])
+        : (next || [])
+            .map(normalizeTag)
+            .filter((tag) => tag && tag !== UNTAGGED_TAG);
       if (
         normalized.length === tags.length &&
         normalized.every((tag, i) => tag === tags[i])
@@ -1877,7 +1942,7 @@ function mountIntentComposer(root, options) {
   tagsMount.className = "tag-editor";
   tagsMount.setAttribute("aria-label", "Intent filter tags");
   tagsMount.title =
-    "Empty tags alone = untagged only. With artists selected, empty tags include tagged and untagged.";
+    "— = untagged only (default). Add a tag to filter by tags. Clear — for no tag filter.";
 
   const artistsMount = document.createElement("div");
   artistsMount.className = "tag-editor";
@@ -1944,8 +2009,10 @@ function mountIntentComposer(root, options) {
   root.appendChild(meta);
 
   const tagEditor = mountTagEditor(tagsMount, {
-    tags: initial.tags || [],
+    tags:
+      initial.tags != null ? initial.tags : [UNTAGGED_TAG],
     confirmRemove: false,
+    untaggedSentinel: true,
     async onAdd() {},
     async onRemove() {},
   });
@@ -2046,7 +2113,9 @@ function mountIntentComposer(root, options) {
 
   function setValues(next) {
     nameInput.value = next.name || "";
-    tagEditor.setTags(next.tags || []);
+    tagEditor.setTags(
+      Array.isArray(next.tags) ? next.tags : [UNTAGGED_TAG],
+    );
     artistEditor.setIds(next.artist_ids || []);
     writePlatforms(next.platforms || DEFAULT_INTENT_PLATFORMS);
     if (next.distribution) writeChances(chancesFromDist(next.distribution));
@@ -2175,7 +2244,7 @@ function expandCreateForm() {
     saveLabel: "Create intent",
     values: {
       name: "",
-      tags: [],
+      tags: [UNTAGGED_TAG],
       artist_ids: [],
       platforms: DEFAULT_INTENT_PLATFORMS,
       distribution: {
@@ -4053,7 +4122,7 @@ async function refreshMixes({ force = false } = {}) {
             expandedCatalogArtists.delete(group.artistId);
             status.textContent = `Deleted “${group.artistName}”`;
             await refreshMixes();
-            await refreshIntents();
+            await refreshIntents({ force: true });
             await refreshFiles();
           } catch (err) {
             status.textContent = "Delete artist request failed";
@@ -6047,7 +6116,9 @@ async function refreshIntents({ force = false } = {}) {
       filtersCell.className = "intent-filters-cell";
       const tags = intent.tags || [];
       const artistIds = intent.artist_ids || [];
-      const artistNames = artistIds.map((id) => artistNameById.get(id) || id);
+      const artistNames = artistIds.map(
+        (id) => artistNameById.get(id) || "(deleted)",
+      );
       const filterPlatforms = intentFilterPlatforms(intent.platforms);
       if (!tags.length && !artistNames.length && !filterPlatforms.length) {
         filtersCell.classList.add("muted");
