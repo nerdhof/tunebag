@@ -698,7 +698,8 @@ form.add-form-open .add-form-fields-inline {
   z-index: 3;
   display: flex;
   flex-wrap: nowrap;
-  align-items: flex-start;
+  /* Stretch so .player-below-text can bottom-align the compact track to the cover. */
+  align-items: stretch;
   gap: 0.75rem;
   margin-top: 0.45rem;
   min-width: 0;
@@ -711,6 +712,7 @@ form.add-form-open .add-form-fields-inline {
 
 .player-now-row > .player-cover {
   flex: 0 0 var(--player-cover-size);
+  align-self: flex-start; /* keep square; don’t stretch when text column is taller */
 }
 
 .player-now-row > .player-below-text {
@@ -801,6 +803,8 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-below-text {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
 }
 
@@ -832,6 +836,31 @@ form.add-form-open .add-form-fields-inline {
   flex-wrap: nowrap;
   align-items: center;
   gap: 0.35rem 0.5rem;
+}
+
+/* Compact playing-track title: sits at cover bottom (above seek); crossfades in
+ * as angled seek labels fade out. */
+.player-current-track {
+  --player-current-track-reveal: calc(1 - var(--player-label-factor, 1));
+  margin-top: auto;
+  margin-bottom: 0;
+  padding-top: calc(0.15rem * var(--player-current-track-reveal));
+  max-height: calc(
+    (1.15em + 0.15rem) * var(--player-current-track-reveal)
+  );
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: var(--player-current-track-reveal);
+  pointer-events: none;
+}
+
+.player-current-track[hidden] {
+  display: none;
 }
 
 .form-row.player-meta > .inline-field {
@@ -906,7 +935,8 @@ form.add-form-open .add-form-fields-inline {
   z-index: 0;
 }
 
-.player-seek-section-fill.is-hot {
+.player-seek-section-fill.is-hot,
+.player-seek-section-fill.is-current {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
@@ -938,7 +968,8 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-seek-section:hover,
-.player-seek-section.is-hot {
+.player-seek-section.is-hot,
+.player-seek-section.is-current {
   z-index: 5;
 }
 
@@ -984,7 +1015,8 @@ form.add-form-open .add-form-fields-inline {
   z-index: 4;
 }
 
-.player-seek-label.is-hot {
+.player-seek-label.is-hot,
+.player-seek-label.is-current {
   z-index: 6;
   color: var(--accent);
   font-weight: 600;

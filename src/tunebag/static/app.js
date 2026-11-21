@@ -3037,6 +3037,8 @@ let playerSeekArtist = "";
 let playerSeekMarksKey = "";
 /** Track index currently highlighted (−1 = none). Survives poll refreshes. */
 let playerSeekHotIndex = -1;
+/** Playing track index (−1 = none). Separate from ephemeral hover/drag is-hot. */
+let playerSeekCurrentIndex = -1;
 /** Stable key for #player-now; skip DOM rebuild while unchanged. */
 let playerNowKey = "";
 let playerCoverMixId = null;
@@ -3093,6 +3095,7 @@ function tickPlayerUi() {
   seekbar.value = String(clamped);
   syncSeekProgress(seekbar);
   currentEl.textContent = formatClock(clamped);
+  syncPlayerCurrentTrackFromPosition(pos);
   // 5‑minute playhead heartbeat (throttled inside maybeCommitPlayhead).
   void maybeCommitPlayhead(true);
 }
@@ -3162,6 +3165,47 @@ function clearSeekTrackHighlight() {
   }
 }
 
+/** Persist playing-track accent; does not clear ephemeral is-hot. */
+function setSeekTrackCurrent(index) {
+  const next = Number.isFinite(index) ? Number(index) : -1;
+  playerSeekCurrentIndex = next;
+  const marksEl = document.getElementById("player-seek-marks");
+  if (marksEl) {
+    for (const el of marksEl.querySelectorAll(
+      ".player-seek-section, .player-seek-section-fill, .player-seek-label",
+    )) {
+      const current = Number(el.dataset.trackIndex) === next;
+      el.classList.toggle("is-current", current);
+    }
+  }
+  syncPlayerCurrentTrackChrome();
+}
+
+function syncPlayerCurrentTrackFromPosition(seconds) {
+  if (playerSeekTracks.length < 2) {
+    setSeekTrackCurrent(-1);
+    return;
+  }
+  setSeekTrackCurrent(trackIndexAtTimelineSeconds(playerSeekTracks, seconds));
+}
+
+/** Compact title under stars/tags; CSS crossfades it in as angled labels fade. */
+function syncPlayerCurrentTrackChrome() {
+  const el = document.getElementById("player-current-track");
+  if (!el) return;
+  if (playerSeekCurrentIndex < 0 || playerSeekTracks.length < 2) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  const track = playerSeekTracks[playerSeekCurrentIndex];
+  const title =
+    displayTrackTitle(track?.title, playerSeekArtist) ||
+    `Track ${playerSeekCurrentIndex + 1}`;
+  el.textContent = title;
+  el.hidden = false;
+}
+
 function seekMarksLayoutKey(tracks, duration, artist) {
   if (!Array.isArray(tracks) || tracks.length < 2) return "";
   return JSON.stringify({
@@ -3196,6 +3240,7 @@ async function seekToPlayerPosition(positionSeconds) {
   if (currentEl) {
     currentEl.textContent = formatClock(position);
   }
+  syncPlayerCurrentTrackFromPosition(position);
   try {
     const res = await fetch("/api/player/seek", {
       method: "POST",
@@ -3598,6 +3643,7 @@ function renderSeekMarks(tracks, duration, artist) {
     playerSeekTracks = [];
     playerSeekArtist = "";
     clearSeekTrackHighlight();
+    setSeekTrackCurrent(-1);
     seekbar.removeAttribute("title");
     rail?.classList.remove("has-track-labels");
     setSeekLabelHeadroom(seekRow, [], "");
@@ -3610,6 +3656,9 @@ function renderSeekMarks(tracks, duration, artist) {
   if (layoutKey === playerSeekMarksKey && marksEl.childElementCount > 0) {
     if (playerSeekHotIndex >= 0) {
       setSeekTrackHighlight(playerSeekHotIndex);
+    }
+    if (playerSeekCurrentIndex >= 0) {
+      setSeekTrackCurrent(playerSeekCurrentIndex);
     }
     return;
   }
@@ -3664,6 +3713,9 @@ function renderSeekMarks(tracks, duration, artist) {
   if (playerSeekHotIndex >= 0) {
     setSeekTrackHighlight(playerSeekHotIndex);
   }
+  if (playerSeekCurrentIndex >= 0) {
+    setSeekTrackCurrent(playerSeekCurrentIndex);
+  }
 }
 
 function seekSecondsAtClientX(seekbar, clientX) {
@@ -3713,6 +3765,7 @@ function updateSeekBar(data) {
     duration,
     hasMix ? data.artist || "" : "",
   );
+  syncPlayerCurrentTrackFromPosition(displayPos);
 }
 
 function cacheGroupKey(group) {
@@ -7048,6 +7101,7 @@ if (playerSeekbar) {
     if (currentEl) {
       currentEl.textContent = formatClock(position);
     }
+    syncPlayerCurrentTrackFromPosition(position);
     if (event instanceof PointerEvent) {
       highlightSeekTrackAtClientX(playerSeekbar, event.clientX);
     } else {

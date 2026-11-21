@@ -531,10 +531,14 @@ def test_player_ui_has_cover_slot() -> None:
     assert "measurePlayerTitleIntrinsicWidth" in js
     assert "selectNodeContents" in js
     assert "--player-cover-size" in css
-    assert 'setProperty("--player-cover-size"' in js
+    assert 'setProperty("--player-cover-natural"' in js
     assert "PLAYER_COVER_MIN_REM" in js
-    assert "is-stacked" in css
+    assert "is-stacked" in js  # removed from layout; still cleared in syncPlayerNowStack
     assert "white-space: nowrap" in css  # title single-line beside cover
+    assert 'id="player-current-track"' in html
+    assert "player-current-track" in css
+    assert "syncPlayerCurrentTrackChrome" in js
+    assert "setSeekTrackCurrent" in js
     assert 'class="playlog-queued-intent"' in html
     assert 'id="playlog-intent-play"' in html
     assert "playlog-queued-intent-label" not in html
@@ -542,9 +546,10 @@ def test_player_ui_has_cover_slot() -> None:
     assert "syncPlaylogIntentPlayButton" in js
     cover_at = html.index('id="player-cover"')
     text_at = html.index('class="player-below-text"')
+    current_track_at = html.index('id="player-current-track"')
     clip_at = html.index('class="player-clip"')
     intent_at = html.index('id="player-intent"')
-    assert cover_at < text_at < clip_at < intent_at
+    assert cover_at < text_at < current_track_at < clip_at < intent_at
     assert 'id="player-seekbar"' in html[clip_at:]
     # Seek labels clip via raised .player-clip; tags stay outside that clip.
     assert "--player-seek-clip-rise" in css
