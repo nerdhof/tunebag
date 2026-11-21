@@ -15,11 +15,20 @@
   --control-height: 1.55rem;
   --section-nav-height: 2.75rem; /* about.html concept nav */
   --status-bar-height: 2.75rem;
+  /* JS updates while sticky chrome is up; theads / scroll-padding sit under the
+   * full stack (status + player + tabs + active focus toolbar). */
+  --player-sticky-height: 0px;
+  --focus-tabs-height: 0px;
+  --focus-toolbar-height: 0px;
+  --focus-chrome-top: calc(
+    var(--status-bar-height) + var(--player-sticky-height, 0px) +
+      var(--focus-tabs-height, 0px) + var(--focus-toolbar-height, 0px)
+  );
   font-family: "IBM Plex Sans", system-ui, sans-serif;
 }
 
 html {
-  scroll-padding-top: calc(var(--status-bar-height) + 0.5rem);
+  scroll-padding-top: calc(var(--focus-chrome-top) + 0.5rem);
 }
 
 @media (prefers-color-scheme: light) {
@@ -283,7 +292,7 @@ main {
 
 main > section,
 main > .focus-region {
-  scroll-margin-top: calc(var(--status-bar-height) + 0.5rem);
+  scroll-margin-top: calc(var(--focus-chrome-top) + 0.5rem);
 }
 
 h1 {
@@ -308,11 +317,16 @@ section {
 }
 
 .focus-tabs {
+  /* Stick under sticky #player (height published as --player-sticky-height). */
+  position: sticky;
+  top: calc(var(--status-bar-height) + var(--player-sticky-height, 0px));
+  z-index: 19;
   display: flex;
   align-items: stretch;
   gap: 0.15rem;
   margin: 0 0 0.65rem;
   border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+  background: var(--bg);
 }
 
 .focus-tab {
@@ -372,12 +386,21 @@ section {
 }
 
 .focus-toolbar {
+  /* Stick under focus tabs; height published as --focus-toolbar-height. */
+  position: sticky;
+  top: calc(
+    var(--status-bar-height) + var(--player-sticky-height, 0px) +
+      var(--focus-tabs-height, 0px)
+  );
+  z-index: 18;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.5rem 1rem;
   margin: 0 0 0.75rem;
+  padding: 0.15rem 0 0.55rem;
+  background: var(--card);
 }
 
 .focus-toolbar-filters {
@@ -612,10 +635,41 @@ form.add-form-open .add-form-fields-inline {
  * padding via --player-seek-clip-rise) so its clip edge aligns with #player.
  * .player-now-row stays a sibling (outside the clip) with higher z-index so the
  * tag picker can paint over the seek area and past #player.
+ *
+ * Sticky under .app-chrome; JS soft-interpolates --player-cover-scale and
+ * --player-label-factor from scroll depth. Title stays beside the cover; seek
+ * stays beneath. .player-collapse-spacer absorbs height delta so scroll doesn’t jump.
  */
 #player {
-  position: relative;
+  --player-cover-scale: 1;
+  --player-label-factor: 1; /* 1 = full angled titles; 0 = collapsed */
+  position: sticky;
+  top: var(--status-bar-height);
+  z-index: 20;
   overflow: visible;
+  background: var(--card);
+  /* Keep card fill under translucent chrome when content scrolls beneath. */
+  box-shadow: 0 0.5rem 0.75rem -0.5rem color-mix(in srgb, var(--bg) 80%, transparent);
+}
+
+/* Zero-height marker inserted before #player; scrolls normally for stick depth. */
+.player-sticky-sentinel {
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Sits after #player; grows as the sticky player soft-shrinks (keeps flow height). */
+.player-collapse-spacer {
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .player-clip {
@@ -633,10 +687,13 @@ form.add-form-open .add-form-fields-inline {
   overflow: visible;
 }
 
-/* Cover | title+meta. JS sets --player-cover-size from row width + title fit;
- * .is-stacked when even the min cover leaves too little for a one-line title. */
+/* Cover | title+meta (title always beside). JS sets --player-cover-natural from
+ * row width + title fit; --player-cover-scale (on #player) soft-shrinks when sticky. */
 .player-now-row {
-  --player-cover-size: 6.25rem; /* fallback before / without cover; JS overrides */
+  --player-cover-natural: 6.25rem; /* fallback before / without cover; JS overrides */
+  --player-cover-size: calc(
+    var(--player-cover-natural) * var(--player-cover-scale, 1)
+  );
   position: relative;
   z-index: 3;
   display: flex;
@@ -647,6 +704,11 @@ form.add-form-open .add-form-fields-inline {
   min-width: 0;
 }
 
+/* Soft label collapse: opacity follows --player-label-factor. */
+.player-seek.has-track-labels .player-seek-label {
+  opacity: var(--player-label-factor, 1);
+}
+
 .player-now-row > .player-cover {
   flex: 0 0 var(--player-cover-size);
 }
@@ -654,20 +716,6 @@ form.add-form-open .add-form-fields-inline {
 .player-now-row > .player-below-text {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.player-now-row.is-stacked {
-  flex-wrap: wrap;
-}
-
-.player-now-row.is-stacked > .player-below-text {
-  flex: 1 1 100%;
-}
-
-.player-now-row.is-stacked #player-now {
-  white-space: normal;
-  overflow: visible;
-  text-overflow: unset;
 }
 
 .player-symbols {
@@ -737,7 +785,9 @@ form.add-form-open .add-form-fields-inline {
 }
 
 .player-seek.has-track-labels .player-seek-main {
-  padding-top: var(--seek-label-headroom, 5.5rem);
+  padding-top: calc(
+    var(--seek-label-headroom, 5.5rem) * var(--player-label-factor, 1)
+  );
   box-sizing: content-box;
   overflow: visible; /* .player-clip (raised) hard-clips at the player card top */
 }
@@ -758,7 +808,7 @@ form.add-form-open .add-form-fields-inline {
   margin: 0 0 0.35rem;
   color: var(--fg);
   font-weight: 700;
-  /* Beside cover: single line; .is-stacked clears this for full-width wrap. */
+  /* Always beside cover: single line with ellipsis when tight. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -819,8 +869,11 @@ form.add-form-open .add-form-fields-inline {
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(-1 * var(--seek-label-headroom, 5.5rem));
-  height: calc(var(--seek-label-headroom, 5.5rem) + var(--seek-bar-height));
+  top: calc(-1 * var(--seek-label-headroom, 5.5rem) * var(--player-label-factor, 1));
+  height: calc(
+    var(--seek-label-headroom, 5.5rem) * var(--player-label-factor, 1) +
+      var(--seek-bar-height)
+  );
   bottom: auto;
   overflow: visible;
   pointer-events: none;
@@ -830,7 +883,7 @@ form.add-form-open .add-form-fields-inline {
 .player-seek-mark {
   /* Full bar-band height so ticks stay centered with the range. */
   position: absolute;
-  top: var(--seek-label-headroom, 5.5rem);
+  top: calc(var(--seek-label-headroom, 5.5rem) * var(--player-label-factor, 1));
   bottom: 0;
   height: auto;
   width: 2px;
@@ -844,7 +897,7 @@ form.add-form-open .add-form-fields-inline {
 .player-seek-section-fill {
   position: absolute;
   left: 0;
-  top: var(--seek-label-headroom, 5.5rem);
+  top: calc(var(--seek-label-headroom, 5.5rem) * var(--player-label-factor, 1));
   bottom: 0;
   height: auto;
   border-radius: 0 0 2px 2px;
@@ -857,12 +910,16 @@ form.add-form-open .add-form-fields-inline {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
-/* Full headroom column: hover/click target (no fill; bar + label carry the hot state). */
+/* Full headroom column: hover/click target (no fill; bar + label carry the hot state).
+ * Soft-collapse floors at the bar height so hits never snap away. */
 .player-seek-section {
   position: absolute;
   left: 0;
   top: 0;
-  height: var(--seek-label-headroom, 5.5rem);
+  height: max(
+    var(--seek-bar-height),
+    calc(var(--seek-label-headroom, 5.5rem) * var(--player-label-factor, 1))
+  );
   width: auto;
   min-width: 0;
   min-height: 0;
@@ -906,7 +963,7 @@ form.add-form-open .add-form-fields-inline {
 
 .player-seek-section:hover .player-seek-duration,
 .player-seek-section.is-hot .player-seek-duration {
-  opacity: 1;
+  opacity: max(0, var(--player-label-factor, 1));
 }
 
 .player-seek-label {
@@ -1442,14 +1499,16 @@ button:disabled {
 }
 
 #intent-table-wrap {
+  /* overflow-x:auto would break sticky thead against the viewport. */
   margin: 0.75rem 0 0;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 #intent-table {
   --intent-btn-gap: 0.25rem;
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.9rem;
 }
 
@@ -1462,9 +1521,14 @@ button:disabled {
 }
 
 #intent-table thead th {
+  position: sticky;
+  top: var(--focus-chrome-top);
+  z-index: 10;
+  background: var(--card);
   font-weight: 600;
   color: var(--muted);
   border-bottom-color: color-mix(in srgb, var(--muted) 40%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
 #intent-table .intent-num-col,
@@ -2205,10 +2269,13 @@ button.seq-drop-action.confirm-pending {
 }
 
 #catalog-table-wrap,
-#playlog-table-wrap {
-  max-height: 24rem;
-  overflow: auto;
+#playlog-table-wrap,
+#cache-table-wrap {
+  /* Full height in document flow; page scroll only.
+   * Do not set overflow-x:auto here — that makes a scrollport and breaks
+   * position:sticky thead relative to the viewport / focus chrome. */
   margin: 0.75rem 0;
+  overflow: visible;
 }
 
 .catalog-toolbar {
@@ -2269,7 +2336,9 @@ button.seq-drop-action.confirm-pending {
 
 #catalog-table {
   width: 100%;
-  border-collapse: collapse;
+  /* separate: sticky thead works reliably across browsers */
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.9rem;
 }
 
@@ -2283,11 +2352,12 @@ button.seq-drop-action.confirm-pending {
 
 #catalog-table thead th {
   position: sticky;
-  top: 0;
+  top: var(--focus-chrome-top);
   background: var(--card);
   /* Above artist-stats and tag (+) / picker so row chrome scrolls under the header */
   z-index: 10;
   font-weight: 600;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
 #catalog-table .artist-row {
@@ -2487,11 +2557,12 @@ button.seq-drop-action.confirm-pending {
 
 #playlog-table thead th {
   position: sticky;
-  top: 0;
+  top: var(--focus-chrome-top);
   background: var(--card);
   /* Above tag (+) / picker (z-index ≤ 5) while scrolling */
   z-index: 10;
   font-weight: 600;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
 #playlog-table .playlog-row.mix-rejected,
@@ -2511,7 +2582,7 @@ button.seq-drop-action.confirm-pending {
    Keep sticky below open tag pickers (see :has(.tag-picker-wrap) below). */
 #playlog-table .playlog-row.playlog-current > td {
   position: sticky;
-  top: var(--playlog-thead-h, 0px);
+  top: calc(var(--focus-chrome-top) + var(--playlog-thead-h, 0px));
   bottom: 0;
   z-index: 3;
   background: var(--card);
@@ -2856,15 +2927,11 @@ span.star-rating-star {
   margin-top: 0.5rem;
 }
 
-#cache-table-wrap {
-  max-height: 24rem;
-  overflow: auto;
-  margin-top: 0.75rem;
-}
-
 #cache-table {
   width: 100%;
-  border-collapse: collapse;
+  /* separate: sticky thead works reliably across browsers */
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.9rem;
 }
 
@@ -2878,10 +2945,11 @@ span.star-rating-star {
 
 #cache-table thead th {
   position: sticky;
-  top: 0;
+  top: var(--focus-chrome-top);
   background: var(--card);
-  z-index: 1;
+  z-index: 10;
   font-weight: 600;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
 #cache-table .cache-intent-header {

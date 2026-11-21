@@ -1530,12 +1530,13 @@ function setFocusTab(tabId, { updateHash = true } = {}) {
     }
   }
   closeAppMenu();
-  if (id === "playlog") {
-    requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    syncFocusTabsHeightVar();
+    if (id === "playlog") {
       updatePlaylogStickyMetrics();
       syncPlaylogCurrentStuck();
-    });
-  }
+    }
+  });
 }
 
 function applyLocationHash() {
@@ -3273,11 +3274,24 @@ function syncPlayerSeekClipRise() {
 }
 
 const PLAYER_COVER_MIN_REM = 4.5;
-const PLAYER_COVER_MAX_REM = 11;
-/** Target share of now-row width when title stays beside the cover. */
+const PLAYER_COVER_MAX_REM = 12.5;
+/** Target share of now-row width for the cover (title always stays beside). */
 const PLAYER_COVER_SIDE_FRACTION = 0.35;
-/** Target share when stacked (title under cover). */
-const PLAYER_COVER_STACK_FRACTION = 0.45;
+/** Soft scroll ranges (px past stick) for cover shrink then label fade. */
+const PLAYER_COLLAPSE_COVER_RANGE_PX = 160;
+const PLAYER_COLLAPSE_LABEL_RANGE_PX = 200;
+/** @type {HTMLElement | null} */
+let playerStickySentinel = null;
+/** @type {HTMLElement | null} */
+let playerCollapseSpacer = null;
+let playerCollapseRaf = 0;
+/** Expanded player height captured while unstuck (spacer baseline). */
+let playerExpandedHeightPx = 0;
+/** Last soft collapse key to limit chrome work. */
+let playerCollapseKey = "";
+/** Last focus-tabs / toolbar heights written (avoid thrash). */
+let focusTabsHeightPx = -1;
+let focusToolbarHeightPx = -1;
 
 /**
  * Intrinsic one-line width of #player-now.
@@ -3291,14 +3305,19 @@ function measurePlayerTitleIntrinsicWidth(title) {
   return range.getBoundingClientRect().width;
 }
 
+function playerRootFontPx() {
+  return (
+    Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+  );
+}
+
 /**
- * Layout-aware cover size + stack: grow with the now-row, shrink to keep the
- * title beside the cover when possible, otherwise stack and allow a larger cover.
- * Side-by-side uses the same max as stacked so large clients grow again when
- * the title still fits.
- * Always measures in the side-by-side state to avoid oscillation.
+ * Natural cover size with title always beside (ellipsis if tight). Sets
+ * --player-cover-natural; CSS multiplies by #player --player-cover-scale.
+ * Frozen while sticky-collapsing so mid-scroll reflow doesn’t snap.
  */
 function syncPlayerNowStack() {
+  const player = document.getElementById("player");
   const row = document.querySelector("#player .player-now-row");
   const cover = document.getElementById("player-cover");
   const title = document.getElementById("player-now");
@@ -3306,11 +3325,18 @@ function syncPlayerNowStack() {
   row.classList.remove("is-stacked");
   const coverVisible = Boolean(cover && !cover.hidden);
   if (!coverVisible) {
+    row.style.removeProperty("--player-cover-natural");
     row.style.removeProperty("--player-cover-size");
     return;
   }
-  const rootFont =
-    Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  // Keep natural size stable while soft-collapsing under sticky.
+  if (
+    player?.classList.contains("is-stuck") &&
+    row.style.getPropertyValue("--player-cover-natural")
+  ) {
+    return;
+  }
+  const rootFont = playerRootFontPx();
   const pxToRem = (px) => px / rootFont;
   const remToPx = (rem) => rem * rootFont;
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
@@ -3326,29 +3352,190 @@ function syncPlayerNowStack() {
   );
   const maxSidePx = rowWidth - gap - titleNeeds;
   const minPx = remToPx(PLAYER_COVER_MIN_REM);
-
-  if (maxSidePx >= minPx - 0.5) {
-    const sizeRem = clamp(
-      Math.min(desiredRem, pxToRem(maxSidePx)),
-      PLAYER_COVER_MIN_REM,
-      PLAYER_COVER_MAX_REM,
-    );
-    row.style.setProperty("--player-cover-size", `${sizeRem}rem`);
-    return;
-  }
-
-  const stackedRem = clamp(
-    pxToRem(rowWidth * PLAYER_COVER_STACK_FRACTION),
+  // Always beside: shrink toward min if the title needs room, else ellipsis.
+  const sizeRem = clamp(
+    maxSidePx >= minPx - 0.5
+      ? Math.min(desiredRem, pxToRem(maxSidePx))
+      : PLAYER_COVER_MIN_REM,
     PLAYER_COVER_MIN_REM,
     PLAYER_COVER_MAX_REM,
   );
-  row.style.setProperty("--player-cover-size", `${stackedRem}rem`);
-  row.classList.add("is-stacked");
+  row.style.setProperty("--player-cover-natural", `${sizeRem}rem`);
 }
 
 function syncPlayerChrome() {
   syncPlayerNowStack();
   syncPlayerSeekClipRise();
+  syncPlayerStickyHeightVar();
+}
+
+/** Publish sticky player height for scroll-padding / scroll-margin. */
+function syncPlayerStickyHeightVar() {
+  const player = document.getElementById("player");
+  const root = document.documentElement;
+  if (!player) {
+    root.style.setProperty("--player-sticky-height", "0px");
+    return;
+  }
+  const stuck = player.classList.contains("is-stuck");
+  const h = stuck ? Math.round(player.getBoundingClientRect().height) : 0;
+  root.style.setProperty("--player-sticky-height", `${h}px`);
+}
+
+function ensurePlayerStickySentinel() {
+  const player = document.getElementById("player");
+  if (!player || !player.parentNode) return null;
+  if (playerStickySentinel?.isConnected) return playerStickySentinel;
+  const el = document.createElement("div");
+  el.className = "player-sticky-sentinel";
+  el.setAttribute("aria-hidden", "true");
+  player.parentNode.insertBefore(el, player);
+  playerStickySentinel = el;
+  return el;
+}
+
+/** Spacer after #player: absorbs soft-shrink height so document flow doesn’t jump. */
+function ensurePlayerCollapseSpacer() {
+  const player = document.getElementById("player");
+  if (!player || !player.parentNode) return null;
+  if (playerCollapseSpacer?.isConnected) return playerCollapseSpacer;
+  const el = document.createElement("div");
+  el.className = "player-collapse-spacer";
+  el.setAttribute("aria-hidden", "true");
+  player.parentNode.insertBefore(el, player.nextSibling);
+  playerCollapseSpacer = el;
+  return el;
+}
+
+function clamp01(t) {
+  return Math.min(1, Math.max(0, t));
+}
+
+function smoothstep01(t) {
+  const x = clamp01(t);
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * Soft sticky collapse from scroll depth past the pin:
+ * cover scale 1→0.5, then label factor 1→0. Seek stays under the cover; title
+ * stays beside it. Spacer under the player keeps flow height ≈ expanded height.
+ */
+function syncPlayerCollapse() {
+  const player = document.getElementById("player");
+  const chrome = document.querySelector(".app-chrome");
+  const sentinel = ensurePlayerStickySentinel();
+  const spacer = ensurePlayerCollapseSpacer();
+  if (!player || !sentinel || !spacer) return;
+
+  let pinTop;
+  if (chrome) {
+    pinTop = chrome.getBoundingClientRect().bottom;
+  } else {
+    const statusRem = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--status-bar-height",
+      ),
+    );
+    pinTop =
+      (Number.isFinite(statusRem) ? statusRem : 2.75) * playerRootFontPx();
+  }
+  const depth = pinTop - sentinel.getBoundingClientRect().top;
+  const stuck = depth >= -1;
+
+  let coverScale = 1;
+  let labelFactor = 1;
+  if (stuck && depth > 0) {
+    const coverT = smoothstep01(depth / PLAYER_COLLAPSE_COVER_RANGE_PX);
+    coverScale = 1 - 0.5 * coverT;
+    const labelT = smoothstep01(
+      (depth - PLAYER_COLLAPSE_COVER_RANGE_PX) / PLAYER_COLLAPSE_LABEL_RANGE_PX,
+    );
+    labelFactor = 1 - labelT;
+  }
+
+  player.style.setProperty("--player-cover-scale", coverScale.toFixed(4));
+  player.style.setProperty("--player-label-factor", labelFactor.toFixed(4));
+  player.classList.toggle("is-stuck", stuck);
+  player.classList.remove("is-beside", "is-labels-collapsed", "is-compact-cover", "is-compact-no-labels");
+
+  // Freeze expanded height while stuck; refresh only when free in document flow.
+  if (!stuck) {
+    spacer.style.height = "0px";
+    playerExpandedHeightPx = Math.round(player.getBoundingClientRect().height);
+  }
+
+  const playerH = Math.round(player.getBoundingClientRect().height);
+  const spacerPx =
+    stuck && playerExpandedHeightPx > 0
+      ? Math.max(0, playerExpandedHeightPx - playerH)
+      : 0;
+  spacer.style.height = `${spacerPx}px`;
+
+  const key = `${stuck ? 1 : 0}:${coverScale.toFixed(3)}:${labelFactor.toFixed(3)}`;
+  if (key === playerCollapseKey) {
+    syncPlayerStickyHeightVar();
+    return;
+  }
+  playerCollapseKey = key;
+  // Avoid clip-rise / stack reflow on every soft frame — those snap. Height is
+  // already tracked via scale/label CSS vars + spacer.
+  syncPlayerStickyHeightVar();
+  syncFocusTabsHeightVar();
+}
+
+function schedulePlayerCollapse() {
+  if (playerCollapseRaf) return;
+  playerCollapseRaf = requestAnimationFrame(() => {
+    playerCollapseRaf = 0;
+    syncPlayerCollapse();
+  });
+}
+
+/**
+ * Publish sticky focus-tabs + active pane toolbar heights for thead /
+ * scroll-padding under the player.
+ */
+function syncFocusTabsHeightVar() {
+  const root = document.documentElement;
+  const tabs = document.querySelector("#focus .focus-tabs");
+  const toolbar = document.querySelector(
+    "#focus .focus-pane:not([hidden]) .focus-toolbar",
+  );
+
+  const tabsH = tabs ? Math.round(tabs.getBoundingClientRect().height) : 0;
+  if (tabsH !== focusTabsHeightPx) {
+    focusTabsHeightPx = tabsH;
+    root.style.setProperty("--focus-tabs-height", `${tabsH}px`);
+  }
+
+  const toolbarH = toolbar
+    ? Math.round(toolbar.getBoundingClientRect().height)
+    : 0;
+  if (toolbarH !== focusToolbarHeightPx) {
+    focusToolbarHeightPx = toolbarH;
+    root.style.setProperty("--focus-toolbar-height", `${toolbarH}px`);
+  }
+}
+
+/** Viewport Y where sticky focus chrome ends (status + player + tabs + toolbar). */
+function focusChromeTopPx() {
+  const root = document.documentElement;
+  const styles = getComputedStyle(root);
+  const parse = (name, fallback) => {
+    const raw = styles.getPropertyValue(name).trim();
+    if (!raw) return fallback;
+    if (raw.endsWith("rem")) {
+      return (Number.parseFloat(raw) || 0) * playerRootFontPx();
+    }
+    return Number.parseFloat(raw) || fallback;
+  };
+  return (
+    parse("--status-bar-height", 2.75 * playerRootFontPx()) +
+    parse("--player-sticky-height", 0) +
+    parse("--focus-tabs-height", 0) +
+    parse("--focus-toolbar-height", 0)
+  );
 }
 
 function setSeekLabelHeadroom(seekRow, tracks, artist) {
@@ -4471,7 +4658,7 @@ async function playlogPause() {
   }
 }
 
-/** Scroll Playlog so offset −2 is at the top of the wrap (current near mid-view). */
+/** Scroll page so offset −2 sits under sticky focus chrome + thead (current near mid-view). */
 function scrollPlaylogDefaultView() {
   const wrap = document.getElementById("playlog-table-wrap");
   const body = document.getElementById("playlog-body");
@@ -4488,11 +4675,10 @@ function scrollPlaylogDefaultView() {
   }
   const head = wrap.querySelector("thead");
   const headH = head ? head.getBoundingClientRect().height : 0;
-  const delta =
-    target.getBoundingClientRect().top -
-    wrap.getBoundingClientRect().top -
-    headH;
-  wrap.scrollTop += delta;
+  const pin = focusChromeTopPx() + headH;
+  const delta = target.getBoundingClientRect().top - pin;
+  if (Math.abs(delta) < 1) return;
+  window.scrollBy(0, delta);
 }
 
 /** Sticky current sits under thead; measure once per layout. */
@@ -4506,18 +4692,17 @@ function updatePlaylogStickyMetrics() {
 
 /**
  * Which edge the current row is pinned to (or null when in normal flow).
- * Bottom stick lifts the row over the previous border, so CSS needs an edge class.
+ * Uses the viewport under sticky focus chrome (global page scroll).
  */
 function playlogCurrentStuckEdge() {
   const wrap = document.getElementById("playlog-table-wrap");
   const row = document.querySelector("#playlog-table .playlog-row.playlog-current");
   if (!wrap || !row) return null;
 
-  const wrapRect = wrap.getBoundingClientRect();
   const head = wrap.querySelector("thead");
   const headH = head ? head.getBoundingClientRect().height : 0;
-  const stickyTop = wrapRect.top + headH;
-  const stickyBottom = wrapRect.bottom;
+  const stickyTop = focusChromeTopPx() + headH;
+  const stickyBottom = window.innerHeight;
   const rowRect = row.getBoundingClientRect();
   const eps = 2;
 
@@ -4585,9 +4770,7 @@ function ensurePlaylogScrollChrome() {
   const wrap = document.getElementById("playlog-table-wrap");
   if (!wrap || wrap.dataset.playlogChromeWired === "1") return;
   wrap.dataset.playlogChromeWired = "1";
-  wrap.addEventListener("scroll", () => syncPlaylogCurrentStuck(), {
-    passive: true,
-  });
+  // Table uses page scroll; stuck-current tracking listens on window.
   wrap.addEventListener("click", onPlaylogWrapClick);
 }
 
@@ -4595,9 +4778,8 @@ async function refreshPlaylog({ force = false } = {}) {
   const body = document.getElementById("playlog-body");
   if (!body) return;
   if (!force && focusInside(body)) return;
-  const wrap = document.getElementById("playlog-table-wrap");
   const intentId = document.getElementById("player-intent")?.value || "";
-  const savedScroll = wrap ? wrap.scrollTop : 0;
+  const savedScroll = window.scrollY;
   const resetToDefault = intentId !== playlogScrollIntentId;
   const qs = intentId ? `?intent_id=${encodeURIComponent(intentId)}` : "";
   const res = await fetch(`/api/playlog${qs}`);
@@ -4762,11 +4944,12 @@ async function refreshPlaylog({ force = false } = {}) {
   playlogScrollIntentId = intentId;
   ensurePlaylogScrollChrome();
   requestAnimationFrame(() => {
+    syncFocusTabsHeightVar();
     updatePlaylogStickyMetrics();
     if (resetToDefault) {
       scrollPlaylogDefaultView();
-    } else if (wrap) {
-      wrap.scrollTop = savedScroll;
+    } else {
+      window.scrollTo(0, savedScroll);
       updatePlaylogStickyMetrics();
     }
     syncPlaylogCurrentStuck();
@@ -7017,17 +7200,44 @@ function connectViewNotices() {
   await refreshIntents();
   await refreshPlayerIntents();
   await refreshPlayer();
+  ensurePlayerStickySentinel();
+  ensurePlayerCollapseSpacer();
   syncPlayerChrome();
+  syncPlayerCollapse();
+  syncFocusTabsHeightVar();
   ensurePlaylogScrollChrome();
+  window.addEventListener(
+    "scroll",
+    () => {
+      schedulePlayerCollapse();
+      syncPlaylogCurrentStuck();
+    },
+    { passive: true },
+  );
   window.addEventListener("resize", () => {
     syncPlayerChrome();
+    schedulePlayerCollapse();
+    syncFocusTabsHeightVar();
     updatePlaylogStickyMetrics();
     syncPlaylogCurrentStuck();
   });
   if (typeof ResizeObserver === "function") {
-    const chromeObserver = new ResizeObserver(() => syncPlayerChrome());
+    // Soft collapse already drives scale/labels on scroll; RO only reflows
+    // natural cover + clip, then re-applies collapse (no hard stage snaps).
+    const chromeObserver = new ResizeObserver(() => {
+      syncPlayerNowStack();
+      schedulePlayerCollapse();
+      syncFocusTabsHeightVar();
+    });
+    const playerEl = document.getElementById("player");
+    if (playerEl) chromeObserver.observe(playerEl);
     const playerNowRow = document.querySelector("#player .player-now-row");
     if (playerNowRow) chromeObserver.observe(playerNowRow);
+    const focusTabs = document.querySelector("#focus .focus-tabs");
+    if (focusTabs) chromeObserver.observe(focusTabs);
+    for (const toolbar of document.querySelectorAll("#focus .focus-toolbar")) {
+      chromeObserver.observe(toolbar);
+    }
     const playlogWrap = document.getElementById("playlog-table-wrap");
     if (playlogWrap) {
       const playlogObserver = new ResizeObserver(() => {

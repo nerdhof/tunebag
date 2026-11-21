@@ -22,8 +22,8 @@ Implementation may lag; see **Gaps vs current code** at the end.
 Companion `index.html` chrome (not action surfaces themselves):
 
 1. **Sticky status bar** — `[icon menu]` · `device vX.Y.Z ⇄N` · cache (`N ♪ · duration · size`). Quiet degraded cue on version. Progressive hide on narrow viewports; hover `title` keeps full text.
-2. **Player** — document-order below status (not sticky); no section title.
-3. **Focus tabs** — Playlog (default) | Intents | Catalog | Cache; hash-backed (`#playlog` …); icon-only labels on small screens. Per-tab Filters left / Actions right when present. Playlog Filters: `[select] [▶ Play now]` (Queued Intent select + play; no label).
+2. **Sticky Player** — pins under the status bar; no section title. Layout stays cover | title+meta above seek+controls. As the page scrolls past the pin it soft-compacts (continuous): cover scale 1→½, then album track titles fade/collapse. A spacer absorbs height so scroll doesn’t jump.
+3. **Focus tabs** — sticky under the Player; Playlog (default) | Intents | Catalog | Cache; hash-backed (`#playlog` …); icon-only labels on small screens. Per-tab Filters / Actions toolbar sticks under the tabs. Playlog Filters: `[select] [▶ Play now]` (Queued Intent select + play; no label). Focus tables (Playlog / Catalog / Cache) use page scroll only — no internal table wrap scroll; theads stick under the full focus chrome. Playlog default scroll lands offset −2 under that chrome.
 4. **Activity** + **Peers** — always below the focus pane (not tabs).
 
 ## Verb glossary
