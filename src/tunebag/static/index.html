@@ -7,9 +7,9 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=95" />
+    <link rel="stylesheet" href="/static/app.css?v=103" />
   </head>
-  <body>
+  <body class="tunebag-app">
     <header id="app-chrome" class="app-chrome">
       <div class="app-chrome-inner">
         <div class="status-left">
@@ -28,8 +28,8 @@
               <a href="#intents" data-focus-tab="intents">Intents</a>
               <a href="#catalog" data-focus-tab="catalog">Catalog</a>
               <a href="#cache" data-focus-tab="cache">Cache</a>
-              <a href="#activity">Activity</a>
-              <a href="#peers">Peers</a>
+              <a href="#peers" data-focus-tab="peers">Peers</a>
+              <a href="#activity" data-focus-tab="activity">Activity</a>
               <a href="/about">About</a>
               <a
                 href="https://github.com/wabu/tunebag"
@@ -182,6 +182,32 @@
             <span class="focus-tab-symbol" aria-hidden="true">⬇</span>
             <span class="focus-tab-label">Cache</span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            id="tab-peers"
+            class="focus-tab"
+            aria-selected="false"
+            aria-controls="peers"
+            data-focus-tab="peers"
+            title="Peers"
+          >
+            <span class="focus-tab-symbol" aria-hidden="true">⇄</span>
+            <span class="focus-tab-label">Peers</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="tab-activity"
+            class="focus-tab"
+            aria-selected="false"
+            aria-controls="activity"
+            data-focus-tab="activity"
+            title="Activity"
+          >
+            <span class="focus-tab-symbol" aria-hidden="true">◎</span>
+            <span class="focus-tab-label">Activity</span>
+          </button>
         </div>
 
         <section
@@ -215,18 +241,20 @@
               </div>
             </div>
           </div>
-          <div id="playlog-table-wrap">
-            <table id="playlog-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th class="playlog-cover-col" aria-label="Cover"></th>
-                  <th>Release</th>
-                  <th>Length</th>
-                </tr>
-              </thead>
-              <tbody id="playlog-body"></tbody>
-            </table>
+          <div class="focus-pane-scroll">
+            <div id="playlog-table-wrap">
+              <table id="playlog-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th class="playlog-cover-col" aria-label="Cover"></th>
+                    <th>Release</th>
+                    <th>Length</th>
+                  </tr>
+                </thead>
+                <tbody id="playlog-body"></tbody>
+              </table>
+            </div>
           </div>
         </section>
 
@@ -255,20 +283,22 @@
               </form>
             </div>
           </div>
-          <div id="intent-table-wrap">
-            <table id="intent-table">
-              <thead>
-                <tr>
-                  <th class="intent-num-col" aria-label="#">#</th>
-                  <th class="intent-cover-col" aria-label="Cover"></th>
-                  <th>Name</th>
-                  <th class="intent-actions-col">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="intent-table-body"></tbody>
-            </table>
+          <div class="focus-pane-scroll">
+            <div id="intent-table-wrap">
+              <table id="intent-table">
+                <thead>
+                  <tr>
+                    <th class="intent-num-col" aria-label="#">#</th>
+                    <th class="intent-cover-col" aria-label="Cover"></th>
+                    <th>Name</th>
+                    <th class="intent-actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="intent-table-body"></tbody>
+              </table>
+            </div>
+            <p id="intent-status" class="muted" role="status"></p>
           </div>
-          <p id="intent-status" class="muted" role="status"></p>
         </section>
 
         <section
@@ -343,20 +373,22 @@
               </form>
             </div>
           </div>
-          <div id="catalog-table-wrap">
-            <table id="catalog-table">
-              <thead>
-                <tr>
-                  <th>Release</th>
-                  <th>Length</th>
-                  <th>Rating</th>
-                  <th>Tags</th>
-                </tr>
-              </thead>
-              <tbody id="catalog-body"></tbody>
-            </table>
+          <div class="focus-pane-scroll">
+            <div id="catalog-table-wrap">
+              <table id="catalog-table">
+                <thead>
+                  <tr>
+                    <th>Release</th>
+                    <th>Length</th>
+                    <th>Rating</th>
+                    <th>Tags</th>
+                  </tr>
+                </thead>
+                <tbody id="catalog-body"></tbody>
+              </table>
+            </div>
+            <p id="artists-status" class="muted" role="status"></p>
           </div>
-          <p id="artists-status" class="muted" role="status"></p>
         </section>
 
         <section
@@ -378,132 +410,155 @@
               </label>
             </div>
           </div>
-          <p id="fill-status" class="muted" role="status"></p>
-          <div id="cache-table-wrap">
-            <table id="cache-table">
-              <thead>
-                <tr>
-                  <th>Artist</th>
-                  <th>Release</th>
-                  <th>Length</th>
-                  <th>Size</th>
-                  <th>Status</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody id="cache-body"></tbody>
-            </table>
+          <div class="focus-pane-scroll">
+            <p id="fill-status" class="muted" role="status"></p>
+            <div id="cache-table-wrap">
+              <table id="cache-table">
+                <thead>
+                  <tr>
+                    <th>Artist</th>
+                    <th>Release</th>
+                    <th>Length</th>
+                    <th>Size</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="cache-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="peers"
+          class="focus-pane"
+          role="tabpanel"
+          aria-labelledby="tab-peers"
+          data-focus-pane="peers"
+          hidden
+        >
+          <div class="focus-toolbar">
+            <div class="focus-toolbar-actions">
+              <button type="button" id="sync-btn" aria-label="Sync catalog" data-tip="Sync catalog">⇄</button>
+              <p id="sync-status" class="muted" role="status"></p>
+            </div>
+          </div>
+          <div class="focus-pane-scroll">
+            <ul id="peer-list"></ul>
+            <form id="pair-form">
+              <div class="add-form-fields" hidden>
+                <h3 class="peers-add-heading">Add peer</h3>
+                <div class="form-row peers-add-row">
+                  <label class="inline-field grow">
+                    Peer
+                    <select id="pair-candidate" aria-label="Discovered peer">
+                      <option value="">Select discovered peer…</option>
+                    </select>
+                  </label>
+                  <button type="button" id="pair-start-btn" aria-label="Show PIN" data-tip="Show PIN">
+                    ⌕
+                  </button>
+                  <button type="button" id="pair-cancel-btn" aria-label="Cancel pairing" data-tip="Cancel" hidden>
+                    Cancel
+                  </button>
+                  <button type="button" id="pair-scan-btn" aria-label="Scan QR" data-tip="Scan QR">
+                    ⧉
+                  </button>
+                </div>
+                <div id="pair-host-panel" hidden>
+                  <p class="pair-pin-row">
+                    <label for="pair-pin">Pairing PIN</label>
+                    <input
+                      id="pair-pin"
+                      type="text"
+                      readonly
+                      value=""
+                      spellcheck="false"
+                      autocomplete="off"
+                      aria-label="Pairing PIN"
+                    />
+                    <button
+                      type="button"
+                      id="pair-pin-copy-btn"
+                      aria-label="Copy PIN"
+                      data-tip="Copy PIN"
+                    >
+                      ⎘
+                    </button>
+                  </p>
+                  <img id="qr" alt="Ephemeral pairing QR code" width="180" height="180" hidden />
+                  <details>
+                    <summary>Offer payload</summary>
+                    <pre id="pairing-payload"></pre>
+                  </details>
+                </div>
+                <div id="pair-confirm-panel" hidden>
+                  <p>
+                    Pair with <strong id="pair-peer-name">…</strong>?
+                    Confirm code: <strong id="pair-sas">…</strong>
+                  </p>
+                  <div class="form-row">
+                    <button type="button" id="pair-confirm-btn" aria-label="Confirm pair" data-tip="Confirm">
+                      Confirm
+                    </button>
+                  </div>
+                </div>
+                <div id="pair-scan" class="pair-scan" hidden>
+                  <video id="pair-scan-video" playsinline muted></video>
+                  <div class="form-row">
+                    <button type="button" id="pair-scan-stop" aria-label="Stop scan" data-tip="Stop scan">
+                      Stop
+                    </button>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label class="inline-field grow">
+                    Peer URL
+                    <input
+                      id="peer-url"
+                      name="peer_url"
+                      type="url"
+                      placeholder="http://127.0.0.1:8787"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label class="inline-field">
+                    PIN
+                    <input
+                      id="pair-code"
+                      name="pin"
+                      type="text"
+                      maxlength="10"
+                      placeholder="ABCD1234"
+                      autocomplete="off"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div class="form-row add-form-actions">
+                <button type="submit" id="pair-join-btn" aria-label="Join peer" data-tip="Join peer">✚</button>
+                <button type="button" id="pair-form-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
+              </div>
+            </form>
+            <p id="pair-status" class="muted" role="status"></p>
+          </div>
+        </section>
+
+        <section
+          id="activity"
+          class="focus-pane"
+          role="tabpanel"
+          aria-labelledby="tab-activity"
+          data-focus-pane="activity"
+          hidden
+        >
+          <div class="focus-pane-scroll">
+            <ul id="activity-list" aria-live="polite"></ul>
           </div>
         </section>
       </div>
-
-      <section id="activity">
-        <h2 class="footer-heading">Activity</h2>
-        <ul id="activity-list" aria-live="polite"></ul>
-      </section>
-      <section id="peers">
-        <h2 class="footer-heading">Peers</h2>
-        <ul id="peer-list"></ul>
-        <button type="button" id="sync-btn" aria-label="Sync catalog" data-tip="Sync catalog">⇄</button>
-        <p id="sync-status" class="muted" role="status"></p>
-        <form id="pair-form">
-          <div class="add-form-fields" hidden>
-            <h3 class="peers-add-heading">Add peer</h3>
-            <div class="form-row peers-add-row">
-              <label class="inline-field grow">
-                Peer
-                <select id="pair-candidate" aria-label="Discovered peer">
-                  <option value="">Select discovered peer…</option>
-                </select>
-              </label>
-              <button type="button" id="pair-start-btn" aria-label="Show PIN" data-tip="Show PIN">
-                ⌕
-              </button>
-              <button type="button" id="pair-cancel-btn" aria-label="Cancel pairing" data-tip="Cancel" hidden>
-                Cancel
-              </button>
-              <button type="button" id="pair-scan-btn" aria-label="Scan QR" data-tip="Scan QR">
-                ⧉
-              </button>
-            </div>
-            <div id="pair-host-panel" hidden>
-              <p class="pair-pin-row">
-                <label for="pair-pin">Pairing PIN</label>
-                <input
-                  id="pair-pin"
-                  type="text"
-                  readonly
-                  value=""
-                  spellcheck="false"
-                  autocomplete="off"
-                  aria-label="Pairing PIN"
-                />
-                <button
-                  type="button"
-                  id="pair-pin-copy-btn"
-                  aria-label="Copy PIN"
-                  data-tip="Copy PIN"
-                >
-                  ⎘
-                </button>
-              </p>
-              <img id="qr" alt="Ephemeral pairing QR code" width="180" height="180" hidden />
-              <details>
-                <summary>Offer payload</summary>
-                <pre id="pairing-payload"></pre>
-              </details>
-            </div>
-            <div id="pair-confirm-panel" hidden>
-              <p>
-                Pair with <strong id="pair-peer-name">…</strong>?
-                Confirm code: <strong id="pair-sas">…</strong>
-              </p>
-              <div class="form-row">
-                <button type="button" id="pair-confirm-btn" aria-label="Confirm pair" data-tip="Confirm">
-                  Confirm
-                </button>
-              </div>
-            </div>
-            <div id="pair-scan" class="pair-scan" hidden>
-              <video id="pair-scan-video" playsinline muted></video>
-              <div class="form-row">
-                <button type="button" id="pair-scan-stop" aria-label="Stop scan" data-tip="Stop scan">
-                  Stop
-                </button>
-              </div>
-            </div>
-            <div class="form-row">
-              <label class="inline-field grow">
-                Peer URL
-                <input
-                  id="peer-url"
-                  name="peer_url"
-                  type="url"
-                  placeholder="http://127.0.0.1:8787"
-                  autocomplete="off"
-                />
-              </label>
-              <label class="inline-field">
-                PIN
-                <input
-                  id="pair-code"
-                  name="pin"
-                  type="text"
-                  maxlength="10"
-                  placeholder="ABCD1234"
-                  autocomplete="off"
-                />
-              </label>
-            </div>
-          </div>
-          <div class="form-row add-form-actions">
-            <button type="submit" id="pair-join-btn" aria-label="Join peer" data-tip="Join peer">✚</button>
-            <button type="button" id="pair-form-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
-          </div>
-        </form>
-        <p id="pair-status" class="muted" role="status"></p>
-      </section>
     </main>
-    <script src="/static/app.js?v=83"></script>
+    <script src="/static/app.js?v=100"></script>
   </body>
 </html>

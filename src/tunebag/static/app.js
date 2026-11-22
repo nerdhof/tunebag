@@ -1504,16 +1504,84 @@ function initSectionInfo() {
   });
 }
 
-const FOCUS_TABS = ["playlog", "intents", "catalog", "cache"];
-const SCROLL_HASHES = new Set(["activity", "peers", "player"]);
+const FOCUS_TABS = ["playlog", "intents", "catalog", "cache", "peers", "activity"];
+const SCROLL_HASHES = new Set(["player"]);
+
+/** Active focus tab id (explicit; avoids DOM races during pane swaps). */
+let activeFocusTab = "playlog";
+/** Per-tab .focus-pane-scroll scrollTop (also drives player soft-collapse). */
+const focusTabScrollTop = Object.create(null);
 
 function closeAppMenu() {
   const menu = document.querySelector(".app-menu");
   if (menu) menu.open = false;
 }
 
+/** Pane list scroller for a focus tab. */
+function focusPaneScrollEl(tabId) {
+  const pane = document.querySelector(`[data-focus-pane="${tabId}"]`);
+  return pane?.querySelector(".focus-pane-scroll") || null;
+}
+
+/** Snapshot pane scrollTop for a focus tab. */
+function saveFocusTabScroll(tabId) {
+  if (!FOCUS_TABS.includes(tabId)) return;
+  const el = focusPaneScrollEl(tabId);
+  if (!el) return;
+  if (tabId === "playlog") {
+    // Skip until Playlog has landed once, else a pre-data leave stashes 0.
+    if (!Object.prototype.hasOwnProperty.call(focusTabScrollTop, "playlog")) {
+      return;
+    }
+  }
+  focusTabScrollTop[tabId] = el.scrollTop;
+}
+
+/** Remember Playlog pane scrollTop after −2 land or in-tab restore. */
+function rememberPlaylogScroll() {
+  const el = focusPaneScrollEl("playlog");
+  if (el) focusTabScrollTop.playlog = el.scrollTop;
+}
+
+/**
+ * Restore pane scrollTop for a focus tab. Saved positions do not rewrite
+ * player collapse (avoids resize on switch); first Playlog −2 land does.
+ */
+function restoreFocusTabScroll(tabId) {
+  const el = focusPaneScrollEl(tabId);
+  if (!el) return;
+  const hasSaved = Object.prototype.hasOwnProperty.call(
+    focusTabScrollTop,
+    tabId,
+  );
+  if (tabId === "playlog" && !hasSaved) {
+    scrollPlaylogDefaultView();
+    if (document.querySelector("#playlog-body .playlog-row")) {
+      rememberPlaylogScroll();
+    }
+    syncPlayerCollapseFromActivePane();
+    return;
+  }
+  suppressPlayerCollapseFromPane = true;
+  try {
+    if (tabId === "playlog") {
+      el.scrollTop = focusTabScrollTop.playlog;
+      updatePlaylogStickyMetrics();
+      syncPlaylogCurrentStuck();
+      return;
+    }
+    el.scrollTop = hasSaved ? focusTabScrollTop[tabId] : 0;
+  } finally {
+    suppressPlayerCollapseFromPane = false;
+  }
+}
+
 function setFocusTab(tabId, { updateHash = true } = {}) {
   const id = FOCUS_TABS.includes(tabId) ? tabId : "playlog";
+  const switching = activeFocusTab !== id;
+  if (switching) {
+    saveFocusTabScroll(activeFocusTab);
+  }
   for (const pane of document.querySelectorAll("[data-focus-pane]")) {
     const active = pane.dataset.focusPane === id;
     pane.hidden = !active;
@@ -1530,17 +1598,15 @@ function setFocusTab(tabId, { updateHash = true } = {}) {
     }
   }
   closeAppMenu();
-  if (id !== "playlog") {
-    // Other tabs use normal soft collapse from stick (no −2 freeze band).
-    playlogCollapseFreezeDepthPx = 0;
-  }
+  activeFocusTab = id;
   requestAnimationFrame(() => {
     syncFocusTabsHeightVar();
+    if (switching) {
+      restoreFocusTabScroll(id);
+    }
     if (id === "playlog") {
       updatePlaylogStickyMetrics();
       syncPlaylogCurrentStuck();
-    } else {
-      schedulePlayerCollapse();
     }
   });
 }
@@ -3331,11 +3397,25 @@ const PLAYER_COVER_SIDE_FRACTION = 0.35;
 /** Soft scroll ranges (px past stick) for cover shrink then label fade. */
 const PLAYER_COLLAPSE_COVER_RANGE_PX = 160;
 const PLAYER_COLLAPSE_LABEL_RANGE_PX = 200;
-/** @type {HTMLElement | null} */
-let playerStickySentinel = null;
+/** Min page scroll needed past stick for a full soft collapse. */
+const PLAYER_COLLAPSE_FULL_RANGE_PX =
+  PLAYER_COLLAPSE_COVER_RANGE_PX + PLAYER_COLLAPSE_LABEL_RANGE_PX;
 /** @type {HTMLElement | null} */
 let playerCollapseSpacer = null;
 let playerCollapseRaf = 0;
+/**
+ * Soft-collapse depth source (px). Updated when the active pane scrolls;
+ * kept across tab switches so restore/scrollbar changes don’t resize chrome.
+ */
+let playerCollapseScrollPx = 0;
+/**
+ * Playlog pane scrollTop where offset −2 sits under thead. Collapse is
+ * scrollTop − origin (0 at default −2 → player fully shown).
+ */
+let playlogCollapseOriginScrollTop = 0;
+let playlogCollapseOriginReady = false;
+/** Skip collapse sync while restoring a tab’s pane scrollTop. */
+let suppressPlayerCollapseFromPane = false;
 /** Expanded player height captured while unstuck (spacer baseline). */
 let playerExpandedHeightPx = 0;
 /** Last soft collapse key to limit chrome work. */
@@ -3343,11 +3423,6 @@ let playerCollapseKey = "";
 /** Last focus-tabs / toolbar heights written (avoid thrash). */
 let focusTabsHeightPx = -1;
 let focusToolbarHeightPx = -1;
-/**
- * Sticky scroll depth (px) at Playlog default (−2) view. Soft collapse only
- * applies to depth past this freeze (approach B). 0 = no freeze.
- */
-let playlogCollapseFreezeDepthPx = 0;
 
 /**
  * Intrinsic one-line width of #player-now.
@@ -3401,19 +3476,33 @@ function syncPlayerNowStack() {
   const gap = Number.parseFloat(styles.columnGap || styles.gap) || 0;
   const rowWidth = row.clientWidth;
   const titleNeeds = measurePlayerTitleIntrinsicWidth(title);
-  const desiredRem = clamp(
-    pxToRem(rowWidth * PLAYER_COVER_SIDE_FRACTION),
+  // Floor cover to title + rating/tags height so small clients don’t shrink
+  // the art below the chrome stack beside it.
+  const meta = row.querySelector(".player-meta");
+  const titleMarginBottom =
+    Number.parseFloat(getComputedStyle(title).marginBottom) || 0;
+  const chromeMinPx =
+    title.getBoundingClientRect().height +
+    titleMarginBottom +
+    (meta ? meta.getBoundingClientRect().height : 0);
+  const minRem = clamp(
+    Math.max(PLAYER_COVER_MIN_REM, pxToRem(chromeMinPx)),
     PLAYER_COVER_MIN_REM,
     PLAYER_COVER_MAX_REM,
   );
+  const desiredRem = clamp(
+    pxToRem(rowWidth * PLAYER_COVER_SIDE_FRACTION),
+    minRem,
+    PLAYER_COVER_MAX_REM,
+  );
   const maxSidePx = rowWidth - gap - titleNeeds;
-  const minPx = remToPx(PLAYER_COVER_MIN_REM);
+  const minPx = remToPx(minRem);
   // Always beside: shrink toward min if the title needs room, else ellipsis.
   const sizeRem = clamp(
     maxSidePx >= minPx - 0.5
       ? Math.min(desiredRem, pxToRem(maxSidePx))
-      : PLAYER_COVER_MIN_REM,
-    PLAYER_COVER_MIN_REM,
+      : minRem,
+    minRem,
     PLAYER_COVER_MAX_REM,
   );
   row.style.setProperty("--player-cover-natural", `${sizeRem}rem`);
@@ -3425,7 +3514,7 @@ function syncPlayerChrome() {
   syncPlayerStickyHeightVar();
 }
 
-/** Publish sticky player height for scroll-padding / scroll-margin. */
+/** Publish live player height (flex shell chrome / scroll-padding). */
 function syncPlayerStickyHeightVar() {
   const player = document.getElementById("player");
   const root = document.documentElement;
@@ -3433,24 +3522,36 @@ function syncPlayerStickyHeightVar() {
     root.style.setProperty("--player-sticky-height", "0px");
     return;
   }
-  const stuck = player.classList.contains("is-stuck");
-  const h = stuck ? Math.round(player.getBoundingClientRect().height) : 0;
+  const h = Math.round(player.getBoundingClientRect().height);
   root.style.setProperty("--player-sticky-height", `${h}px`);
 }
 
-function ensurePlayerStickySentinel() {
-  const player = document.getElementById("player");
-  if (!player || !player.parentNode) return null;
-  if (playerStickySentinel?.isConnected) return playerStickySentinel;
-  const el = document.createElement("div");
-  el.className = "player-sticky-sentinel";
-  el.setAttribute("aria-hidden", "true");
-  player.parentNode.insertBefore(el, player);
-  playerStickySentinel = el;
-  return el;
+/** Read collapse depth from the shared scroll-driven value (not per-tab restore). */
+function activeFocusPaneScrollTop() {
+  return playerCollapseScrollPx;
 }
 
-/** Spacer after #player: absorbs soft-shrink height so document flow doesn’t jump. */
+/**
+ * Map pane scrollTop → collapse depth. Playlog is relative to the −2 origin
+ * so the default view keeps the player fully expanded.
+ */
+function paneScrollCollapsePx(tabId, el) {
+  if (!el) return 0;
+  if (tabId === "playlog" && playlogCollapseOriginReady) {
+    return Math.max(0, el.scrollTop - playlogCollapseOriginScrollTop);
+  }
+  return Math.max(0, el.scrollTop);
+}
+
+/** Apply active pane scrollTop → collapse depth (no-op during tab restore). */
+function syncPlayerCollapseFromActivePane() {
+  if (suppressPlayerCollapseFromPane) return;
+  const el = focusPaneScrollEl(activeFocusTab);
+  playerCollapseScrollPx = paneScrollCollapsePx(activeFocusTab, el);
+  schedulePlayerCollapse();
+}
+
+/** Spacer after #player (kept at 0 height in the flex shell). */
 function ensurePlayerCollapseSpacer() {
   const player = document.getElementById("player");
   if (!player || !player.parentNode) return null;
@@ -3473,39 +3574,22 @@ function smoothstep01(t) {
 }
 
 /**
- * Soft sticky collapse from scroll depth past the pin:
- * cover scale 1→0.5, then label factor 1→0. Seek stays under the cover; title
- * stays beside it. Spacer under the player keeps flow height ≈ expanded height.
+ * Soft-collapse from the active focus pane scrollTop (sole scrollport):
+ * cover scale 1→0.5, then label factor 1→0 over PLAYER_COLLAPSE_FULL_RANGE_PX.
  */
 function syncPlayerCollapse() {
   const player = document.getElementById("player");
-  const chrome = document.querySelector(".app-chrome");
-  const sentinel = ensurePlayerStickySentinel();
-  const spacer = ensurePlayerCollapseSpacer();
-  if (!player || !sentinel || !spacer) return;
+  if (!player) return;
 
-  let pinTop;
-  if (chrome) {
-    pinTop = chrome.getBoundingClientRect().bottom;
-  } else {
-    const statusRem = Number.parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue(
-        "--status-bar-height",
-      ),
-    );
-    pinTop =
-      (Number.isFinite(statusRem) ? statusRem : 2.75) * playerRootFontPx();
-  }
-  const depth = pinTop - sentinel.getBoundingClientRect().top;
-  const stuck = depth >= -1;
-
-  // Approach B: stay expanded through the Playlog default (−2) band; soft
-  // collapse only from scroll depth past that freeze anchor.
-  const collapseDepth = Math.max(0, depth - playlogCollapseFreezeDepthPx);
+  const collapseDepth = Math.min(
+    PLAYER_COLLAPSE_FULL_RANGE_PX,
+    Math.max(0, activeFocusPaneScrollTop()),
+  );
+  const stuck = collapseDepth > 0;
 
   let coverScale = 1;
   let labelFactor = 1;
-  if (stuck && collapseDepth > 0) {
+  if (collapseDepth > 0) {
     const coverT = smoothstep01(collapseDepth / PLAYER_COLLAPSE_COVER_RANGE_PX);
     coverScale = 1 - 0.5 * coverT;
     const labelT = smoothstep01(
@@ -3518,20 +3602,19 @@ function syncPlayerCollapse() {
   player.style.setProperty("--player-cover-scale", coverScale.toFixed(4));
   player.style.setProperty("--player-label-factor", labelFactor.toFixed(4));
   player.classList.toggle("is-stuck", stuck);
-  player.classList.remove("is-beside", "is-labels-collapsed", "is-compact-cover", "is-compact-no-labels");
+  player.classList.remove(
+    "is-beside",
+    "is-labels-collapsed",
+    "is-compact-cover",
+    "is-compact-no-labels",
+  );
 
-  // Freeze expanded height while stuck; refresh only when free in document flow.
+  // Keep collapse spacer at 0 — flex shell absorbs player height changes.
+  const spacer = playerCollapseSpacer;
+  if (spacer?.isConnected) spacer.style.height = "0px";
   if (!stuck) {
-    spacer.style.height = "0px";
     playerExpandedHeightPx = Math.round(player.getBoundingClientRect().height);
   }
-
-  const playerH = Math.round(player.getBoundingClientRect().height);
-  const spacerPx =
-    stuck && playerExpandedHeightPx > 0
-      ? Math.max(0, playerExpandedHeightPx - playerH)
-      : 0;
-  spacer.style.height = `${spacerPx}px`;
 
   const key = `${stuck ? 1 : 0}:${coverScale.toFixed(3)}:${labelFactor.toFixed(3)}`;
   if (key === playerCollapseKey) {
@@ -3539,8 +3622,6 @@ function syncPlayerCollapse() {
     return;
   }
   playerCollapseKey = key;
-  // Avoid clip-rise / stack reflow on every soft frame — those snap. Height is
-  // already tracked via scale/label CSS vars + spacer.
   syncPlayerStickyHeightVar();
   syncFocusTabsHeightVar();
 }
@@ -3553,10 +3634,7 @@ function schedulePlayerCollapse() {
   });
 }
 
-/**
- * Publish sticky focus-tabs + active pane toolbar heights for thead /
- * scroll-padding under the player.
- */
+/** Publish focus-tabs (+ active toolbar) height for layout metrics. */
 function syncFocusTabsHeightVar() {
   const root = document.documentElement;
   const tabs = document.querySelector("#focus .focus-tabs");
@@ -3579,7 +3657,7 @@ function syncFocusTabsHeightVar() {
   }
 }
 
-/** Viewport Y where sticky focus chrome ends (status + player + tabs + toolbar). */
+/** Viewport Y where sticky shell chrome ends (status + player + tabs + toolbar). */
 function focusChromeTopPx() {
   const root = document.documentElement;
   const styles = getComputedStyle(root);
@@ -3599,15 +3677,12 @@ function focusChromeTopPx() {
   );
 }
 
-/** Current sticky collapse depth (px past pin), or 0 if not stuck. */
+/** Current soft-collapse depth from the active pane scrollTop. */
 function playerCollapseDepthPx() {
-  const sentinel = ensurePlayerStickySentinel();
-  const chrome = document.querySelector(".app-chrome");
-  if (!sentinel) return 0;
-  const pinTop = chrome
-    ? chrome.getBoundingClientRect().bottom
-    : 2.75 * playerRootFontPx();
-  return Math.max(0, pinTop - sentinel.getBoundingClientRect().top);
+  return Math.min(
+    PLAYER_COLLAPSE_FULL_RANGE_PX,
+    Math.max(0, activeFocusPaneScrollTop()),
+  );
 }
 
 function setSeekLabelHeadroom(seekRow, tracks, artist) {
@@ -4739,41 +4814,35 @@ async function playlogPause() {
 }
 
 /**
- * Scroll page so offset −2 sits under sticky focus chrome + thead, with the
- * player frozen expanded at that band (approach B). Soft collapse only after
- * scrolling further past this freeze depth.
+ * Scroll Playlog pane so offset −2 sits under sticky thead (in-pane).
+ * Pane scrollTop also soft-collapses the player.
  */
 function scrollPlaylogDefaultView() {
   const wrap = document.getElementById("playlog-table-wrap");
   const body = document.getElementById("playlog-body");
-  if (!wrap || !body) return;
+  const pane = focusPaneScrollEl("playlog");
+  if (!wrap || !body || !pane) return;
   const rows = [...body.querySelectorAll(".playlog-row")];
   if (!rows.length) return;
-  let target = rows.find((row) => row.dataset.offset === "-2");
-  if (!target) {
-    // Fewer than two past rows: start at −1, else current, else first row.
-    target =
-      rows.find((row) => row.dataset.offset === "-1") ||
-      rows.find((row) => row.dataset.offset === "0") ||
-      rows[0];
-  }
+  const target =
+    rows.find((row) => row.dataset.offset === "-2") ||
+    rows.find((row) => row.dataset.offset === "-1") ||
+    rows.find((row) => row.dataset.offset === "0") ||
+    rows[0];
 
-  // Hold player fully expanded while we land −2 under the tall chrome.
-  playlogCollapseFreezeDepthPx = Number.POSITIVE_INFINITY;
-  syncPlayerCollapse();
-  syncFocusTabsHeightVar();
+  updatePlaylogStickyMetrics();
 
   const head = wrap.querySelector("thead");
   const headH = head ? head.getBoundingClientRect().height : 0;
-  const pin = focusChromeTopPx() + headH;
+  const paneRect = pane.getBoundingClientRect();
+  const pin = paneRect.top + headH;
   const delta = target.getBoundingClientRect().top - pin;
   if (Math.abs(delta) >= 1) {
-    window.scrollBy(0, delta);
+    pane.scrollTop += delta;
   }
-
-  playlogCollapseFreezeDepthPx = playerCollapseDepthPx();
-  syncPlayerCollapse();
-  syncFocusTabsHeightVar();
+  // Default −2 is collapse origin (player fully shown there).
+  playlogCollapseOriginScrollTop = pane.scrollTop;
+  playlogCollapseOriginReady = true;
 }
 
 /** Sticky current sits under thead; measure once per layout. */
@@ -4787,17 +4856,19 @@ function updatePlaylogStickyMetrics() {
 
 /**
  * Which edge the current row is pinned to (or null when in normal flow).
- * Uses the viewport under sticky focus chrome (global page scroll).
+ * Uses the Playlog pane scroller viewport (not window).
  */
 function playlogCurrentStuckEdge() {
   const wrap = document.getElementById("playlog-table-wrap");
+  const pane = focusPaneScrollEl("playlog");
   const row = document.querySelector("#playlog-table .playlog-row.playlog-current");
-  if (!wrap || !row) return null;
+  if (!wrap || !pane || !row) return null;
 
   const head = wrap.querySelector("thead");
   const headH = head ? head.getBoundingClientRect().height : 0;
-  const stickyTop = focusChromeTopPx() + headH;
-  const stickyBottom = window.innerHeight;
+  const paneRect = pane.getBoundingClientRect();
+  const stickyTop = paneRect.top + headH;
+  const stickyBottom = paneRect.bottom;
   const rowRect = row.getBoundingClientRect();
   const eps = 2;
 
@@ -4855,6 +4926,8 @@ function onPlaylogWrapClick(event) {
   if (!cell || !table.contains(cell)) return;
   if (playlogInteractiveTarget(event.target)) return;
   scrollPlaylogDefaultView();
+  rememberPlaylogScroll();
+  syncPlayerCollapseFromActivePane();
   requestAnimationFrame(() => {
     updatePlaylogStickyMetrics();
     syncPlaylogCurrentStuck();
@@ -4868,12 +4941,31 @@ function ensurePlaylogScrollChrome() {
   wrap.addEventListener("click", onPlaylogWrapClick);
 }
 
+/** Pane scroll drives player collapse (+ Playlog stuck metrics). */
+function ensureFocusPaneScrollCollapse() {
+  for (const pane of document.querySelectorAll(".focus-pane-scroll")) {
+    if (pane.dataset.collapseScrollWired === "1") continue;
+    pane.dataset.collapseScrollWired = "1";
+    pane.addEventListener(
+      "scroll",
+      () => {
+        syncPlayerCollapseFromActivePane();
+        if (pane.closest('[data-focus-pane="playlog"]')) {
+          syncPlaylogCurrentStuck();
+        }
+      },
+      { passive: true },
+    );
+  }
+}
+
 async function refreshPlaylog({ force = false } = {}) {
   const body = document.getElementById("playlog-body");
   if (!body) return;
   if (!force && focusInside(body)) return;
   const intentId = document.getElementById("player-intent")?.value || "";
-  const savedScroll = window.scrollY;
+  const playlogPane = focusPaneScrollEl("playlog");
+  const savedScroll = playlogPane ? playlogPane.scrollTop : 0;
   const resetToDefault = intentId !== playlogScrollIntentId;
   const qs = intentId ? `?intent_id=${encodeURIComponent(intentId)}` : "";
   const res = await fetch(`/api/playlog${qs}`);
@@ -4889,6 +4981,7 @@ async function refreshPlaylog({ force = false } = {}) {
     tr.appendChild(td);
     body.appendChild(tr);
     playlogScrollIntentId = intentId;
+    if (resetToDefault) delete focusTabScrollTop.playlog;
     return;
   }
   const playing = Boolean(data.playing);
@@ -5040,12 +5133,19 @@ async function refreshPlaylog({ force = false } = {}) {
   requestAnimationFrame(() => {
     syncFocusTabsHeightVar();
     updatePlaylogStickyMetrics();
+    if (activeFocusTab !== "playlog") {
+      if (resetToDefault) delete focusTabScrollTop.playlog;
+      return;
+    }
+    const pane = focusPaneScrollEl("playlog");
     if (resetToDefault) {
       scrollPlaylogDefaultView();
-    } else {
-      window.scrollTo(0, savedScroll);
+    } else if (pane) {
+      pane.scrollTop = savedScroll;
       updatePlaylogStickyMetrics();
     }
+    rememberPlaylogScroll();
+    syncPlayerCollapseFromActivePane();
     syncPlaylogCurrentStuck();
   });
 }
@@ -6471,9 +6571,10 @@ async function refreshIntents({ force = false } = {}) {
     if (blockEnd) blockEnd.classList.add("intent-block-end");
   }
 
-  const scrollY = window.scrollY;
+  const intentPane = focusPaneScrollEl("intents");
+  const savedPaneScroll = intentPane ? intentPane.scrollTop : 0;
   body.replaceChildren(frag);
-  window.scrollTo(0, scrollY);
+  if (intentPane) intentPane.scrollTop = savedPaneScroll;
   pendingEditFocus?.focusName();
   await refreshPlayerIntents();
 }
@@ -6850,13 +6951,19 @@ artistsCollapsible = bindCollapsibleAdd(document.getElementById("artists-form"),
 document.getElementById("artists-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const status = document.getElementById("artists-status");
+  const submitBtn = document.getElementById("artists-submit");
+  const refreshBtn = document.getElementById("refresh-all-artists");
+  if (submitBtn?.disabled) return;
   const raw = document.getElementById("artist-urls").value;
   const urls = raw
     .split(/[\s,]+/)
     .map((line) => line.trim())
     .filter(Boolean);
+  if (!urls.length) return;
   const min_duration_seconds = minDurationSecondsFromForm();
   status.textContent = "Adding artists…";
+  if (submitBtn) submitBtn.disabled = true;
+  if (refreshBtn) refreshBtn.disabled = true;
   try {
     const res = await fetch("/api/artists", {
       method: "POST",
@@ -6876,12 +6983,20 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
   } catch (err) {
     status.textContent = "Add artists request failed";
     console.error(err);
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+    if (refreshBtn) refreshBtn.disabled = false;
   }
 });
 
 document.getElementById("refresh-all-artists").addEventListener("click", async () => {
   const status = document.getElementById("artists-status");
+  const submitBtn = document.getElementById("artists-submit");
+  const refreshBtn = document.getElementById("refresh-all-artists");
+  if (refreshBtn?.disabled) return;
   status.textContent = "Refreshing all artists…";
+  if (refreshBtn) refreshBtn.disabled = true;
+  if (submitBtn) submitBtn.disabled = true;
   try {
     const data = await postRefreshArtists(null);
     if (!data.ok) {
@@ -6894,6 +7009,9 @@ document.getElementById("refresh-all-artists").addEventListener("click", async (
   } catch (err) {
     status.textContent = "Refresh artists request failed";
     console.error(err);
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
+    if (submitBtn) submitBtn.disabled = false;
   }
 });
 
@@ -7295,20 +7413,12 @@ function connectViewNotices() {
   await refreshIntents();
   await refreshPlayerIntents();
   await refreshPlayer();
-  ensurePlayerStickySentinel();
   ensurePlayerCollapseSpacer();
   syncPlayerChrome();
   syncPlayerCollapse();
   syncFocusTabsHeightVar();
   ensurePlaylogScrollChrome();
-  window.addEventListener(
-    "scroll",
-    () => {
-      schedulePlayerCollapse();
-      syncPlaylogCurrentStuck();
-    },
-    { passive: true },
-  );
+  ensureFocusPaneScrollCollapse();
   window.addEventListener("resize", () => {
     syncPlayerChrome();
     schedulePlayerCollapse();
