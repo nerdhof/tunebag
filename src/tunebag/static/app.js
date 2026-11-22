@@ -1559,7 +1559,8 @@ function restoreFocusTabScroll(tabId) {
     if (document.querySelector("#playlog-body .playlog-row")) {
       rememberPlaylogScroll();
     }
-    syncPlayerCollapseFromActivePane();
+    expandPlayerCollapseFully();
+    paneCollapseLastScrollTop = el.scrollTop;
     return;
   }
   suppressPlayerCollapseFromPane = true;
@@ -1568,9 +1569,11 @@ function restoreFocusTabScroll(tabId) {
       el.scrollTop = focusTabScrollTop.playlog;
       updatePlaylogStickyMetrics();
       syncPlaylogCurrentStuck();
+      paneCollapseLastScrollTop = el.scrollTop;
       return;
     }
     el.scrollTop = hasSaved ? focusTabScrollTop[tabId] : 0;
+    paneCollapseLastScrollTop = el.scrollTop;
   } finally {
     suppressPlayerCollapseFromPane = false;
   }
@@ -3412,26 +3415,28 @@ const PLAYER_COVER_MIN_REM = 4.5;
 const PLAYER_COVER_MAX_REM = 12.5;
 /** Target share of now-row width for the cover (title always stays beside). */
 const PLAYER_COVER_SIDE_FRACTION = 0.35;
-/** Soft scroll ranges (px past stick) for cover shrink then label fade. */
-const PLAYER_COLLAPSE_COVER_RANGE_PX = 160;
-const PLAYER_COLLAPSE_LABEL_RANGE_PX = 200;
-/** Min page scroll needed past stick for a full soft collapse. */
+/** Soft scroll ranges (px) for cover shrink then label fade — short so fold finishes before rows move. */
+const PLAYER_COLLAPSE_COVER_RANGE_PX = 72;
+const PLAYER_COLLAPSE_LABEL_RANGE_PX = 96;
+/** Scroll delta consumed to fully soft-collapse the player (fold-first). */
 const PLAYER_COLLAPSE_FULL_RANGE_PX =
   PLAYER_COLLAPSE_COVER_RANGE_PX + PLAYER_COLLAPSE_LABEL_RANGE_PX;
 /** @type {HTMLElement | null} */
 let playerCollapseSpacer = null;
 let playerCollapseRaf = 0;
 /**
- * Soft-collapse depth source (px). Updated when the active pane scrolls;
- * kept across tab switches so restore/scrollbar changes don’t resize chrome.
+ * Soft-collapse depth (px). Fold-first: scroll/wheel delta collapses the player
+ * while the pane stays at its home top; only then does table content move.
+ * Kept across tab switches until the active pane is scrolled.
  */
 let playerCollapseScrollPx = 0;
 /**
- * Playlog pane scrollTop where offset −2 sits under thead. Collapse is
- * scrollTop − origin (0 at default −2 → player fully shown).
+ * Playlog pane scrollTop where offset −2 sits under thead (home top; player fully shown).
  */
 let playlogCollapseOriginScrollTop = 0;
 let playlogCollapseOriginReady = false;
+/** Last pane scrollTop used for fold-first delta accounting. */
+let paneCollapseLastScrollTop = 0;
 /** Skip collapse sync while restoring a tab’s pane scrollTop. */
 let suppressPlayerCollapseFromPane = false;
 /** Expanded player height captured while unstuck (spacer baseline). */
@@ -3544,29 +3549,114 @@ function syncPlayerStickyHeightVar() {
   root.style.setProperty("--player-sticky-height", `${h}px`);
 }
 
-/** Read collapse depth from the shared scroll-driven value (not per-tab restore). */
+/** Read collapse depth from the shared fold-first value (not per-tab restore). */
 function activeFocusPaneScrollTop() {
   return playerCollapseScrollPx;
 }
 
-/**
- * Map pane scrollTop → collapse depth. Playlog is relative to the −2 origin
- * so the default view keeps the player fully expanded.
- */
-function paneScrollCollapsePx(tabId, el) {
-  if (!el) return 0;
+/** Home scrollTop for a tab: Playlog −2 origin, else 0. */
+function paneScrollHomeTop(tabId) {
   if (tabId === "playlog" && playlogCollapseOriginReady) {
-    return Math.max(0, el.scrollTop - playlogCollapseOriginScrollTop);
+    return playlogCollapseOriginScrollTop;
   }
-  return Math.max(0, el.scrollTop);
+  return 0;
 }
 
-/** Apply active pane scrollTop → collapse depth (no-op during tab restore). */
+function setPlayerCollapseDepthPx(depthPx) {
+  playerCollapseScrollPx = Math.min(
+    PLAYER_COLLAPSE_FULL_RANGE_PX,
+    Math.max(0, depthPx),
+  );
+  schedulePlayerCollapse();
+}
+
+/** Fully expand the player (e.g. land on Playlog −2). */
+function expandPlayerCollapseFully() {
+  setPlayerCollapseDepthPx(0);
+}
+
+function wheelDeltaYPx(event) {
+  let dy = event.deltaY;
+  if (event.deltaMode === 1) dy *= 16;
+  else if (event.deltaMode === 2) dy *= window.innerHeight || 800;
+  return dy;
+}
+
+/**
+ * Wheel fold-first: collapse/expand the player before the table scrolls, so the
+ * first row stays put while more rows appear as the player shrinks.
+ */
+function onFocusPaneWheelFold(event) {
+  if (suppressPlayerCollapseFromPane) return;
+  const pane = event.currentTarget;
+  if (!(pane instanceof HTMLElement)) return;
+  if (pane !== focusPaneScrollEl(activeFocusTab)) return;
+
+  const dy = wheelDeltaYPx(event);
+  if (!dy) return;
+
+  const home = paneScrollHomeTop(activeFocusTab);
+  const atHome = pane.scrollTop <= home + 1;
+
+  if (dy > 0 && playerCollapseScrollPx < PLAYER_COLLAPSE_FULL_RANGE_PX) {
+    event.preventDefault();
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + dy);
+    paneCollapseLastScrollTop = pane.scrollTop;
+    return;
+  }
+
+  if (dy < 0 && atHome && playerCollapseScrollPx > 0) {
+    event.preventDefault();
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + dy);
+    paneCollapseLastScrollTop = pane.scrollTop;
+  }
+}
+
+/**
+ * Scroll/touch fold-first: convert downward scroll into collapse while pinning
+ * the pane at home until the player is fully folded.
+ */
 function syncPlayerCollapseFromActivePane() {
   if (suppressPlayerCollapseFromPane) return;
   const el = focusPaneScrollEl(activeFocusTab);
-  playerCollapseScrollPx = paneScrollCollapsePx(activeFocusTab, el);
-  schedulePlayerCollapse();
+  if (!el) return;
+
+  const home = paneScrollHomeTop(activeFocusTab);
+  const top = el.scrollTop;
+  const delta = top - paneCollapseLastScrollTop;
+
+  if (delta > 0 && playerCollapseScrollPx < PLAYER_COLLAPSE_FULL_RANGE_PX) {
+    const room = PLAYER_COLLAPSE_FULL_RANGE_PX - playerCollapseScrollPx;
+    const fold = Math.min(delta, room);
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + fold);
+    // Undo the part of the scroll that folded the player (keep first row fixed).
+    const nextTop = top - fold;
+    if (Math.abs(el.scrollTop - nextTop) >= 0.5) {
+      el.scrollTop = nextTop;
+    }
+    paneCollapseLastScrollTop = el.scrollTop;
+    return;
+  }
+
+  if (
+    delta < 0 &&
+    top <= home + 1 &&
+    playerCollapseScrollPx > 0 &&
+    paneCollapseLastScrollTop <= home + 1
+  ) {
+    // Rare: scroll engine reported upward delta while pinned at home.
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + delta);
+    el.scrollTop = home;
+    paneCollapseLastScrollTop = home;
+    return;
+  }
+
+  // Past home with content scrolling: keep player fully collapsed.
+  if (top > home + 1 && playerCollapseScrollPx < PLAYER_COLLAPSE_FULL_RANGE_PX) {
+    setPlayerCollapseDepthPx(PLAYER_COLLAPSE_FULL_RANGE_PX);
+  }
+
+  paneCollapseLastScrollTop = el.scrollTop;
 }
 
 /** Spacer after #player (kept at 0 height in the flex shell). */
@@ -4833,7 +4923,7 @@ async function playlogPause() {
 
 /**
  * Scroll Playlog pane so offset −2 sits under sticky thead (in-pane).
- * Pane scrollTop also soft-collapses the player.
+ * Sets the fold-first home top (player fully shown there).
  */
 function scrollPlaylogDefaultView() {
   const wrap = document.getElementById("playlog-table-wrap");
@@ -4945,7 +5035,9 @@ function onPlaylogWrapClick(event) {
   if (playlogInteractiveTarget(event.target)) return;
   scrollPlaylogDefaultView();
   rememberPlaylogScroll();
-  syncPlayerCollapseFromActivePane();
+  expandPlayerCollapseFully();
+  const pane = focusPaneScrollEl("playlog");
+  if (pane) paneCollapseLastScrollTop = pane.scrollTop;
   requestAnimationFrame(() => {
     updatePlaylogStickyMetrics();
     syncPlaylogCurrentStuck();
@@ -4959,11 +5051,12 @@ function ensurePlaylogScrollChrome() {
   wrap.addEventListener("click", onPlaylogWrapClick);
 }
 
-/** Pane scroll drives player collapse (+ Playlog stuck metrics). */
+/** Pane wheel/scroll drives fold-first player collapse (+ Playlog stuck metrics). */
 function ensureFocusPaneScrollCollapse() {
   for (const pane of document.querySelectorAll(".focus-pane-scroll")) {
     if (pane.dataset.collapseScrollWired === "1") continue;
     pane.dataset.collapseScrollWired = "1";
+    pane.addEventListener("wheel", onFocusPaneWheelFold, { passive: false });
     pane.addEventListener(
       "scroll",
       () => {
@@ -5177,12 +5270,18 @@ async function refreshPlaylog({ force = false } = {}) {
     const pane = focusPaneScrollEl("playlog");
     if (resetToDefault) {
       scrollPlaylogDefaultView();
+      expandPlayerCollapseFully();
     } else if (pane) {
-      pane.scrollTop = savedScroll;
-      updatePlaylogStickyMetrics();
+      suppressPlayerCollapseFromPane = true;
+      try {
+        pane.scrollTop = savedScroll;
+        updatePlaylogStickyMetrics();
+      } finally {
+        suppressPlayerCollapseFromPane = false;
+      }
     }
     rememberPlaylogScroll();
-    syncPlayerCollapseFromActivePane();
+    if (pane) paneCollapseLastScrollTop = pane.scrollTop;
     syncPlaylogCurrentStuck();
   });
 }
