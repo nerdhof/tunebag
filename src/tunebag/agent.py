@@ -116,6 +116,7 @@ _ORIGIN_DOWNLOADS_PER_PLATFORM = 2
 # Peer copies + origin slots across platforms; keep headroom for peer handoffs.
 _FILL_POOL_WORKERS = _ORIGIN_DOWNLOADS_PER_PLATFORM * len(Platform) + 8
 PLAYLOG_PAST_LIMIT = 20
+PLAYLOG_UPCOMING_LIMIT = 50
 _UNSET = object()
 # Default first-boot Explore intent: even 1★–5★ shares, half unrated (10|10|10|10|10|50).
 # Well-known id + seed so independently seeded devices merge to one Explore on pair.
@@ -702,11 +703,13 @@ class DeviceAgent:
         intent_id: UUID,
         *,
         past_limit: int = PLAYLOG_PAST_LIMIT,
+        upcoming_limit: int = PLAYLOG_UPCOMING_LIMIT,
     ) -> dict[str, Any]:
         """Playlog: Catalog-global Last-heard past + Intent assignment upcoming.
 
         Past (−N) is newest completed (Played) Releases across the Catalog.
-        Current (0) and upcoming (+N) are this Intent's assignment order.
+        Current (0) and upcoming (+N) are this Intent's assignment order,
+        capped at ``upcoming_limit`` (+N); ``upcoming_truncated`` when more remain.
         """
         if intent_id not in self.catalog.intents:
             raise KeyError(f"unknown intent {intent_id}")
@@ -744,6 +747,7 @@ class DeviceAgent:
 
         items: list[dict[str, Any]] = []
         included: set[UUID] = set()
+        upcoming_truncated = False
 
         # Current + upcoming first so global past does not duplicate queue rows.
         if (
@@ -772,6 +776,11 @@ class DeviceAgent:
                 mix = self.catalog.mixes.get(mid)
                 if mix is None:
                     continue
+                if upcoming_offset > upcoming_limit:
+                    upcoming_truncated = True
+                    # Keep truncated queue ids out of global past.
+                    included.add(mid)
+                    continue
                 items.append(
                     self._playlog_row(
                         mix,
@@ -790,10 +799,15 @@ class DeviceAgent:
                 mix = self.catalog.mixes.get(mid)
                 if mix is None:
                     continue
+                offset = i - anchor_index
+                if offset > upcoming_limit:
+                    upcoming_truncated = True
+                    included.add(mid)
+                    continue
                 items.append(
                     self._playlog_row(
                         mix,
-                        offset=i - anchor_index,
+                        offset=offset,
                         intent_id=intent_id,
                         local_ids=local_ids,
                         downloads=downloads,
@@ -805,6 +819,10 @@ class DeviceAgent:
             for i, mid in enumerate(ordered_ids):
                 mix = self.catalog.mixes.get(mid)
                 if mix is None:
+                    continue
+                if i > upcoming_limit:
+                    upcoming_truncated = True
+                    included.add(mid)
                     continue
                 items.append(
                     self._playlog_row(
@@ -865,6 +883,8 @@ class DeviceAgent:
             "anchor_mix_id": anchor,
             "playing": playing,
             "past_limit": past_limit,
+            "upcoming_limit": upcoming_limit,
+            "upcoming_truncated": upcoming_truncated,
             "items": items,
         }
 

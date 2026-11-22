@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 
-from tunebag.agent import PLAYLOG_PAST_LIMIT, DeviceAgent
+from tunebag.agent import PLAYLOG_PAST_LIMIT, PLAYLOG_UPCOMING_LIMIT, DeviceAgent
 from tunebag.domain import Platform, Stars
 from tunebag.player import NullPlayer
 from tunebag.source import FakeSource
@@ -285,6 +285,39 @@ def test_playlog_past_limit_caps_last_heard_window(tmp_path: Path) -> None:
     assert queue_ids[1] not in {row["id"] for row in past_rows}
 
 
+def test_playlog_upcoming_limit_caps_assignment_window(tmp_path: Path) -> None:
+    """Upcoming stops at ``upcoming_limit``; truncated flag when more remain."""
+    agent, source, _clk = _agent(tmp_path)
+    count = PLAYLOG_UPCOMING_LIMIT + 5
+    intent_id, _ids = _intent_with_mixes(
+        agent, source, count, duration_seconds=60
+    )
+    agent.fill_caches()
+    assignment = agent.assignment(intent_id)
+    assert assignment is not None
+    ordered = list(assignment.mix_ids)
+    assert len(ordered) >= count
+    agent.play(intent_id, ordered[0])
+
+    snap = agent.playlog(
+        intent_id, upcoming_limit=PLAYLOG_UPCOMING_LIMIT
+    )
+    assert snap["upcoming_limit"] == PLAYLOG_UPCOMING_LIMIT
+    assert snap["upcoming_truncated"] is True
+    upcoming = [row for row in snap["items"] if int(row["offset"]) > 0]
+    assert len(upcoming) == PLAYLOG_UPCOMING_LIMIT
+    by_offset = {int(row["offset"]): row["id"] for row in upcoming}
+    assert by_offset[1] == ordered[1]
+    assert by_offset[PLAYLOG_UPCOMING_LIMIT] == ordered[PLAYLOG_UPCOMING_LIMIT]
+    shown = {row["id"] for row in snap["items"]}
+    assert ordered[PLAYLOG_UPCOMING_LIMIT + 1] not in shown
+
+    # Limit covers the full remaining queue → not truncated.
+    fit = agent.playlog(intent_id, upcoming_limit=len(ordered) - 1)
+    assert fit["upcoming_truncated"] is False
+    assert max(int(row["offset"]) for row in fit["items"]) == len(ordered) - 1
+
+
 def test_playlog_row_cache_status_and_playable_fields(tmp_path: Path) -> None:
     """Rows expose cache_status, playable, and soft_rejected for UI."""
     clock = FakeClock()
@@ -333,6 +366,8 @@ def test_playlog_api_http_matches_agent_snapshot(tmp_path: Path) -> None:
     body = res.json()
     assert body["intent_id"] == str(intent_id)
     assert body["past_limit"] == PLAYLOG_PAST_LIMIT
+    assert body["upcoming_limit"] == PLAYLOG_UPCOMING_LIMIT
+    assert body["upcoming_truncated"] is False
     assert body["playing"] is True
     assert len(body["items"]) == 2
     fields = body["items"][0]
@@ -373,3 +408,5 @@ def test_playlog_ui_fetches_playlog_endpoint() -> None:
     playlog = js[js.index("async function refreshPlaylog") :]
     playlog = playlog[: playlog.index("\nasync function ", 1)]
     assert "fetch(`/api/playlog${qs}`)" in playlog or 'fetch("/api/playlog' in playlog
+    assert "upcoming_truncated" in playlog
+    assert "playlog-truncated" in playlog

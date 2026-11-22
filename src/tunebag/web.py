@@ -20,7 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from tunebag import __version__
-from tunebag.agent import PLAYLOG_PAST_LIMIT, DeviceAgent, DeviceHoursSpec
+from tunebag.agent import (
+    PLAYLOG_PAST_LIMIT,
+    PLAYLOG_UPCOMING_LIMIT,
+    DeviceAgent,
+    DeviceHoursSpec,
+)
 from tunebag.domain import Artist, Mix, Platform, ReleaseKind, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
@@ -611,11 +616,17 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "anchor_mix_id": None,
                     "playing": False,
                     "past_limit": PLAYLOG_PAST_LIMIT,
+                    "upcoming_limit": PLAYLOG_UPCOMING_LIMIT,
+                    "upcoming_truncated": False,
                     "items": [],
                 }
             resolved = intents[0].id
         try:
-            snapshot = agent.playlog(resolved, past_limit=PLAYLOG_PAST_LIMIT)
+            snapshot = agent.playlog(
+                resolved,
+                past_limit=PLAYLOG_PAST_LIMIT,
+                upcoming_limit=PLAYLOG_UPCOMING_LIMIT,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         items = []
@@ -639,6 +650,8 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             ),
             "playing": bool(snapshot["playing"]),
             "past_limit": int(snapshot["past_limit"]),
+            "upcoming_limit": int(snapshot["upcoming_limit"]),
+            "upcoming_truncated": bool(snapshot["upcoming_truncated"]),
             "items": items,
         }
 

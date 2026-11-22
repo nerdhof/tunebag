@@ -5128,6 +5128,25 @@ async function refreshPlaylog({ force = false } = {}) {
 
     body.appendChild(tr);
   }
+  if (data.upcoming_truncated) {
+    const tr = document.createElement("tr");
+    tr.className = "playlog-row playlog-truncated";
+    const offsetCell = document.createElement("td");
+    offsetCell.className = "playlog-offset muted";
+    offsetCell.textContent = "…";
+    const coverCell = document.createElement("td");
+    coverCell.className = "playlog-cover-cell";
+    const mainCell = document.createElement("td");
+    mainCell.className = "playlog-main-cell muted";
+    mainCell.textContent = "…";
+    const sideCell = document.createElement("td");
+    sideCell.className = "playlog-side-cell";
+    tr.appendChild(offsetCell);
+    tr.appendChild(coverCell);
+    tr.appendChild(mainCell);
+    tr.appendChild(sideCell);
+    body.appendChild(tr);
+  }
   playlogScrollIntentId = intentId;
   ensurePlaylogScrollChrome();
   requestAnimationFrame(() => {

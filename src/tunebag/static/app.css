@@ -2676,6 +2676,10 @@ button.seq-drop-action.confirm-pending {
   color: var(--muted);
 }
 
+#playlog-table .playlog-truncated {
+  color: var(--muted);
+}
+
 #playlog-table .playlog-current {
   font-weight: 600;
 }
