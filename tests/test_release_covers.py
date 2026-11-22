@@ -539,6 +539,10 @@ def test_player_ui_has_cover_slot() -> None:
     assert "player-current-track" in css
     assert "syncPlayerCurrentTrackChrome" in js
     assert "setSeekTrackCurrent" in js
+    # Collapsed hover: seek segment hot index previews in #player-current-track.
+    assert "is-preview" in js
+    assert "playerSeekHotIndex" in js
+    assert ".player-current-track.is-preview" in css
     assert 'class="playlog-queued-intent"' in html
     assert 'id="playlog-intent-play"' in html
     assert "playlog-queued-intent-label" not in html

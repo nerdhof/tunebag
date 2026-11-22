@@ -919,6 +919,11 @@ body.tunebag-app #player {
   pointer-events: none;
 }
 
+.player-current-track.is-preview {
+  /* Hovered seek segment (not the playing track). */
+  color: var(--fg);
+}
+
 .player-current-track[hidden] {
   display: none;
 }

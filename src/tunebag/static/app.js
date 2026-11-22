@@ -3211,24 +3211,29 @@ function trackStartSeconds(tracks, index) {
 function setSeekTrackHighlight(index) {
   playerSeekHotIndex = index;
   const marksEl = document.getElementById("player-seek-marks");
-  if (!marksEl) return;
-  for (const el of marksEl.querySelectorAll(
-    ".player-seek-section, .player-seek-section-fill, .player-seek-label",
-  )) {
-    const hot = Number(el.dataset.trackIndex) === index;
-    el.classList.toggle("is-hot", hot);
+  if (marksEl) {
+    for (const el of marksEl.querySelectorAll(
+      ".player-seek-section, .player-seek-section-fill, .player-seek-label",
+    )) {
+      const hot = Number(el.dataset.trackIndex) === index;
+      el.classList.toggle("is-hot", hot);
+    }
   }
+  // Collapsed chrome: swap compact title for the hovered segment.
+  syncPlayerCurrentTrackChrome();
 }
 
 function clearSeekTrackHighlight() {
   playerSeekHotIndex = -1;
   const marksEl = document.getElementById("player-seek-marks");
-  if (!marksEl) return;
-  for (const el of marksEl.querySelectorAll(
-    ".player-seek-section.is-hot, .player-seek-section-fill.is-hot, .player-seek-label.is-hot",
-  )) {
-    el.classList.remove("is-hot");
+  if (marksEl) {
+    for (const el of marksEl.querySelectorAll(
+      ".player-seek-section.is-hot, .player-seek-section-fill.is-hot, .player-seek-label.is-hot",
+    )) {
+      el.classList.remove("is-hot");
+    }
   }
+  syncPlayerCurrentTrackChrome();
 }
 
 /** Persist playing-track accent; does not clear ephemeral is-hot. */
@@ -3255,21 +3260,34 @@ function syncPlayerCurrentTrackFromPosition(seconds) {
   setSeekTrackCurrent(trackIndexAtTimelineSeconds(playerSeekTracks, seconds));
 }
 
-/** Compact title under stars/tags; CSS crossfades it in as angled labels fade. */
+/** Compact title under stars/tags; CSS crossfades it in as angled labels fade.
+ * While a seek segment is hot, preview that title in place of the playing track. */
 function syncPlayerCurrentTrackChrome() {
   const el = document.getElementById("player-current-track");
   if (!el) return;
-  if (playerSeekCurrentIndex < 0 || playerSeekTracks.length < 2) {
+  if (playerSeekTracks.length < 2) {
     el.hidden = true;
     el.textContent = "";
+    el.classList.remove("is-preview");
     return;
   }
-  const track = playerSeekTracks[playerSeekCurrentIndex];
+  const previewing = playerSeekHotIndex >= 0;
+  const index = previewing ? playerSeekHotIndex : playerSeekCurrentIndex;
+  if (index < 0 || index >= playerSeekTracks.length) {
+    el.hidden = true;
+    el.textContent = "";
+    el.classList.remove("is-preview");
+    return;
+  }
+  const track = playerSeekTracks[index];
   const title =
-    displayTrackTitle(track?.title, playerSeekArtist) ||
-    `Track ${playerSeekCurrentIndex + 1}`;
+    displayTrackTitle(track?.title, playerSeekArtist) || `Track ${index + 1}`;
   el.textContent = title;
   el.hidden = false;
+  el.classList.toggle(
+    "is-preview",
+    previewing && playerSeekHotIndex !== playerSeekCurrentIndex,
+  );
 }
 
 function seekMarksLayoutKey(tracks, duration, artist) {
