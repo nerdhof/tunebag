@@ -160,4 +160,4 @@ def test_companion_playhead_heartbeat_is_five_minutes() -> None:
     assert "setPlayerLocalClock" in js
     assert "player-mark" in html
     assert "/api/player/mark-played" in js
-    assert "/static/app.js?v=76" in html
+    assert "/static/app.js?v=84" in html

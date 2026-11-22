@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -519,3 +521,109 @@ def test_paired_phone_keeps_empty_seed_assignment_until_rebuild_when_sequence_al
     assert assignment is not None
     assert mix.id in assignment.mix_ids
     assert {m.id for m in phone.files()} == {mix.id}
+
+
+class _BarrierSource:
+    """FakeSource wrapper that can sync concurrent list_uploads callers.
+
+    Call ``arm(parties)`` before a raced wave so seed/setup fetches are not blocked.
+    """
+
+    def __init__(self, inner: FakeSource) -> None:
+        self._inner = inner
+        self._barrier: Barrier | None = None
+        self.fetch_calls = inner.fetch_calls
+
+    def arm(self, parties: int) -> None:
+        self._barrier = Barrier(parties, timeout=5.0)
+
+    def add_listing(self, artist_url: str, listing: ArtistListing) -> None:
+        self._inner.add_listing(artist_url, listing)
+
+    def list_uploads(self, artist_url: str) -> ArtistListing:
+        if self._barrier is not None:
+            self._barrier.wait()
+        return self._inner.list_uploads(artist_url)
+
+    def fetch_bytes(self, source_url: str, *, on_progress=None):
+        return self._inner.fetch_bytes(source_url, on_progress=on_progress)
+
+
+def test_concurrent_add_artists_one_row_per_platform_id() -> None:
+    """Overlapping Add calls must not create duplicate (platform, platform_id) rows."""
+    inner = FakeSource()
+    url = "https://soundcloud.com/dj-alpha"
+    inner.add_listing(
+        url,
+        ArtistListing(
+            platform=Platform.SOUNDCLOUD,
+            platform_id="alpha",
+            name="DJ Alpha",
+            url=url,
+            uploads=[
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="a1",
+                    title="Alpha Long Set",
+                    url="https://soundcloud.com/dj-alpha/long",
+                    duration_seconds=3600,
+                ),
+            ],
+        ),
+    )
+    source = _BarrierSource(inner)
+    source.arm(2)
+    laptop = DeviceAgent("laptop", source=source)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(laptop.add_artists, [url]) for _ in range(2)]
+        results = [f.result(timeout=5.0) for f in as_completed(futures)]
+
+    keys = {(m.platform, m.platform_id) for m in laptop.mixes()}
+    assert keys == {(Platform.SOUNDCLOUD, "a1")}
+    assert len(laptop.mixes()) == 1
+    assert len(laptop.artists()) == 1
+    assert sum(len(r) for r in results) == 1
+
+
+def test_concurrent_add_and_refresh_one_row_per_platform_id() -> None:
+    """Overlapping Add + Refresh must not duplicate an existing platform key."""
+    inner = FakeSource()
+    url = "https://soundcloud.com/dj-alpha"
+    inner.add_listing(
+        url,
+        ArtistListing(
+            platform=Platform.SOUNDCLOUD,
+            platform_id="alpha",
+            name="DJ Alpha",
+            url=url,
+            uploads=[
+                Upload(
+                    platform=Platform.SOUNDCLOUD,
+                    platform_id="a1",
+                    title="Alpha Long Set",
+                    url="https://soundcloud.com/dj-alpha/long",
+                    duration_seconds=3600,
+                ),
+            ],
+        ),
+    )
+    source = _BarrierSource(inner)
+    laptop = DeviceAgent("laptop", source=source)
+    laptop.add_artists([url])
+    assert len(laptop.mixes()) == 1
+    artist_id = laptop.artists()[0].id
+
+    source.arm(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(laptop.add_artists, [url]),
+            pool.submit(laptop.refresh_artists, [artist_id]),
+        ]
+        for f in as_completed(futures):
+            f.result(timeout=5.0)
+
+    assert len(laptop.mixes()) == 1
+    assert {(m.platform, m.platform_id) for m in laptop.mixes()} == {
+        (Platform.SOUNDCLOUD, "a1")
+    }

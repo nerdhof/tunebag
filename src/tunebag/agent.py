@@ -283,6 +283,9 @@ class DeviceAgent:
         self._fill_in_progress = False
         self._fill_pending = False
         self._fill_pending_override: UUID | None = None
+        # Serialize artist ingest so overlapping Add/Refresh cannot create
+        # duplicate Releases for the same (platform, platform_id).
+        self._artist_ingest_lock = threading.Lock()
         # Background catalog sync: same single-flight/coalesce shape as fill.
         self._sync_lock = threading.Lock()
         self._sync_in_progress = False
@@ -2045,10 +2048,11 @@ class DeviceAgent:
 
         Re-adding a URL already in the catalog reuses that Artist and only
         appends uploads not already present (by platform + platform id).
+        Source listing may run concurrently; Catalog writes are serialized under
+        ``_artist_ingest_lock`` with a live platform-key recheck before append.
         """
         self.note(f"add artists start · {len(urls)} URL(s)")
         added: list[Mix] = []
-        known = self._known_platform_keys()
         for url in urls:
             self.note(f"fetch artist list start: {url}")
             try:
@@ -2064,51 +2068,58 @@ class DeviceAgent:
             # Catalog apply stays in the batch; cover HTTP stays outside so SSE
             # is not held across image downloads.
             cover_jobs: list[tuple[UUID, str, str]] = []
-            with self._view_notice_batch():
-                artist = self._artist_by_url(listing.url) or self._artist_by_url(url)
-                if artist is None:
-                    artist = Artist(
-                        platform=listing.platform,
-                        platform_id=listing.platform_id,
-                        name=listing.name,
-                        url=listing.url,
+            with self._artist_ingest_lock:
+                with self._view_notice_batch():
+                    artist = self._artist_by_url(listing.url) or self._artist_by_url(
+                        url
                     )
-                    self._append_and_apply(
-                        EventType.ARTIST_ADDED,
-                        {
-                            "id": str(artist.id),
-                            "platform": artist.platform.value,
-                            "platform_id": artist.platform_id,
-                            "name": artist.name,
-                            "url": artist.url,
-                        },
-                    )
-                kept = 0
-                by_platform = self._mixes_by_platform_key()
-                for upload in listing.uploads:
-                    mix = release_from_upload(artist.id, upload, min_duration_seconds)
-                    if mix is None:
-                        continue
-                    key = (mix.platform, mix.platform_id)
-                    if key in known:
-                        existing = by_platform.get(key)
-                        if (
-                            existing is not None
-                            and upload.cover_url
-                            and not self.has_local_cover(existing.id)
-                        ):
+                    if artist is None:
+                        artist = Artist(
+                            platform=listing.platform,
+                            platform_id=listing.platform_id,
+                            name=listing.name,
+                            url=listing.url,
+                        )
+                        self._append_and_apply(
+                            EventType.ARTIST_ADDED,
+                            {
+                                "id": str(artist.id),
+                                "platform": artist.platform.value,
+                                "platform_id": artist.platform_id,
+                                "name": artist.name,
+                                "url": artist.url,
+                            },
+                        )
+                    kept = 0
+                    by_platform = self._mixes_by_platform_key()
+                    for upload in listing.uploads:
+                        mix = release_from_upload(
+                            artist.id, upload, min_duration_seconds
+                        )
+                        if mix is None:
+                            continue
+                        key = (mix.platform, mix.platform_id)
+                        if key in by_platform:
+                            existing = by_platform[key]
+                            if (
+                                upload.cover_url
+                                and not self.has_local_cover(existing.id)
+                            ):
+                                cover_jobs.append(
+                                    (existing.id, upload.cover_url, upload.url)
+                                )
+                            continue
+                        self._append_and_apply(
+                            EventType.MIX_ADDED, encode_mix_added(mix)
+                        )
+                        stored = self.catalog.mixes[mix.id]
+                        added.append(stored)
+                        by_platform[key] = stored
+                        if upload.cover_url:
                             cover_jobs.append(
-                                (existing.id, upload.cover_url, upload.url)
+                                (stored.id, upload.cover_url, upload.url)
                             )
-                        continue
-                    self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
-                    known.add(key)
-                    stored = self.catalog.mixes[mix.id]
-                    added.append(stored)
-                    by_platform[key] = stored
-                    if upload.cover_url:
-                        cover_jobs.append((stored.id, upload.cover_url, upload.url))
-                    kept += 1
+                        kept += 1
             for mix_id, cover_url, page_url in cover_jobs:
                 self.ensure_cover(mix_id, cover_url, page_url=page_url)
             self.note(
@@ -2134,6 +2145,8 @@ class DeviceAgent:
 
         Also backfills local cover art for known Releases that still lack a
         cached image when the listing exposes a cover URL.
+        Source listing may run concurrently; Catalog writes are serialized under
+        ``_artist_ingest_lock`` with a live platform-key recheck before append.
         """
         if artist_ids:
             artists: list[Artist] = []
@@ -2146,8 +2159,6 @@ class DeviceAgent:
             artists = list(self.catalog.artists.values())
 
         self.note(f"refresh artists start · {len(artists)} artist(s)")
-        known = self._known_platform_keys()
-        by_platform = self._mixes_by_platform_key()
         added: list[Mix] = []
         for artist in artists:
             self.note(f"fetch artist list start: {artist.url}")
@@ -2162,32 +2173,38 @@ class DeviceAgent:
                 )
                 raise
             cover_jobs: list[tuple[UUID, str, str]] = []
-            with self._view_notice_batch():
-                kept = 0
-                for upload in listing.uploads:
-                    mix = release_from_upload(artist.id, upload, min_duration_seconds)
-                    if mix is None:
-                        continue
-                    key = (mix.platform, mix.platform_id)
-                    if key in known:
-                        existing = by_platform.get(key)
-                        if (
-                            existing is not None
-                            and upload.cover_url
-                            and not self.has_local_cover(existing.id)
-                        ):
+            with self._artist_ingest_lock:
+                with self._view_notice_batch():
+                    kept = 0
+                    by_platform = self._mixes_by_platform_key()
+                    for upload in listing.uploads:
+                        mix = release_from_upload(
+                            artist.id, upload, min_duration_seconds
+                        )
+                        if mix is None:
+                            continue
+                        key = (mix.platform, mix.platform_id)
+                        if key in by_platform:
+                            existing = by_platform[key]
+                            if (
+                                upload.cover_url
+                                and not self.has_local_cover(existing.id)
+                            ):
+                                cover_jobs.append(
+                                    (existing.id, upload.cover_url, upload.url)
+                                )
+                            continue
+                        self._append_and_apply(
+                            EventType.MIX_ADDED, encode_mix_added(mix)
+                        )
+                        stored = self.catalog.mixes[mix.id]
+                        added.append(stored)
+                        by_platform[key] = stored
+                        if upload.cover_url:
                             cover_jobs.append(
-                                (existing.id, upload.cover_url, upload.url)
+                                (stored.id, upload.cover_url, upload.url)
                             )
-                        continue
-                    self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
-                    known.add(key)
-                    stored = self.catalog.mixes[mix.id]
-                    added.append(stored)
-                    by_platform[key] = stored
-                    if upload.cover_url:
-                        cover_jobs.append((stored.id, upload.cover_url, upload.url))
-                    kept += 1
+                        kept += 1
             for mix_id, cover_url, page_url in cover_jobs:
                 self.ensure_cover(mix_id, cover_url, page_url=page_url)
             self.note(
@@ -3345,35 +3362,39 @@ class DeviceAgent:
         size_bytes: int | None = None,
         cover_url: str | None = None,
     ) -> Mix:
-        artist = Artist(
-            platform=platform,
-            platform_id=f"artist:{platform_id}",
-            name=artist_name,
-            url=url,
-        )
-        mix = Mix(
-            artist_id=artist.id,
-            platform=platform,
-            platform_id=platform_id,
-            title=title,
-            url=url,
-            duration_seconds=duration_seconds,
-            size_bytes=size_bytes,
-            cover_url=cover_url,
-        )
-        with self._view_notice_batch():
-            self._append_and_apply(
-                EventType.ARTIST_ADDED,
-                {
-                    "id": str(artist.id),
-                    "platform": platform.value,
-                    "platform_id": artist.platform_id,
-                    "name": artist.name,
-                    "url": artist.url,
-                },
+        with self._artist_ingest_lock:
+            existing = self._mixes_by_platform_key().get((platform, platform_id))
+            if existing is not None:
+                return existing
+            artist = Artist(
+                platform=platform,
+                platform_id=f"artist:{platform_id}",
+                name=artist_name,
+                url=url,
             )
-            self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
-        return self.catalog.mixes[mix.id]
+            mix = Mix(
+                artist_id=artist.id,
+                platform=platform,
+                platform_id=platform_id,
+                title=title,
+                url=url,
+                duration_seconds=duration_seconds,
+                size_bytes=size_bytes,
+                cover_url=cover_url,
+            )
+            with self._view_notice_batch():
+                self._append_and_apply(
+                    EventType.ARTIST_ADDED,
+                    {
+                        "id": str(artist.id),
+                        "platform": platform.value,
+                        "platform_id": artist.platform_id,
+                        "name": artist.name,
+                        "url": artist.url,
+                    },
+                )
+                self._append_and_apply(EventType.MIX_ADDED, encode_mix_added(mix))
+            return self.catalog.mixes[mix.id]
 
     def export_events(self) -> list[Event]:
         return self._journal.export()

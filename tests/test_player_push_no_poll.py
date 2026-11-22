@@ -113,7 +113,7 @@ def test_companion_drops_player_poll_and_activity_files_coupling() -> None:
     assert "setPlayerLocalClock" in js
     assert "fillInProgressFromEntries" not in js
     assert "requestFilesRefresh" not in js
-    assert "/static/app.js?v=76" in html
+    assert "/static/app.js?v=84" in html
 
     # refreshActivity must not pull Cache.
     start = js.index("async function refreshActivity")

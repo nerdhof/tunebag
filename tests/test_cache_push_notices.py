@@ -112,7 +112,7 @@ def test_companion_cache_refresh_coalesces_latest_wins() -> None:
     assert "async function refreshFiles" in js
     assert "function patchPlaylogCacheFromFiles" in js
     assert "patchPlaylogCacheFromFiles(data)" in js
-    assert "/static/app.js?v=75" in html
+    assert "/static/app.js?v=84" in html
 
     # Activity must not drive Cache; Cache notices do.
     start = js.index("async function refreshActivity")
