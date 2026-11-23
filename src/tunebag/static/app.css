@@ -434,7 +434,8 @@ body.tunebag-app .focus-region {
 }
 
 @media (max-width: 40rem) {
-  .focus-tab-label {
+  /* Symbol-only focus tabs; app menu keeps full labels. */
+  .focus-tab .focus-tab-label {
     display: none;
   }
 
