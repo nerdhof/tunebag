@@ -265,6 +265,12 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     assert 'id="catalog-source-filters"' in html
     assert 'id="catalog-star-filters"' in html
     assert 'id="catalog-tag-filters"' in html
+    # Catalog filter order: tags → sources → stars → rejected
+    tag_i = html.index('id="catalog-tag-filters"')
+    source_i = html.index('id="catalog-source-filters"')
+    star_i = html.index('id="catalog-star-filters"')
+    rejected_i = html.index('id="catalog-show-rejected"')
+    assert tag_i < source_i < star_i < rejected_i
     assert "showRejectedCatalog" in js
     assert "syncRejectedToggle" in js
     assert "catalogFilterPlatforms" in js
@@ -295,6 +301,30 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     assert '"0.0"' in js
     assert "is-empty" in js
     assert "avgSuffix" in js
+
+
+def test_intent_list_ui_contract_has_tag_artist_platform_filters() -> None:
+    """Intents toolbar filters the list by tags, artists, and platforms."""
+    root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
+    html = (root / "index.html").read_text()
+    js = (root / "app.js").read_text()
+    assert 'id="intent-tag-filters"' in html
+    assert 'id="intent-artist-filters"' in html
+    assert 'id="intent-source-filters"' in html
+    tag_i = html.index('id="intent-tag-filters"')
+    artist_i = html.index('id="intent-artist-filters"')
+    source_i = html.index('id="intent-source-filters"')
+    assert tag_i < artist_i < source_i
+    assert "intentListFilterTags" in js
+    assert "intentListFilterArtistIds" in js
+    assert "intentListFilterPlatforms" in js
+    assert "intentMatchesListFilters" in js
+    assert "mountIntentListFilters" in js
+    assert "resetIntentListFilters" in js
+    assert "No intents match filters" in js
+    # Must not shadow helper intentFilterPlatforms()
+    assert "function intentFilterPlatforms(" in js
+    assert js.count("let intentFilterPlatforms") == 0
 
 
 def test_unreject_api_clears_committed_reject(tmp_path: Path) -> None:
