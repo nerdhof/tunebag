@@ -1701,7 +1701,9 @@ class DeviceAgent:
         with self._view_notice_batch(), self._defer_auto_sync():
             if self.is_playing():
                 self._playback.freeze()
-            self.report_playhead(float(mix.duration_seconds))
+            # Reset like Stop so re-listen / stay-on-current starts at 0:00
+            # (natural end still leaves playhead at duration).
+            self.report_playhead(0.0)
             self._append_and_apply(
                 EventType.LAST_HEARD, {"mix_id": str(current)}
             )
@@ -1717,6 +1719,13 @@ class DeviceAgent:
                 resolved, current, wrap=True
             )
             if next_id is None:
+                # Stay on current at 0:00; stop audio so position matches.
+                if self._playback.playing:
+                    self._playback.pause_audio()
+                self._cancel_playback_threshold_watch()
+                self._mark_view_sections(
+                    UIViewSection.PLAYER, UIViewSection.PLAYLOG
+                )
                 self.note(
                     f"mark_played_and_continue took "
                     f"{(time.monotonic() - t0) * 1000:.0f}ms",

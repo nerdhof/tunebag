@@ -140,13 +140,17 @@ def test_mark_played_counts_as_played_without_waiting(tmp_path: Path) -> None:
     )
     laptop.fill_caches()
     laptop.play(intent.id, mix_id)
+    laptop.report_playhead(900.0)
 
-    laptop.mark_played()
+    # Companion Mark played (no other local Release to advance to).
+    laptop.mark_played_and_continue()
 
     mix = next(m for m in laptop.mixes() if m.id == mix_id)
     assert mix.played is True
-    assert laptop.is_playing() is True
     assert laptop.current_mix() == mix_id
+    head = laptop.playhead(mix_id)
+    assert head is not None
+    assert head.position_seconds == 0.0
 
 
 def test_mark_played_and_continue_advances_without_skipped(tmp_path: Path) -> None:
@@ -187,6 +191,9 @@ def test_mark_played_and_continue_advances_without_skipped(tmp_path: Path) -> No
     assert finished.last_heard_at is not None
     assert finished.skipped is False
     assert len(laptop.pending_skips()) == 0
+    finished_head = laptop.playhead(head)
+    assert finished_head is not None
+    assert finished_head.position_seconds == 0.0
     assert playing.id == nxt_id
     assert laptop.current_mix() == nxt_id
     assert laptop.is_playing() is True
