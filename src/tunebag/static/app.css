@@ -867,6 +867,8 @@ form.add-form-open .add-form-fields-inline {
  */
 #player {
   --player-cover-scale: 1;
+  /* Narrow fold: annotate fades with cover shrink; labels fade after. */
+  --player-annotate-factor: 1;
   --player-label-factor: 1; /* 1 = full angled titles; 0 = collapsed */
   position: relative;
   z-index: 20;
@@ -1131,21 +1133,36 @@ body.tunebag-app #player {
   gap: 0.35rem 0.5rem;
 }
 
-/* Narrow only: soft-fold collapses annotate (larger UI keeps Rate/Reject/Tag). */
+/* Narrow only: soft-fold collapses annotate with cover shrink (labels fade next). */
 @media (max-width: 40rem) {
   .form-row.player-meta {
-    max-height: calc(12rem * var(--player-label-factor, 1));
-    opacity: var(--player-label-factor, 1);
+    max-height: calc(12rem * var(--player-annotate-factor, 1));
+    opacity: var(--player-annotate-factor, 1);
     overflow: hidden;
   }
 
   #player.is-annotate-collapsed .form-row.player-meta {
+    /* Hard-zero once folded — don’t leave a sliver of rate/reject/tags height. */
+    max-height: 0;
+    margin: 0;
+    padding: 0;
+    opacity: 0;
     pointer-events: none;
+  }
+
+  /* Annotate gone + smaller cover: pack track under release name (no bottom gap). */
+  #player.is-annotate-collapsed #player-now {
+    margin-bottom: 0.1rem;
+  }
+
+  #player.is-annotate-collapsed .player-current-track {
+    margin-top: 0;
   }
 }
 
 /* Compact playing-track title: sits at cover bottom (above seek); crossfades in
- * as angled seek labels fade out. */
+ * as angled seek labels fade out. On narrow annotate-collapse, CSS above packs
+ * it under the release name instead of bottom-aligning into empty meta space. */
 .player-current-track {
   --player-current-track-reveal: calc(1 - var(--player-label-factor, 1));
   margin-top: auto;

@@ -3548,7 +3548,7 @@ const PLAYER_COVER_MIN_REM = 4.5;
 const PLAYER_COVER_MAX_REM = 12.5;
 /** Target share of now-row width for the cover (title always stays beside). */
 const PLAYER_COVER_SIDE_FRACTION = 0.35;
-/** Soft scroll ranges (px) for cover shrink then label fade — short so fold finishes before rows move. */
+/** Soft scroll ranges (px): cover+annotate, then seek-label fade — fold before rows move. */
 const PLAYER_COLLAPSE_COVER_RANGE_PX = 72;
 const PLAYER_COLLAPSE_LABEL_RANGE_PX = 96;
 /** Scroll delta consumed to fully soft-collapse the player (fold-first). */
@@ -3844,7 +3844,7 @@ function smoothstep01(t) {
 
 /**
  * Soft-collapse from the active focus pane scrollTop (sole scrollport):
- * cover scale 1→0.5, then label factor 1→0 over PLAYER_COLLAPSE_FULL_RANGE_PX.
+ * cover scale 1→0.5 (+ narrow annotate 1→0), then label factor 1→0.
  */
 function syncPlayerCollapse() {
   const player = document.getElementById("player");
@@ -3857,10 +3857,13 @@ function syncPlayerCollapse() {
   const stuck = collapseDepth > 0;
 
   let coverScale = 1;
+  let annotateFactor = 1;
   let labelFactor = 1;
   if (collapseDepth > 0) {
     const coverT = smoothstep01(collapseDepth / PLAYER_COLLAPSE_COVER_RANGE_PX);
     coverScale = 1 - 0.5 * coverT;
+    // Narrow annotate lands with cover shrink; seek titles fade in the next phase.
+    annotateFactor = 1 - coverT;
     const labelT = smoothstep01(
       (collapseDepth - PLAYER_COLLAPSE_COVER_RANGE_PX) /
         PLAYER_COLLAPSE_LABEL_RANGE_PX,
@@ -3869,11 +3872,12 @@ function syncPlayerCollapse() {
   }
 
   player.style.setProperty("--player-cover-scale", coverScale.toFixed(4));
+  player.style.setProperty("--player-annotate-factor", annotateFactor.toFixed(4));
   player.style.setProperty("--player-label-factor", labelFactor.toFixed(4));
   player.classList.toggle("is-stuck", stuck);
   // Annotate fold only on narrow layouts (larger UI / cover keeps Rate/Reject/Tag).
   const narrowAnnotateFold = window.matchMedia("(max-width: 40rem)").matches;
-  const annotateCollapsed = narrowAnnotateFold && labelFactor < 0.05;
+  const annotateCollapsed = narrowAnnotateFold && annotateFactor < 0.05;
   player.classList.toggle("is-annotate-collapsed", annotateCollapsed);
   player.classList.remove(
     "is-beside",
@@ -3900,7 +3904,7 @@ function syncPlayerCollapse() {
     playerExpandedHeightPx = Math.round(player.getBoundingClientRect().height);
   }
 
-  const key = `${stuck ? 1 : 0}:${coverScale.toFixed(3)}:${labelFactor.toFixed(3)}`;
+  const key = `${stuck ? 1 : 0}:${coverScale.toFixed(3)}:${annotateFactor.toFixed(3)}:${labelFactor.toFixed(3)}`;
   if (key === playerCollapseKey) {
     syncPlayerStickyHeightVar();
     syncFocusScrollHomeBtn();
