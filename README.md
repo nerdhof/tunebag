@@ -6,11 +6,16 @@ Tunebag is an offline-first music player for people who listen across platforms 
 
 No central server. Paired devices exchange a signed event log over LAN (or a pasted locator). Audio stays local, fetched from peers when possible and from the origin otherwise.
 
-<p align="center">
-  <img src="docs/screenshots/playlog.jpg" alt="Tunebag Playlog — now playing and queue" width="420" />
-  &nbsp;
-  <img src="docs/screenshots/intents.jpg" alt="Tunebag Intents — listening plans and sequences" width="420" />
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/playlog.jpg" alt="Tunebag Playlog — now playing and queue" />
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/intents.jpg" alt="Tunebag Intents — listening plans and sequences" />
+    </td>
+  </tr>
+</table>
 
 ## Why
 
