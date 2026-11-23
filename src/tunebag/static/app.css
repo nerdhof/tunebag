@@ -208,11 +208,20 @@ body.tunebag-app main {
 }
 
 .app-menu-panel a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   color: var(--fg);
   text-decoration: none;
   padding: 0.4rem 0.55rem;
   border-radius: 6px;
   font-size: 0.9rem;
+}
+
+.app-menu-panel .focus-tab-symbol {
+  color: inherit;
+  width: 1em;
+  text-align: center;
 }
 
 .app-menu-panel a:hover,
