@@ -362,30 +362,52 @@ def test_queue_and_matching_intents_http(tmp_path: Path) -> None:
     assert unknown_mix.status_code == 404
 
 
-def test_queue_ui_contract_split_control() -> None:
+def test_queue_ui_contract_cover_overlay_and_swipe() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     js = (root / "app.js").read_text()
     css = (root / "app.css").read_text()
     html = (root / "index.html").read_text()
-    assert 'aria-label="Queue"' in html
-    assert "catalog-queue-col" in html
+    assert "catalog-queue-col" not in html
+    assert "catalog-cover-col" in html
     assert "mountCatalogQueueControl" in js
+    assert "bindCatalogQueueSwipe" in js
+    assert "openCatalogQueueIntentPicker" in js
     assert "queueOnSequence" in js
     assert "fetchMatchingIntents" in js
-    assert 'BTN.queue' in js or 'queue: "↪"' in js
+    assert 'queue: "↪"' in js
+    assert "catalog-cover-stack" in js
+    assert "catalog-queue-overlay" in js
     assert "Queue at front" in js
     assert "Queue at back" in js
-    assert "catalog-queue-split" in css
-    assert "catalog-queue-front" in css
-    assert "catalog-queue-glyph" in js
+    assert "function mountCatalogQueueControl(" in js
+    assert "function armCatalogQueueSwipe(" in js
+    assert "function catalogQueueSwipeConfirmHost(" in js
+    assert "const touchClient = isHoverNone();" in js
+    assert "coverStack.appendChild(overlay);" in js
+    assert "if (touchClient) {\n    bindCatalogQueueSwipe(row," in js
+    assert "event.pointerType === \"mouse\" && event.button !== 0" in js
+    assert 'className = "catalog-tags-cell"' in js
+    assert "#catalog-table .catalog-cover-stack" in css
+    assert "#catalog-table .catalog-queue-overlay" in css
     assert "catalog-queue-front .catalog-queue-glyph" in css
     assert "transform: scaleY(-1)" in css
-    assert "flex-direction: column" in css
-    assert "calc(var(--control-height) * 4 / 3)" in css
-    assert "calc(var(--control-height) * 2 / 3)" in css
-    assert "border: 1px solid var(--accent)" in css
-    assert "button.catalog-queue-half.symbol-btn" not in css
-    assert 'className = "catalog-queue-half catalog-queue-front"' in js
-    assert "symbol-btn" not in js.split("mountCatalogQueueControl")[1].split(
-        "frontBtn.addEventListener"
-    )[0]
+    assert "catalog-queue-swipe-confirm" in css
+    assert ".catalog-queue-swipe-confirm-front" in css
+    assert ".catalog-queue-swipe-confirm-back" in css
+    assert "right: 0.35rem" in css
+    assert (
+        "#catalog-table .mix-row.catalog-queue-preview-front > td"
+    ) in css
+    assert "#catalog-table .mix-row {\n  touch-action: pan-y;\n}" in css
+    assert (
+        "#catalog-table .mix-row.catalog-queue-swiping {\n"
+        "  user-select: none;\n"
+        "  touch-action: none;"
+    ) in css
+    assert "catalog-queue-col" not in css
+    assert "#catalog-table .catalog-cover-stack:hover .catalog-queue-overlay" in css
+    overlay_css = css.split("#catalog-table .catalog-queue-overlay {")[1][:400]
+    assert "pointer-events: none" in overlay_css
+    assert "pointer-events: auto" in css.split(
+        "#catalog-table .catalog-cover-stack:hover .catalog-queue-overlay"
+    )[1][:200]

@@ -4,4 +4,4 @@ Listeners browsing the Catalog need to put a matching Release at the **front** o
 
 **Considered:** sticky “pinned next” until played (separate Catalog state). Rejected as unnecessary product weight; a plain place + fillup matches Drop’s Event footprint and keeps merge simple.
 
-**Consequences:** companion Catalog split control (↪ flipped = front, ↪ = back) opens a matching-Intent picker; agent validates filter match / non-rejected / not live current, places via `place_in_sequence`, then `provision_fillup` and async `request_fill`. Does not Switch to intent or start playback. Refuse Queue of the live current Release for that Intent (use Skip / transport instead).
+**Consequences:** companion Catalog cover Queue — hover upper/lower halves (↪ flipped = front, ↪ = back), touch left/right swipe → confirm chip, then matching-Intent picker; agent validates filter match / non-rejected / not live current, places via `place_in_sequence`, then `provision_fillup` and async `request_fill`. Does not Switch to intent or start playback. Refuse Queue of the live current Release for that Intent (use Skip / transport instead).

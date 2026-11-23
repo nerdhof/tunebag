@@ -2046,7 +2046,7 @@ button:disabled {
 
 #intent-table .intent-cover-action {
   position: absolute;
-  /* Full front-cover hit target; glyph chip sits lower-right. */
+  /* Full front-cover hit target; Catalog-style dim + centered glyph. */
   top: 0;
   left: 0;
   /* Above cover stack (0–2); below sticky thead (10) so scroll doesn’t cover “#” / Name. */
@@ -2057,44 +2057,86 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   margin: 0;
-  /* Push glyph into the half-size lower-right chip. */
-  padding: 1.375rem 0 0 1.375rem;
+  padding: 0;
   border: none;
   border-radius: 0.2rem;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   line-height: 1;
   color: #fff;
-  background: transparent;
+  background: color-mix(in srgb, #000 55%, transparent);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-#intent-table .intent-cover-action::before {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 1.375rem;
-  height: 1.375rem;
-  border-radius: 0.15rem;
-  background: color-mix(in srgb, #000 55%, transparent);
   pointer-events: none;
+  transition: opacity 0.12s ease, background 0.12s ease;
 }
 
 #intent-table .intent-cover-stack:hover .intent-cover-action,
 #intent-table .intent-cover-action:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 
-@media (hover: none) {
-  #intent-table .intent-cover-action {
-    opacity: 0.92;
-  }
+#intent-table .intent-cover-action:hover,
+#intent-table .intent-cover-action:focus-visible {
+  background: color-mix(in srgb, #000 72%, transparent);
+}
+
+
+/* Touch: right-swipe Switch to intent / Pause (green), like Playlog play. */
+#intent-table .intent-name-row,
+#intent-table .intent-meta-row {
+  touch-action: pan-y;
+}
+
+#intent-table .intent-name-row.intent-play-swiping,
+#intent-table .intent-meta-row.intent-play-swiping {
+  user-select: none;
+  touch-action: none;
+  transition: none;
+}
+
+#intent-table .intent-name-row.intent-play-swipe-preview > td,
+#intent-table .intent-name-row.intent-play-swipe-armed > td,
+#intent-table .intent-meta-row.intent-play-swipe-preview > td,
+#intent-table .intent-meta-row.intent-play-swipe-armed > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-tagged) calc(var(--intent-play-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+/* Confirm is position:fixed centered on the name+meta block (JS sets left/top). */
+#intent-table .intent-cover-cell.intent-play-swipe-confirm-host {
+  z-index: 5;
+}
+
+#intent-table button.intent-play-swipe-confirm.symbol-btn {
+  --intent-play-swipe-btn: 2.5rem;
+  z-index: 40;
+  margin: 0;
+  /* left/top set in JS: right edge, vertical mid of name+meta */
+  transform: translate(-100%, -50%);
+  width: var(--intent-play-swipe-btn);
+  height: var(--intent-play-swipe-btn);
+  min-width: var(--intent-play-swipe-btn);
+  min-height: var(--intent-play-swipe-btn);
+  font-size: 1.15rem;
+  box-shadow: 0 0 0 2px var(--card);
+  opacity: calc(0.35 + 0.65 * var(--intent-play-swipe-progress, 1));
+  pointer-events: none;
+  color: color-mix(in srgb, var(--stat-tagged) 70%, var(--fg));
+  background: color-mix(in srgb, var(--stat-tagged) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--stat-tagged) 55%, transparent);
+}
+
+#intent-table tr.intent-play-swipe-armed .intent-play-swipe-confirm {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 #intent-table .intent-seq-toggle {
@@ -2759,98 +2801,19 @@ button.seq-drop-action.confirm-pending {
   box-shadow: 0 1px 0 color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
-#catalog-table .catalog-queue-col,
-#catalog-table .catalog-queue-cell {
-  width: calc(var(--control-height) * 4 / 3 + 0.5rem);
-  padding-left: 0.25rem;
-  padding-right: 0.15rem;
-  position: relative;
-  vertical-align: middle;
-}
-
-/* One symbol-btn chrome, 4/3 × 4/3 (two 2/3-tall halves stacked). */
-#catalog-table .catalog-queue-split {
-  display: inline-flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  width: calc(var(--control-height) * 4 / 3);
-  min-width: calc(var(--control-height) * 4 / 3);
-  height: calc(var(--control-height) * 4 / 3);
-  min-height: calc(var(--control-height) * 4 / 3);
-  padding: 0;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  overflow: hidden;
-  background: transparent;
-  vertical-align: middle;
-}
-
-#catalog-table .catalog-queue-split.catalog-queue-pending {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-#catalog-table button.catalog-queue-half {
-  display: inline-flex;
-  flex: 0 0 calc(var(--control-height) * 2 / 3);
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  height: calc(var(--control-height) * 2 / 3);
-  min-height: calc(var(--control-height) * 2 / 3);
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 0.8em;
-  line-height: 1;
-  cursor: pointer;
-}
-
-/* Divider between stacked halves. */
-#catalog-table button.catalog-queue-half.catalog-queue-back {
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-#catalog-table .catalog-queue-glyph {
-  display: inline-block;
-  line-height: 1;
-}
-
-/* Prepend: ↪ flipped vertically. */
-#catalog-table .catalog-queue-front .catalog-queue-glyph {
-  transform: scaleY(-1);
-}
-
-#catalog-table button.catalog-queue-half:hover {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-#catalog-table button.catalog-queue-half:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  z-index: 1;
-}
-
-#catalog-table .catalog-queue-picker {
-  position: absolute;
-  left: 0;
-  top: calc(100% - 0.15rem);
-  z-index: 20;
-  min-width: 10rem;
-  max-width: 16rem;
-}
-
 #catalog-table .catalog-cover-col,
 #catalog-table .catalog-cover-cell {
   width: 3.25rem;
   padding-left: 0.35rem;
   padding-right: 0.35rem;
+  position: relative;
+  vertical-align: middle;
+}
+
+#catalog-table .catalog-cover-stack {
+  position: relative;
+  width: 2.75rem;
+  height: 2.75rem;
 }
 
 #catalog-table .catalog-cover,
@@ -2865,6 +2828,153 @@ button.seq-drop-action.confirm-pending {
 #catalog-table .catalog-cover {
   object-fit: cover;
 }
+
+/* Hover: upper = Queue at front, lower = Queue at back (Playlog-style cover overlay). */
+#catalog-table .catalog-queue-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0.2rem;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+#catalog-table .catalog-cover-stack:hover .catalog-queue-overlay,
+#catalog-table .catalog-queue-overlay:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#catalog-table .catalog-cover-stack.catalog-queue-pending {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+#catalog-table button.catalog-queue-half {
+  display: flex;
+  flex: 1 1 50%;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  background: color-mix(in srgb, #000 55%, transparent);
+  color: #fff;
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#catalog-table button.catalog-queue-half.catalog-queue-back {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+}
+
+#catalog-table button.catalog-queue-half:hover {
+  background: color-mix(in srgb, #000 72%, transparent);
+}
+
+#catalog-table .catalog-queue-glyph {
+  display: inline-block;
+  line-height: 1;
+}
+
+#catalog-table .catalog-queue-front .catalog-queue-glyph,
+#catalog-table .catalog-queue-glyph-flip {
+  transform: scaleY(-1);
+}
+
+#catalog-table .catalog-queue-picker {
+  position: absolute;
+  left: 0;
+  top: calc(100% - 0.15rem);
+  z-index: 20;
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
+/* Touch swipe on the full mix-row (horizontal, like Playlog). */
+#catalog-table .mix-row {
+  touch-action: pan-y;
+}
+
+#catalog-table .mix-row.catalog-queue-swiping {
+  user-select: none;
+  touch-action: none;
+  transition: none;
+}
+
+/* Full-row tint — front (left) green, back (right) blue. */
+#catalog-table .mix-row.catalog-queue-preview-front > td,
+#catalog-table .mix-row.catalog-queue-armed-front > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-tagged) calc(var(--catalog-queue-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#catalog-table .mix-row.catalog-queue-preview-back > td,
+#catalog-table .mix-row.catalog-queue-armed-back > td {
+  background: color-mix(
+    in srgb,
+    var(--accent) calc(var(--catalog-queue-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#catalog-table .catalog-cover-cell.catalog-queue-swipe-confirm-host,
+#catalog-table .catalog-tags-cell.catalog-queue-swipe-confirm-host {
+  position: relative;
+}
+
+#catalog-table button.catalog-queue-swipe-confirm.symbol-btn {
+  --catalog-queue-swipe-btn: 2.5rem;
+  position: absolute;
+  top: 50%;
+  z-index: 4;
+  margin: 0;
+  width: var(--catalog-queue-swipe-btn);
+  height: var(--catalog-queue-swipe-btn);
+  min-width: var(--catalog-queue-swipe-btn);
+  min-height: var(--catalog-queue-swipe-btn);
+  font-size: 1.15rem;
+  box-shadow: 0 0 0 2px var(--card);
+  opacity: calc(0.35 + 0.65 * var(--catalog-queue-swipe-progress, 1));
+  pointer-events: none;
+}
+
+/* Front (left swipe): green over cover. Back (right swipe): blue over tags. */
+#catalog-table .catalog-queue-swipe-confirm-front {
+  left: 50%;
+  transform: translate(-50%, -50%) scaleY(-1);
+  color: color-mix(in srgb, var(--stat-tagged) 70%, var(--fg));
+  background: color-mix(in srgb, var(--stat-tagged) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--stat-tagged) 55%, transparent);
+}
+
+#catalog-table .catalog-queue-swipe-confirm-back {
+  right: 0.35rem;
+  left: auto;
+  transform: translateY(-50%);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+#catalog-table .mix-row.catalog-queue-armed .catalog-queue-swipe-confirm {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 
 #catalog-table .artist-row {
   cursor: pointer;
@@ -3296,50 +3406,40 @@ button.seq-drop-action.confirm-pending {
 #playlog-table .playlog-cover-action {
   position: absolute;
   inset: 0;
-  /* Full-cover hit target; glyph chip sits lower-right. Beat .symbol-btn fixed size. */
+  /* Full-cover hit target; Catalog-style dim + centered glyph. Beat .symbol-btn size. */
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
   margin: 0;
-  padding: 50% 0 0 50%;
+  padding: 0;
   border: none;
   border-radius: 0.2rem;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   line-height: 1;
   color: #fff;
-  background: transparent;
+  background: color-mix(in srgb, #000 55%, transparent);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-#playlog-table .playlog-cover-action::before {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 50%;
-  height: 50%;
-  border-radius: 0.15rem;
-  background: color-mix(in srgb, #000 55%, transparent);
   pointer-events: none;
+  transition: opacity 0.12s ease, background 0.12s ease;
 }
 
 #playlog-table .playlog-cover-stack:hover .playlog-cover-action,
 #playlog-table .playlog-cover-action:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 
-@media (hover: none) {
-  #playlog-table .playlog-cover-action {
-    opacity: 0.92;
-  }
+#playlog-table .playlog-cover-action:hover,
+#playlog-table .playlog-cover-action:focus-visible {
+  background: color-mix(in srgb, #000 72%, transparent);
 }
+
 
 #playlog-table .playlog-main-cell {
   min-width: 0;

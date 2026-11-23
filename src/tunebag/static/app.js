@@ -4584,6 +4584,7 @@ function matchesNameFilter(query, ...parts) {
   );
 }
 
+
 function mixMatchesCatalogFilters(mix) {
   if (!showRejectedCatalog && isHardRejected(mix)) return false;
   if (
@@ -4964,7 +4965,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!data.mixes.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 6;
+      td.colSpan = 5;
       td.className = "muted";
       td.textContent = "No releases yet";
       tr.appendChild(td);
@@ -4987,7 +4988,7 @@ async function refreshMixes({ force = false } = {}) {
       header.setAttribute("role", "button");
 
       const artistCell = document.createElement("td");
-      artistCell.colSpan = 6;
+      artistCell.colSpan = 5;
       const artistInner = document.createElement("div");
       artistInner.className = "artist-row-inner";
       const foldMain = document.createElement("div");
@@ -5105,17 +5106,10 @@ async function refreshMixes({ force = false } = {}) {
         tr.dataset.mixId = mix.id;
         tr.hidden = !expanded;
 
-        const queueCell = document.createElement("td");
-        queueCell.className = "catalog-queue-cell";
-        const showAsRejected =
-          (mix.rejected && !unrejectPending) || rejectPending;
-        if (!showAsRejected) {
-          mountCatalogQueueControl({ cell: queueCell, mix });
-        }
-        tr.appendChild(queueCell);
-
         const coverCell = document.createElement("td");
         coverCell.className = "catalog-cover-cell";
+        const coverStack = document.createElement("div");
+        coverStack.className = "catalog-cover-stack";
         if (mix.has_cover) {
           const img = document.createElement("img");
           img.className = "catalog-cover";
@@ -5126,13 +5120,24 @@ async function refreshMixes({ force = false } = {}) {
           img.height = 48;
           img.loading = "lazy";
           img.src = `/api/mixes/${mix.id}/cover`;
-          coverCell.appendChild(img);
+          coverStack.appendChild(img);
         } else {
           const placeholder = document.createElement("span");
           placeholder.className = "catalog-cover-placeholder";
           placeholder.setAttribute("aria-hidden", "true");
-          coverCell.appendChild(placeholder);
+          coverStack.appendChild(placeholder);
         }
+        const showAsRejected =
+          (mix.rejected && !unrejectPending) || rejectPending;
+        if (!showAsRejected) {
+          mountCatalogQueueControl({
+            coverStack,
+            coverCell,
+            row: tr,
+            mix,
+          });
+        }
+        coverCell.appendChild(coverStack);
         tr.appendChild(coverCell);
 
         const title = document.createElement("td");
@@ -5149,6 +5154,7 @@ async function refreshMixes({ force = false } = {}) {
         tr.appendChild(rating);
 
         const tagsCell = document.createElement("td");
+        tagsCell.className = "catalog-tags-cell";
         const tagRow = document.createElement("div");
         tagRow.className = "tag-cell";
         mountAnnotateKit({
@@ -5170,7 +5176,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!body.children.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 6;
+      td.colSpan = 5;
       td.className = "muted";
       td.textContent = "No releases match these filters";
       tr.appendChild(td);
@@ -5247,6 +5253,8 @@ async function fetchMatchingIntents(mixId) {
 }
 
 let openCatalogQueuePicker = null;
+/** @type {HTMLElement | null} */
+let catalogQueueSwipeArmedRow = null;
 
 function closeCatalogQueuePicker() {
   if (!openCatalogQueuePicker) return;
@@ -5254,16 +5262,439 @@ function closeCatalogQueuePicker() {
   openCatalogQueuePicker = null;
 }
 
+function clearCatalogQueueSwipe(tr) {
+  if (!tr) return;
+  tr.classList.remove(
+    "catalog-queue-swiping",
+    "catalog-queue-preview-front",
+    "catalog-queue-preview-back",
+    "catalog-queue-armed",
+    "catalog-queue-armed-front",
+    "catalog-queue-armed-back",
+  );
+  tr.style.removeProperty("--catalog-queue-swipe-progress");
+  tr.querySelector(".catalog-queue-swipe-confirm")?.remove();
+  tr.querySelector(".catalog-queue-swipe-confirm-host")?.classList.remove(
+    "catalog-queue-swipe-confirm-host",
+  );
+  if (catalogQueueSwipeArmedRow === tr) catalogQueueSwipeArmedRow = null;
+}
+
+function clearOtherCatalogQueueSwipe(except) {
+  for (const row of document.querySelectorAll(
+    "#catalog-table .mix-row.catalog-queue-armed",
+  )) {
+    if (row !== except) clearCatalogQueueSwipe(row);
+  }
+}
+
 /**
- * Catalog split Queue control: prepend (↪ flipped) | append (↪).
- * @param {{ cell: HTMLElement, mix: object }} opts
+ * Open matching-intent picker for Queue at front|back.
+ * @param {{
+ *   mix: object,
+ *   position: "front" | "back",
+ *   host: HTMLElement,
+ *   pendingRoot?: HTMLElement | null,
+ *   onPending?: (pending: boolean) => void,
+ * }} opts
  */
-function mountCatalogQueueControl({ cell, mix }) {
-  cell.innerHTML = "";
-  const wrap = document.createElement("div");
-  wrap.className = "catalog-queue-split";
-  wrap.setAttribute("role", "group");
-  wrap.setAttribute("aria-label", "Queue");
+function openCatalogQueueIntentPicker({
+  mix,
+  position,
+  host,
+  pendingRoot = null,
+  onPending = null,
+}) {
+  closeCatalogQueuePicker();
+  const pickerWrap = document.createElement("div");
+  pickerWrap.className = "catalog-queue-picker tag-picker-wrap";
+  pickerWrap.addEventListener("click", (event) => event.stopPropagation());
+  pickerWrap.addEventListener("pointerdown", (event) =>
+    event.stopPropagation(),
+  );
+
+  const filterInput = document.createElement("input");
+  filterInput.type = "text";
+  filterInput.className = "tag-picker-input";
+  filterInput.placeholder = "intent";
+  filterInput.autocomplete = "off";
+  filterInput.spellcheck = false;
+
+  const suggestList = document.createElement("div");
+  suggestList.className = "tag-suggest-list";
+  const loading = document.createElement("div");
+  loading.className = "muted";
+  loading.textContent = "Loading…";
+  suggestList.appendChild(loading);
+
+  pickerWrap.appendChild(filterInput);
+  pickerWrap.appendChild(suggestList);
+  host.appendChild(pickerWrap);
+
+  let intents = [];
+  let highlightIndex = 0;
+  let closed = false;
+
+  function close() {
+    if (closed) return;
+    closed = true;
+    pickerWrap.remove();
+    document.removeEventListener("pointerdown", onDocPointer, true);
+    document.removeEventListener("keydown", onDocKey, true);
+    if (openCatalogQueuePicker === api) openCatalogQueuePicker = null;
+  }
+
+  const api = { close };
+  openCatalogQueuePicker = api;
+
+  function onDocPointer(event) {
+    if (!pickerWrap.contains(event.target)) close();
+  }
+
+  function onDocKey(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  }
+
+  document.addEventListener("pointerdown", onDocPointer, true);
+  document.addEventListener("keydown", onDocKey, true);
+
+  function visibleIntents() {
+    const q = (filterInput.value || "").trim().toLowerCase();
+    if (!q) return intents;
+    return intents.filter((intent) =>
+      String(intent.name || "")
+        .toLowerCase()
+        .includes(q),
+    );
+  }
+
+  function paintHighlight() {
+    const rows = [...suggestList.querySelectorAll("button.tag-suggest")];
+    rows.forEach((row, index) => {
+      row.classList.toggle("is-active", index === highlightIndex);
+    });
+  }
+
+  function renderSuggestions() {
+    suggestList.innerHTML = "";
+    const rows = visibleIntents();
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No matching intents";
+      suggestList.appendChild(empty);
+      return;
+    }
+    highlightIndex = Math.min(highlightIndex, rows.length - 1);
+    rows.forEach((intent, index) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tag-suggest";
+      btn.textContent = intent.name || "(unnamed)";
+      if (index === highlightIndex) btn.classList.add("is-active");
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void chooseIntent(intent);
+      });
+      suggestList.appendChild(btn);
+    });
+  }
+
+  async function chooseIntent(intent) {
+    close();
+    if (pendingRoot) {
+      pendingRoot.classList.add("catalog-queue-pending");
+      pendingRoot.setAttribute("aria-busy", "true");
+    }
+    onPending?.(true);
+    try {
+      await queueOnSequence(intent.id, mix.id, position);
+      const where = position === "front" ? "front" : "back";
+      showNotice(`Queued at ${where} of ${intent.name || "intent"}`, "ok");
+      await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
+      void refreshAffectedSurfaces(["cache"], { force: true });
+    } catch (err) {
+      showNotice(err?.message || "Queue failed", "warn");
+      if (pendingRoot) {
+        pendingRoot.classList.remove("catalog-queue-pending");
+        pendingRoot.removeAttribute("aria-busy");
+      }
+      onPending?.(false);
+    }
+  }
+
+  filterInput.addEventListener("input", () => {
+    highlightIndex = 0;
+    renderSuggestions();
+  });
+  filterInput.addEventListener("keydown", (event) => {
+    const rows = visibleIntents();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const intent = rows[highlightIndex] || rows[0];
+      if (intent) void chooseIntent(intent);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      highlightIndex = Math.min(
+        highlightIndex + 1,
+        Math.max(0, rows.length - 1),
+      );
+      paintHighlight();
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      highlightIndex = Math.max(highlightIndex - 1, 0);
+      paintHighlight();
+    }
+  });
+
+  filterInput.focus();
+  void (async () => {
+    try {
+      intents = await fetchMatchingIntents(mix.id);
+      if (!closed) renderSuggestions();
+    } catch (err) {
+      if (closed) return;
+      suggestList.innerHTML = "";
+      const fail = document.createElement("div");
+      fail.className = "muted";
+      fail.textContent = err?.message || "Could not load intents";
+      suggestList.appendChild(fail);
+    }
+  })();
+}
+
+const CATALOG_QUEUE_SWIPE_IGNORE_SEL =
+  "button, a, input, select, textarea, .tag-picker-wrap, .star-rating, .catalog-queue-half, .catalog-queue-picker, .catalog-queue-swipe-confirm";
+
+/** Front (left swipe) → cover cell; back (right swipe) → tags cell — like Playlog. */
+function catalogQueueSwipeConfirmHost(tr, kind) {
+  if (kind === "back") {
+    return (
+      tr.querySelector(".catalog-tags-cell") ||
+      tr.lastElementChild ||
+      tr.querySelector(".catalog-cover-cell") ||
+      tr.firstElementChild
+    );
+  }
+  return tr.querySelector(".catalog-cover-cell") || tr.firstElementChild;
+}
+
+/**
+ * Arm Catalog Queue swipe: keep tint + show confirm symbol to tap (same shape as
+ * Playlog Drop/Play swipe). Tap opens the matching-intent picker.
+ * @param {HTMLElement} tr
+ * @param {"front" | "back"} kind
+ * @param {{ mix: object, coverStack: HTMLElement }} opts
+ */
+function armCatalogQueueSwipe(tr, kind, { mix, coverStack }) {
+  clearOtherCatalogQueueSwipe(tr);
+  tr.classList.remove(
+    "catalog-queue-swiping",
+    "catalog-queue-preview-front",
+    "catalog-queue-preview-back",
+  );
+  tr.classList.add("catalog-queue-armed", `catalog-queue-armed-${kind}`);
+  tr.style.setProperty("--catalog-queue-swipe-progress", "1");
+  catalogQueueSwipeArmedRow = tr;
+  const host = catalogQueueSwipeConfirmHost(tr, kind);
+  if (!host) return;
+  for (const el of tr.querySelectorAll(".catalog-queue-swipe-confirm-host")) {
+    if (el !== host) el.classList.remove("catalog-queue-swipe-confirm-host");
+  }
+  host.classList.add("catalog-queue-swipe-confirm-host");
+  let btn = tr.querySelector(".catalog-queue-swipe-confirm");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+  }
+  if (btn.parentElement !== host) host.appendChild(btn);
+  btn.className = `catalog-queue-swipe-confirm catalog-queue-swipe-confirm-${kind}`;
+  btn.removeAttribute("aria-hidden");
+  btn.tabIndex = 0;
+  const label = kind === "front" ? "Queue at front" : "Queue at back";
+  setSymbolButton(btn, BTN.queue, label);
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    clearCatalogQueueSwipe(tr);
+    openCatalogQueueIntentPicker({
+      mix,
+      position: kind,
+      host,
+      pendingRoot: coverStack,
+    });
+  };
+}
+
+/**
+ * Catalog mix-row swipe — same mechanics as Playlog Drop/Play
+ * (`bindPlaylogRowSwipe`): full-row pointer capture, axis lock, threshold arm.
+ * Left → Queue at front (confirm on cover); right → Queue at back (confirm on tags).
+ * @param {HTMLElement} tr
+ * @param {{ mix: object, coverStack: HTMLElement }} opts
+ */
+function bindCatalogQueueSwipe(tr, { mix, coverStack }) {
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  /** @type {null | "h" | "v"} */
+  let axis = null;
+  let dx = 0;
+  let dragging = false;
+
+  const ensurePreviewSymbol = (kind) => {
+    const host = catalogQueueSwipeConfirmHost(tr, kind);
+    if (!host) return;
+    for (const el of tr.querySelectorAll(".catalog-queue-swipe-confirm-host")) {
+      if (el !== host) el.classList.remove("catalog-queue-swipe-confirm-host");
+    }
+    host.classList.add("catalog-queue-swipe-confirm-host");
+    let btn = tr.querySelector(".catalog-queue-swipe-confirm");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.tabIndex = -1;
+      btn.setAttribute("aria-hidden", "true");
+    }
+    if (btn.parentElement !== host) host.appendChild(btn);
+    btn.className = `catalog-queue-swipe-confirm catalog-queue-swipe-confirm-${kind} is-preview`;
+    const label = kind === "front" ? "Queue at front" : "Queue at back";
+    setSymbolButton(btn, BTN.queue, label);
+  };
+
+  const applyDragPreview = (rawDx) => {
+    let kind = null;
+    let progress = 0;
+    if (rawDx < 0) {
+      kind = "front";
+      progress = Math.min(1, Math.abs(rawDx) / PLAYLOG_SWIPE_THRESHOLD_PX);
+    } else if (rawDx > 0) {
+      kind = "back";
+      progress = Math.min(1, rawDx / PLAYLOG_SWIPE_THRESHOLD_PX);
+    }
+    tr.classList.toggle("catalog-queue-preview-front", kind === "front");
+    tr.classList.toggle("catalog-queue-preview-back", kind === "back");
+    if (kind) {
+      tr.style.setProperty("--catalog-queue-swipe-progress", progress.toFixed(3));
+      if (progress > 0.25) ensurePreviewSymbol(kind);
+    } else {
+      tr.style.removeProperty("--catalog-queue-swipe-progress");
+      tr.querySelector(".catalog-queue-swipe-confirm")?.remove();
+    }
+  };
+
+  const onPointerDown = (event) => {
+    // Match Playlog: allow mouse primary (DevTools / hybrid); ignore other buttons.
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (event.target?.closest?.(CATALOG_QUEUE_SWIPE_IGNORE_SEL)) return;
+    if (tr.classList.contains("catalog-queue-pending")) return;
+    if (tr.hidden) return;
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    axis = null;
+    dx = 0;
+    dragging = false;
+    try {
+      tr.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const onPointerMove = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const rawDx = event.clientX - startX;
+    const rawDy = event.clientY - startY;
+    if (axis == null) {
+      const adx = Math.abs(rawDx);
+      const ady = Math.abs(rawDy);
+      if (adx < 8 && ady < 8) return;
+      if (adx > ady * PLAYLOG_SWIPE_AXIS_RATIO) {
+        axis = "h";
+        dragging = true;
+        clearCatalogQueueSwipe(tr);
+        clearOtherCatalogQueueSwipe(tr);
+        closeCatalogQueuePicker();
+        tr.classList.add("catalog-queue-swiping");
+      } else {
+        axis = "v";
+        return;
+      }
+    }
+    if (axis !== "h") return;
+    event.preventDefault();
+    dx = rawDx;
+    applyDragPreview(dx);
+  };
+
+  const finish = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const committedAxis = axis;
+    const committedDx = dx;
+    const wasDragging = dragging;
+    pointerId = null;
+    axis = null;
+    dx = 0;
+    dragging = false;
+    tr.classList.remove("catalog-queue-swiping");
+    tr.classList.remove(
+      "catalog-queue-preview-front",
+      "catalog-queue-preview-back",
+    );
+
+    if (committedAxis === "h" && wasDragging) {
+      if (committedDx <= -PLAYLOG_SWIPE_THRESHOLD_PX) {
+        armCatalogQueueSwipe(tr, "front", { mix, coverStack });
+        return;
+      }
+      if (committedDx >= PLAYLOG_SWIPE_THRESHOLD_PX) {
+        armCatalogQueueSwipe(tr, "back", { mix, coverStack });
+        return;
+      }
+      clearCatalogQueueSwipe(tr);
+      return;
+    }
+
+    if (
+      !wasDragging &&
+      tr.classList.contains("catalog-queue-armed") &&
+      !event.target?.closest?.(".catalog-queue-swipe-confirm")
+    ) {
+      clearCatalogQueueSwipe(tr);
+    }
+  };
+
+  tr.addEventListener("pointerdown", onPointerDown);
+  tr.addEventListener("pointermove", onPointerMove);
+  tr.addEventListener("pointerup", finish);
+  tr.addEventListener("pointercancel", finish);
+}
+
+/**
+ * Catalog cover Queue: hover upper/lower halves; touch left/right swipe
+ * (same bind gate as Playlog Drop/Play).
+ * @param {{
+ *   coverStack: HTMLElement,
+ *   coverCell: HTMLElement,
+ *   row: HTMLElement,
+ *   mix: object,
+ * }} opts
+ */
+function mountCatalogQueueControl({ coverStack, coverCell, row, mix }) {
+  const touchClient = isHoverNone();
+
+  const overlay = document.createElement("div");
+  overlay.className = "catalog-queue-overlay";
+  overlay.setAttribute("role", "group");
+  overlay.setAttribute("aria-label", "Queue");
 
   const frontBtn = document.createElement("button");
   frontBtn.type = "button";
@@ -5287,194 +5718,41 @@ function mountCatalogQueueControl({ cell, mix }) {
   backGlyph.textContent = BTN.queue;
   backBtn.appendChild(backGlyph);
 
-  wrap.appendChild(frontBtn);
-  wrap.appendChild(backBtn);
-  cell.appendChild(wrap);
+  overlay.appendChild(frontBtn);
+  overlay.appendChild(backBtn);
+  // Always mount hover overlay (cheap; hybrid mouse may appear later).
+  // Touch primary path remains row swipe; CSS keeps overlay invisible until hover.
+  coverStack.appendChild(overlay);
 
-  async function openPicker(position, anchorBtn) {
-    closeCatalogQueuePicker();
-    const pickerWrap = document.createElement("div");
-    pickerWrap.className = "catalog-queue-picker tag-picker-wrap";
-    pickerWrap.addEventListener("click", (event) => event.stopPropagation());
-    pickerWrap.addEventListener("pointerdown", (event) =>
-      event.stopPropagation(),
-    );
-
-    const filterInput = document.createElement("input");
-    filterInput.type = "text";
-    filterInput.className = "tag-picker-input";
-    filterInput.placeholder = "intent";
-    filterInput.autocomplete = "off";
-    filterInput.spellcheck = false;
-
-    const suggestList = document.createElement("div");
-    suggestList.className = "tag-suggest-list";
-    const loading = document.createElement("div");
-    loading.className = "muted";
-    loading.textContent = "Loading…";
-    suggestList.appendChild(loading);
-
-    pickerWrap.appendChild(filterInput);
-    pickerWrap.appendChild(suggestList);
-    cell.appendChild(pickerWrap);
-    anchorBtn.setAttribute("aria-expanded", "true");
-
-    let intents = [];
-    let highlightIndex = 0;
-    let closed = false;
-
-    function close() {
-      if (closed) return;
-      closed = true;
-      pickerWrap.remove();
-      frontBtn.removeAttribute("aria-expanded");
-      backBtn.removeAttribute("aria-expanded");
-      document.removeEventListener("pointerdown", onDocPointer, true);
-      document.removeEventListener("keydown", onDocKey, true);
-      if (openCatalogQueuePicker === api) openCatalogQueuePicker = null;
-    }
-
-    const api = { close };
-    openCatalogQueuePicker = api;
-
-    function onDocPointer(event) {
-      if (!pickerWrap.contains(event.target) && !wrap.contains(event.target)) {
-        close();
-      }
-    }
-
-    function onDocKey(event) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    }
-
-    document.addEventListener("pointerdown", onDocPointer, true);
-    document.addEventListener("keydown", onDocKey, true);
-
-    function visibleIntents() {
-      const q = (filterInput.value || "").trim().toLowerCase();
-      if (!q) return intents;
-      return intents.filter((intent) =>
-        String(intent.name || "")
-          .toLowerCase()
-          .includes(q),
-      );
-    }
-
-    function paintHighlight() {
-      const rows = [...suggestList.querySelectorAll("button.tag-suggest")];
-      rows.forEach((row, index) => {
-        row.classList.toggle("is-active", index === highlightIndex);
-      });
-    }
-
-    function renderSuggestions() {
-      suggestList.innerHTML = "";
-      const rows = visibleIntents();
-      if (!rows.length) {
-        const empty = document.createElement("div");
-        empty.className = "muted";
-        empty.textContent = "No matching intents";
-        suggestList.appendChild(empty);
-        return;
-      }
-      highlightIndex = Math.min(highlightIndex, rows.length - 1);
-      rows.forEach((intent, index) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "tag-suggest";
-        btn.textContent = intent.name || "(unnamed)";
-        if (index === highlightIndex) btn.classList.add("is-active");
-        btn.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void chooseIntent(intent);
-        });
-        suggestList.appendChild(btn);
-      });
-    }
-
-    async function chooseIntent(intent) {
-      close();
-      wrap.classList.add("catalog-queue-pending");
-      wrap.setAttribute("aria-busy", "true");
-      frontBtn.disabled = true;
-      backBtn.disabled = true;
-      try {
-        await queueOnSequence(intent.id, mix.id, position);
-        const where = position === "front" ? "front" : "back";
-        showNotice(`Queued at ${where} of ${intent.name || "intent"}`, "ok");
-        await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
-        void refreshAffectedSurfaces(["cache"], { force: true });
-      } catch (err) {
-        showNotice(err?.message || "Queue failed", "warn");
-        wrap.classList.remove("catalog-queue-pending");
-        wrap.removeAttribute("aria-busy");
-        frontBtn.disabled = false;
-        backBtn.disabled = false;
-      }
-    }
-
-    filterInput.addEventListener("input", () => {
-      highlightIndex = 0;
-      renderSuggestions();
+  const openFor = (position) => {
+    openCatalogQueueIntentPicker({
+      mix,
+      position,
+      host: coverCell,
+      pendingRoot: coverStack,
+      onPending: (pending) => {
+        frontBtn.disabled = pending;
+        backBtn.disabled = pending;
+      },
     });
-    filterInput.addEventListener("keydown", (event) => {
-      const rows = visibleIntents();
-      if (event.key === "Enter") {
-        event.preventDefault();
-        const intent = rows[highlightIndex] || rows[0];
-        if (intent) void chooseIntent(intent);
-        return;
-      }
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        highlightIndex = Math.min(
-          highlightIndex + 1,
-          Math.max(0, rows.length - 1),
-        );
-        paintHighlight();
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        highlightIndex = Math.max(highlightIndex - 1, 0);
-        paintHighlight();
-      }
-    });
-
-    filterInput.focus();
-    try {
-      intents = await fetchMatchingIntents(mix.id);
-      if (!closed) renderSuggestions();
-    } catch (err) {
-      if (closed) return;
-      suggestList.innerHTML = "";
-      const fail = document.createElement("div");
-      fail.className = "muted";
-      fail.textContent = err?.message || "Could not load intents";
-      suggestList.appendChild(fail);
-    }
-  }
+  };
 
   frontBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    void openPicker("front", frontBtn);
+    openFor("front");
   });
   backBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    void openPicker("back", backBtn);
+    openFor("back");
   });
+
+  if (touchClient) {
+    bindCatalogQueueSwipe(row, { mix, coverStack });
+  }
 }
 
-/**
- * Commit Drop with pending chrome (hover confirm-click or touch swipe).
- * @param {{ row: HTMLElement | null, intentId: string, mixId: string, dropBtn?: HTMLButtonElement | null }} opts
- */
 /**
  * Commit Drop with pending chrome (hover confirm-click or touch swipe).
  * @param {{ row: HTMLElement | null, intentId: string, mixId: string, dropBtn?: HTMLButtonElement | null }} opts
@@ -6338,6 +6616,8 @@ async function refreshPlaylog({ force = false } = {}) {
       actionLabel = offset === 0 ? "Play" : "Play this release";
       actionHandler = () => playlogPlayMix(item.id);
     }
+    // Always mount cover hover play/pause (cheap; hybrid mouse may appear later).
+    // Touch primary path remains row swipe; CSS keeps the button invisible until hover.
     if (actionSymbol && actionHandler) {
       const actionBtn = document.createElement("button");
       actionBtn.type = "button";
@@ -7232,6 +7512,8 @@ function renderIntentCoverStack(mixIds, { intent = null } = {}) {
     placeholder.setAttribute("aria-hidden", "true");
     stack.appendChild(placeholder);
   }
+  // Always mount cover hover Switch to intent (cheap; hybrid mouse may appear later).
+  // Touch primary path remains row swipe; CSS keeps the button invisible until hover.
   if (intent) {
     const playBtn = document.createElement("button");
     playBtn.type = "button";
@@ -7265,6 +7547,267 @@ async function switchToIntentFromRow(intent) {
   } catch (err) {
     showNotice("Switch to intent request failed", "error");
     console.error(err);
+  }
+}
+
+const INTENT_PLAY_SWIPE_IGNORE_SEL =
+  "button, a, input, select, textarea, .tag-picker-wrap, .intent-cover-action, .intent-play-swipe-confirm";
+
+/** @type {string | null} */
+let intentPlaySwipeArmedId = null;
+
+/** Name + meta rows for one Intent block (cover rowspan spans both). */
+function intentPlaySwipeBlockRows(nameRow, metaRow) {
+  return [nameRow, metaRow].filter(Boolean);
+}
+
+function clearIntentPlaySwipeBlock(nameRow, metaRow) {
+  const rows = intentPlaySwipeBlockRows(nameRow, metaRow);
+  const intentId = nameRow?.dataset?.intentId || metaRow?.dataset?.intentId;
+  for (const row of rows) {
+    row.classList.remove(
+      "intent-play-swiping",
+      "intent-play-swipe-preview",
+      "intent-play-swipe-armed",
+    );
+    row.style.removeProperty("--intent-play-swipe-progress");
+  }
+  const host = nameRow?.querySelector?.(".intent-cover-cell");
+  if (host) {
+    host.classList.remove("intent-play-swipe-confirm-host");
+    host.querySelector(".intent-play-swipe-confirm")?.remove();
+  }
+  if (intentId && intentPlaySwipeArmedId === intentId) {
+    intentPlaySwipeArmedId = null;
+  }
+}
+
+function clearOtherIntentPlaySwipeBlocks(exceptIntentId) {
+  for (const nameRow of document.querySelectorAll(
+    "#intent-table tr.intent-name-row.intent-play-swipe-armed",
+  )) {
+    const id = nameRow.dataset.intentId;
+    if (!id || id === exceptIntentId) continue;
+    const metaRow = document.querySelector(
+      `#intent-table tr.intent-meta-row[data-intent-id="${CSS.escape(id)}"]`,
+    );
+    clearIntentPlaySwipeBlock(nameRow, metaRow);
+  }
+}
+
+/**
+ * Place confirm on the right, vertically centered between name+meta rows.
+ * @param {HTMLButtonElement} btn
+ * @param {HTMLElement} nameRow
+ * @param {HTMLElement} metaRow
+ */
+function placeIntentPlayConfirmInBlockCenter(btn, nameRow, metaRow) {
+  const nameRect = nameRow.getBoundingClientRect();
+  const metaRect = metaRow.getBoundingClientRect();
+  const blockRight = Math.max(nameRect.right, metaRect.right);
+  const blockTop = Math.min(nameRect.top, metaRect.top);
+  const blockBottom = Math.max(nameRect.bottom, metaRect.bottom);
+  // Match Playlog play chip inset from the right edge.
+  const rightInset = 0.35 * 16;
+  btn.style.position = "fixed";
+  btn.style.left = `${blockRight - rightInset}px`;
+  btn.style.top = `${(blockTop + blockBottom) / 2}px`;
+  btn.style.right = "auto";
+  btn.style.transform = "translate(-100%, -50%)";
+}
+
+/**
+ * Arm Intent right-swipe: tint name+meta, green chip centered on the block.
+ * @param {HTMLElement} nameRow
+ * @param {HTMLElement} metaRow
+ * @param {{ intent: object, playSymbol: string, playLabel: string }} opts
+ */
+function armIntentPlaySwipe(nameRow, metaRow, { intent, playSymbol, playLabel }) {
+  clearOtherIntentPlaySwipeBlocks(intent.id);
+  const rows = intentPlaySwipeBlockRows(nameRow, metaRow);
+  for (const row of rows) {
+    row.classList.remove("intent-play-swiping", "intent-play-swipe-preview");
+    row.classList.add("intent-play-swipe-armed");
+    row.style.setProperty("--intent-play-swipe-progress", "1");
+  }
+  intentPlaySwipeArmedId = intent.id;
+  const host = nameRow.querySelector(".intent-cover-cell");
+  if (!host) return;
+  host.classList.add("intent-play-swipe-confirm-host");
+  let btn = host.querySelector(".intent-play-swipe-confirm");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+    host.appendChild(btn);
+  }
+  btn.className = "intent-play-swipe-confirm";
+  btn.removeAttribute("aria-hidden");
+  btn.tabIndex = 0;
+  setSymbolButton(btn, playSymbol, playLabel);
+  placeIntentPlayConfirmInBlockCenter(btn, nameRow, metaRow);
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    clearIntentPlaySwipeBlock(nameRow, metaRow);
+    void switchToIntentFromRow(intent);
+  };
+}
+
+/**
+ * Touch Intents: right swipe on name or meta row → green Switch/Pause confirm
+ * centered over the full cover+name+filter+actions block.
+ * @param {HTMLElement} nameRow
+ * @param {HTMLElement} metaRow
+ * @param {{ intent: object }} opts
+ */
+function bindIntentPlaySwipe(nameRow, metaRow, { intent }) {
+  const playingThis = isIntentCurrentlyPlaying(intent.id);
+  const playSymbol = playingThis ? BTN.pause : BTN.play;
+  const playLabel = playingThis ? "Pause" : "Switch to intent";
+  const rows = intentPlaySwipeBlockRows(nameRow, metaRow);
+
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  /** @type {null | "h" | "v"} */
+  let axis = null;
+  let dx = 0;
+  let dragging = false;
+  /** @type {HTMLElement | null} */
+  let activeRow = null;
+
+  const setBlockClass = (className, on) => {
+    for (const row of rows) row.classList.toggle(className, on);
+  };
+
+  const setBlockProgress = (progress) => {
+    const value = progress.toFixed(3);
+    for (const row of rows) {
+      row.style.setProperty("--intent-play-swipe-progress", value);
+    }
+  };
+
+  const clearBlockProgress = () => {
+    for (const row of rows) {
+      row.style.removeProperty("--intent-play-swipe-progress");
+    }
+  };
+
+  const ensurePreviewSymbol = () => {
+    const host = nameRow.querySelector(".intent-cover-cell");
+    if (!host) return;
+    host.classList.add("intent-play-swipe-confirm-host");
+    let btn = host.querySelector(".intent-play-swipe-confirm");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.tabIndex = -1;
+      btn.setAttribute("aria-hidden", "true");
+      host.appendChild(btn);
+    }
+    btn.className = "intent-play-swipe-confirm is-preview";
+    setSymbolButton(btn, playSymbol, playLabel);
+    placeIntentPlayConfirmInBlockCenter(btn, nameRow, metaRow);
+  };
+
+  const applyDragPreview = (rawDx) => {
+    let progress = 0;
+    if (rawDx > 0) {
+      progress = Math.min(1, rawDx / PLAYLOG_SWIPE_THRESHOLD_PX);
+    }
+    setBlockClass("intent-play-swipe-preview", progress > 0);
+    if (progress > 0) {
+      setBlockProgress(progress);
+      if (progress > 0.25) ensurePreviewSymbol();
+    } else {
+      clearBlockProgress();
+      nameRow
+        .querySelector(".intent-cover-cell .intent-play-swipe-confirm")
+        ?.remove();
+    }
+  };
+
+  const onPointerDown = (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (event.target?.closest?.(INTENT_PLAY_SWIPE_IGNORE_SEL)) return;
+    activeRow = event.currentTarget;
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    axis = null;
+    dx = 0;
+    dragging = false;
+    try {
+      activeRow.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const onPointerMove = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const rawDx = event.clientX - startX;
+    const rawDy = event.clientY - startY;
+    if (axis == null) {
+      const adx = Math.abs(rawDx);
+      const ady = Math.abs(rawDy);
+      if (adx < 8 && ady < 8) return;
+      if (adx > ady * PLAYLOG_SWIPE_AXIS_RATIO) {
+        axis = "h";
+        dragging = true;
+        clearIntentPlaySwipeBlock(nameRow, metaRow);
+        clearOtherIntentPlaySwipeBlocks(intent.id);
+        setBlockClass("intent-play-swiping", true);
+      } else {
+        axis = "v";
+        return;
+      }
+    }
+    if (axis !== "h") return;
+    event.preventDefault();
+    dx = rawDx;
+    applyDragPreview(dx);
+  };
+
+  const finish = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const committedAxis = axis;
+    const committedDx = dx;
+    const wasDragging = dragging;
+    pointerId = null;
+    axis = null;
+    dx = 0;
+    dragging = false;
+    activeRow = null;
+    setBlockClass("intent-play-swiping", false);
+    setBlockClass("intent-play-swipe-preview", false);
+
+    if (committedAxis === "h" && wasDragging) {
+      if (committedDx >= PLAYLOG_SWIPE_THRESHOLD_PX) {
+        armIntentPlaySwipe(nameRow, metaRow, {
+          intent,
+          playSymbol,
+          playLabel,
+        });
+        return;
+      }
+      clearIntentPlaySwipeBlock(nameRow, metaRow);
+      return;
+    }
+
+    if (
+      !wasDragging &&
+      rows.some((row) => row.classList.contains("intent-play-swipe-armed")) &&
+      !event.target?.closest?.(".intent-play-swipe-confirm")
+    ) {
+      clearIntentPlaySwipeBlock(nameRow, metaRow);
+    }
+  };
+
+  for (const row of rows) {
+    row.addEventListener("pointerdown", onPointerDown);
+    row.addEventListener("pointermove", onPointerMove);
+    row.addEventListener("pointerup", finish);
+    row.addEventListener("pointercancel", finish);
   }
 }
 
@@ -7837,6 +8380,7 @@ async function refreshIntents({ force = false } = {}) {
       const metaRow = document.createElement("tr");
       metaRow.className = "intent-meta-row";
       metaRow.dataset.intentId = intent.id;
+      const touchClient = isHoverNone();
 
       const filtersCell = document.createElement("td");
       filtersCell.className = "intent-filters-cell";
@@ -7896,6 +8440,11 @@ async function refreshIntents({ force = false } = {}) {
       }
       metaRow.appendChild(metaActions);
       frag.appendChild(metaRow);
+
+      // Touch: right-swipe Switch to intent / Pause (green) over the name+meta block.
+      if (touchClient) {
+        bindIntentPlaySwipe(nameRow, metaRow, { intent });
+      }
     }
 
     const hasAssignmentRows = appendIntentAssignmentRows(

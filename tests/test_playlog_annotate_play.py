@@ -187,12 +187,14 @@ def test_playlog_ui_contract_play_controls_and_annotate() -> None:
     assert "playlog-lead" in js
     assert "playlog-cover-stack" in js
     assert "playlog-cover-action" in js
+    assert "#playlog-table .playlog-cover-stack:hover .playlog-cover-action" in css
     assert "playlog-main-cell" in js
     assert "playlog-side-cell" in js
     assert "playlog-lead-col" in html
     assert "playlog-action-btn" not in js
     playlog_fn = js[js.index("async function refreshPlaylog") :]
     playlog_fn = playlog_fn[: playlog_fn.index("\nasync function ", 1)]
+    assert "if (actionSymbol && actionHandler)" in playlog_fn
     assert "rowSpan" not in playlog_fn
     assert "playlog-release" in js
     assert "${artist} - ${title}" in js

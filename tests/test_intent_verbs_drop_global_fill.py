@@ -5,9 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _static() -> tuple[str, str]:
+def _static() -> tuple[str, str, str]:
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
-    return (root / "app.js").read_text(), (root / "index.html").read_text()
+    return (
+        (root / "app.js").read_text(),
+        (root / "index.html").read_text(),
+        (root / "app.css").read_text(),
+    )
 
 
 def _js_function_body(js: str, signature: str) -> str:
@@ -22,24 +26,39 @@ def _js_function_body(js: str, signature: str) -> str:
 
 
 def test_intent_row_verbs_match_ui_actions_glossary() -> None:
-    js, _html = _static()
+    js, _html, css = _static()
 
     set_btn = _js_function_body(js, "function setIntentPlayButton(btn, playingThis)")
     assert '"Switch to intent"' in set_btn
     assert '"Pause"' in set_btn
     assert '"Play"' not in set_btn
 
-    # Switch to intent is on the Intent cover hover control (not the right Actions column).
+    # Switch to intent: always mount cover hover control (CSS shows on hover).
     cover = _js_function_body(
         js, "function renderIntentCoverStack(mixIds, { intent = null } = {})"
     )
     assert 'className = "intent-cover-action intent-play"' in cover
+    assert "if (intent) {" in cover
     assert "switchToIntentFromRow(intent)" in cover
+    assert "#intent-table .intent-cover-stack:hover .intent-cover-action" in css
 
     switch = _js_function_body(js, "async function switchToIntentFromRow(intent)")
     assert "isIntentCurrentlyPlaying(intent.id)" in switch
     assert "pausePlayback()" in switch
     assert "playIntent(intent.id)" in switch
+
+    # Touch: right-swipe → green Switch/Pause confirm centered on name+meta block.
+    assert "function bindIntentPlaySwipe(" in js
+    assert "function armIntentPlaySwipe(" in js
+    assert "function placeIntentPlayConfirmInBlockCenter(" in js
+    assert "bindIntentPlaySwipe(nameRow, metaRow, { intent })" in js
+    assert "intent-play-swipe-confirm" in css
+    confirm_css = css.split("button.intent-play-swipe-confirm.symbol-btn")[1][:900]
+    assert "var(--stat-tagged)" in confirm_css
+    assert "translate(-100%, -50%)" in confirm_css
+    assert "intent-cover-cell.intent-play-swipe-confirm-host" in css
+    assert "blockRight - rightInset" in js
+    assert "(blockTop + blockBottom) / 2" in js
 
     actions = _js_function_body(js, "function buildIntentActionButtons(intent)")
     assert "intent-play" not in actions
@@ -52,7 +71,7 @@ def test_intent_row_verbs_match_ui_actions_glossary() -> None:
 
 
 def test_cache_ui_has_no_global_fill() -> None:
-    js, html = _static()
+    js, html, _css = _static()
     assert 'id="fill-btn"' not in html
     assert "Fill caches" not in html
     assert 'getElementById("fill-btn")' not in js
@@ -64,12 +83,13 @@ def test_cache_ui_has_no_global_fill() -> None:
 
 
 def test_switch_regenerate_fill_use_shared_refresh_path() -> None:
-    js, _html = _static()
+    js, _html, _css = _static()
     assert "async function refreshAfterIntentPlaybackMutation(" in js
     play_body = _js_function_body(js, "async function playIntent(intentId)")
     assert "refreshAfterIntentPlaybackMutation()" in play_body
     pause_body = _js_function_body(js, "async function pausePlayback()")
-    assert "refreshAfterIntentPlaybackMutation({ markedPlayed:" in pause_body
+    assert "refreshAfterIntentPlaybackMutation({" in pause_body
+    assert "markedPlayed: Boolean(data.played)" in pause_body
     helper = _js_function_body(
         js, "async function refreshAfterIntentPlaybackMutation({ markedPlayed = false } = {})"
     )
