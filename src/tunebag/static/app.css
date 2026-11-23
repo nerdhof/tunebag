@@ -2949,7 +2949,7 @@ button.seq-drop-action.confirm-pending {
   font-weight: 600;
 }
 
-/* One row per entry → sticky works; cover spans the two internal lines.
+/* One row per entry → sticky works; lead (# + cover) sits beside two-line stacks.
    Keep sticky below open tag pickers (see :has(.tag-picker-wrap) below). */
 #playlog-table .playlog-row.playlog-current > td {
   position: sticky;
@@ -2979,15 +2979,36 @@ button.seq-drop-action.confirm-pending {
   z-index: 13;
 }
 
-#playlog-table .playlog-offset,
-#playlog-table thead th:first-child {
-  font-variant-numeric: tabular-nums;
+/* # + cover share one lead column: stacked on narrow, side-by-side when wider. */
+#playlog-table .playlog-lead-col,
+#playlog-table .playlog-lead-cell {
   width: 2.75rem;
-  text-align: right;
-  vertical-align: middle;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+  vertical-align: top;
 }
 
-/* Upcoming Drop cells: keep the offset glyph on the same right edge as −N / 0. */
+#playlog-table .playlog-lead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.2rem 0.35rem;
+}
+
+#playlog-table .playlog-offset {
+  flex: 1 1 100%;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  line-height: 1.25;
+}
+
+#playlog-table .playlog-lead-col {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Upcoming Drop: keep the offset glyph on the same right edge as −N / 0. */
 #playlog-table .playlog-offset.seq-drop-cell {
   text-align: right;
 }
@@ -3005,17 +3026,27 @@ button.seq-drop-action.confirm-pending {
   line-height: var(--control-height);
 }
 
-#playlog-table .playlog-cover-col,
-#playlog-table .playlog-cover-cell {
-  width: 3.25rem;
-  padding-left: 0.35rem;
-  padding-right: 0.35rem;
-}
-
 #playlog-table .playlog-cover-stack {
   position: relative;
+  flex: 0 0 auto;
   width: 2.75rem;
   height: 2.75rem;
+}
+
+@media (min-width: 40.01rem) {
+  #playlog-table .playlog-lead-col,
+  #playlog-table .playlog-lead-cell {
+    width: 5.85rem;
+  }
+
+  #playlog-table .playlog-lead {
+    flex-wrap: nowrap;
+  }
+
+  #playlog-table .playlog-offset {
+    flex: 0 0 2.75rem;
+    width: 2.75rem;
+  }
 }
 
 #playlog-table .playlog-cover,

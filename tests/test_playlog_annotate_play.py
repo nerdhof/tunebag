@@ -183,11 +183,13 @@ def test_playlog_ui_contract_play_controls_and_annotate() -> None:
     assert "expandedPlaylogMixId" not in js
     assert "playlog-annotate-row" not in js
     assert "playlog-annotate" in js
-    assert "playlog-cover-cell" in js
+    assert "playlog-lead-cell" in js
+    assert "playlog-lead" in js
     assert "playlog-cover-stack" in js
     assert "playlog-cover-action" in js
     assert "playlog-main-cell" in js
     assert "playlog-side-cell" in js
+    assert "playlog-lead-col" in html
     assert "playlog-action-btn" not in js
     playlog_fn = js[js.index("async function refreshPlaylog") :]
     playlog_fn = playlog_fn[: playlog_fn.index("\nasync function ", 1)]

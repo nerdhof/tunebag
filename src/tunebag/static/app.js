@@ -5256,7 +5256,7 @@ function clearUnrejectPending(mixId, { restore = false } = {}) {
 }
 
 /**
- * Hover-reveal Drop on a sequence `#` cell (Playlog upcoming / Shared sequence).
+ * Hover-reveal Drop on a sequence `#` slot (Playlog upcoming / Shared sequence).
  * Confirm-click (⊖ → 💥) like Reject / Delete. On confirm, grey the row immediately
  * and hide Drop until the backend refresh lands (or restore on failure).
  * @param {{ cell: HTMLElement, intentId: string, mixId: string, labelText: string }} opts
@@ -5667,7 +5667,7 @@ async function refreshPlaylog({ force = false } = {}) {
   const playing = Boolean(data.playing);
   for (const item of items) {
     const offset = Number(item.offset) || 0;
-    // One <tr> per entry so sticky works; cover + two-line stacks live inside cells.
+    // One <tr> per entry so sticky works; lead (# + cover) + two-line stacks.
     const tr = document.createElement("tr");
     tr.className = "playlog-row";
     tr.dataset.mixId = item.id;
@@ -5698,22 +5698,25 @@ async function refreshPlaylog({ force = false } = {}) {
       tr.setAttribute("aria-busy", "true");
     }
 
-    const offsetCell = document.createElement("td");
-    offsetCell.className = "playlog-offset";
+    // Lead: # + cover in one cell — side-by-side when wide, stacked when narrow.
+    const leadCell = document.createElement("td");
+    leadCell.className = "playlog-lead-cell";
+    const lead = document.createElement("div");
+    lead.className = "playlog-lead";
+    const offsetEl = document.createElement("div");
+    offsetEl.className = "playlog-offset";
     if (offset > 0 && intentId && !dropPending) {
       mountSequenceDropControl({
-        cell: offsetCell,
+        cell: offsetEl,
         intentId,
         mixId: item.id,
         labelText: formatPlaylogOffset(offset),
       });
     } else {
-      offsetCell.textContent = formatPlaylogOffset(offset);
+      offsetEl.textContent = formatPlaylogOffset(offset);
     }
-    tr.appendChild(offsetCell);
+    lead.appendChild(offsetEl);
 
-    const coverCell = document.createElement("td");
-    coverCell.className = "playlog-cover-cell";
     const coverStack = document.createElement("div");
     coverStack.className = "playlog-cover-stack";
     if (item.has_cover) {
@@ -5763,8 +5766,9 @@ async function refreshPlaylog({ force = false } = {}) {
       });
       coverStack.appendChild(actionBtn);
     }
-    coverCell.appendChild(coverStack);
-    tr.appendChild(coverCell);
+    lead.appendChild(coverStack);
+    leadCell.appendChild(lead);
+    tr.appendChild(leadCell);
 
     const mainCell = document.createElement("td");
     mainCell.className = "playlog-main-cell";
@@ -5824,18 +5828,21 @@ async function refreshPlaylog({ force = false } = {}) {
   if (data.upcoming_truncated) {
     const tr = document.createElement("tr");
     tr.className = "playlog-row playlog-truncated";
-    const offsetCell = document.createElement("td");
-    offsetCell.className = "playlog-offset muted";
-    offsetCell.textContent = "…";
-    const coverCell = document.createElement("td");
-    coverCell.className = "playlog-cover-cell";
+    const leadCell = document.createElement("td");
+    leadCell.className = "playlog-lead-cell";
+    const lead = document.createElement("div");
+    lead.className = "playlog-lead";
+    const offsetEl = document.createElement("div");
+    offsetEl.className = "playlog-offset muted";
+    offsetEl.textContent = "…";
+    lead.appendChild(offsetEl);
+    leadCell.appendChild(lead);
     const mainCell = document.createElement("td");
     mainCell.className = "playlog-main-cell muted";
     mainCell.textContent = "…";
     const sideCell = document.createElement("td");
     sideCell.className = "playlog-side-cell";
-    tr.appendChild(offsetCell);
-    tr.appendChild(coverCell);
+    tr.appendChild(leadCell);
     tr.appendChild(mainCell);
     tr.appendChild(sideCell);
     body.appendChild(tr);
