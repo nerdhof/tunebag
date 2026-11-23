@@ -11,7 +11,7 @@ Show these at the end of the hackathon demo (also on `/about#planned`). Not in t
 - **Artist reposts** in addition to own uploads.
 - **Search** across the catalog (and later across platforms) by tag, artist, title.
 - **Suggested tags and ratings** from titles/metadata, later from audio analysis.
-- **Peer cache file share**: copy assigned Release bytes from a reachable Peer’s Cache over HTTP (and USB when present) before origin download; honor fetch priority / metered rules (peer/USB = unmetered). Closes the gap between in-process demo copy and real multi-process devices.
+- **Peer cache file share**: decided — mTLS Peer meet + File HEAD/GET + fill-policy parity for HTTPS Peers ([ADR-0011](adr/0011-mtls-peer-meet-and-cache-file-share.md), `.scratch/peer-cache-file-share/`); USB file copy still later.
 - ~~**Catalog snapshot cache**~~ — done: disposable SQLite Catalog snapshot + tip watermark; Event log replay remains authoritative ([ADR-0008](adr/0008-sqlite-durable-bag-and-incremental-pull.md)).
 - ~~**Incremental Event log sync**~~ — done: per-author seq watermarks via `POST /api/events/pull` + NDJSON ([ADR-0008](adr/0008-sqlite-durable-bag-and-incremental-pull.md)).
 - ~~**SQLite (or similar) persistence**~~ — done: one `tunebag.sqlite` durable bag for events, identity, hints, snapshot ([ADR-0008](adr/0008-sqlite-durable-bag-and-incremental-pull.md)).
