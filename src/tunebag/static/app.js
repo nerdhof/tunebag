@@ -1689,11 +1689,8 @@ function applyLocationHash() {
     return;
   }
   if (SCROLL_HASHES.has(raw)) {
-    const el = document.getElementById(raw);
-    if (el) {
-      requestAnimationFrame(() => {
-        el.scrollIntoView({ block: "start" });
-      });
+    if (raw === "player") {
+      requestAnimationFrame(() => jumpFocusScrollHome());
     }
     return;
   }
@@ -1743,10 +1740,9 @@ function initAppMenu() {
       if (SCROLL_HASHES.has(id)) {
         event.preventDefault();
         closeAppMenu();
-        const el = document.getElementById(id);
-        if (el) {
-          history.replaceState(null, "", href);
-          el.scrollIntoView({ block: "start" });
+        history.replaceState(null, "", href);
+        if (id === "player") {
+          jumpFocusScrollHome();
         }
       }
     } else {
@@ -3900,8 +3896,7 @@ function focusScrollHomeNeeded() {
 }
 
 /** Jump active pane to home scroll and fully expand the player. */
-function onFocusScrollHomeClick(event) {
-  event.preventDefault();
+function jumpFocusScrollHome() {
   const el = focusPaneScrollEl(activeFocusTab);
   if (!el) return;
   const home = paneScrollHomeTop(activeFocusTab);
@@ -3918,6 +3913,12 @@ function onFocusScrollHomeClick(event) {
     suppressPlayerCollapseFromPane = false;
   }
   syncFocusScrollHomeBtn();
+}
+
+/** ⌃ chip: same as menu Player / #player. */
+function onFocusScrollHomeClick(event) {
+  event.preventDefault();
+  jumpFocusScrollHome();
 }
 
 /**
