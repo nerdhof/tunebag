@@ -3001,6 +3001,7 @@ button.seq-drop-action.confirm-pending {
   font-variant-numeric: tabular-nums;
   text-align: right;
   line-height: 1.25;
+  padding-right: 0.35rem;
 }
 
 #playlog-table .playlog-lead-col {
@@ -3036,7 +3037,7 @@ button.seq-drop-action.confirm-pending {
 @media (min-width: 40.01rem) {
   #playlog-table .playlog-lead-col,
   #playlog-table .playlog-lead-cell {
-    width: 5.85rem;
+    width: 6.2rem;
   }
 
   #playlog-table .playlog-lead {
@@ -3044,8 +3045,8 @@ button.seq-drop-action.confirm-pending {
   }
 
   #playlog-table .playlog-offset {
-    flex: 0 0 2.75rem;
-    width: 2.75rem;
+    flex: 0 0 3.1rem;
+    width: 3.1rem;
   }
 }
 
