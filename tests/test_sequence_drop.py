@@ -271,7 +271,7 @@ def test_drop_from_sequence_unknown_intent_raises(tmp_path: Path) -> None:
 
 
 def test_drop_ui_contract_confirm_click_square_symbol_btn() -> None:
-    """Drop uses confirm-click; ⊖/💥 stay normal square symbol-btn size."""
+    """Drop uses confirm-click on hover; touch uses Playlog swipe (no always-on ⊖)."""
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     js = (root / "app.js").read_text()
     css = (root / "app.css").read_text()
@@ -281,12 +281,24 @@ def test_drop_ui_contract_confirm_click_square_symbol_btn() -> None:
     assert 'armedLabel: "really drop?"' in js
     assert "pendingSequenceDrops" in js
     assert "seq-drop-pending" in js
+    assert "confirmDropFromSequence" in js
+    assert "isHoverNone" in js
+    assert "bindPlaylogRowSwipe" in js
+    assert "armPlaylogSwipe" in js
+    assert "playlog-swipe-confirm" in js
+    assert "canDrop && !touchClient" in js
+    assert "canDrop && !isHoverNone()" in js
     assert "button.seq-drop-action.symbol-btn" in css
     assert "button.seq-drop-action.confirm-pending" in css
     assert "seq-drop-pending" in css
-    # Symbol-btn stays square; Playlog stack is full-cell width so −N/0/+N share an edge.
+    assert "playlog-row-swiping" in css
+    assert "playlog-swipe-armed-drop" in css
+    assert "playlog-swipe-confirm-drop" in css
+    assert "playlog-swipe-confirm-play" in css
+    # No always-visible Drop on touch — chrome mounts only when hover is available.
     drop_css = css[css.index("/* Shared Drop-from-sequence") :]
     drop_css = drop_css[: drop_css.index("#peers pre")]
+    assert "@media (hover: none)" not in drop_css
     assert "height: 100%" not in drop_css
     assert "width: var(--control-height)" in drop_css
     assert "#playlog-table .playlog-offset.seq-drop-cell .seq-drop-label" in css

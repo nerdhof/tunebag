@@ -2507,15 +2507,6 @@ button.seq-drop-action.confirm-pending {
   opacity: 0;
 }
 
-@media (hover: none) {
-  button.seq-drop-action.symbol-btn {
-    opacity: 0.92;
-  }
-  .seq-drop-stack .seq-drop-label {
-    opacity: 0;
-  }
-}
-
 /* After Drop confirm: mute the row until Playlog/intent refresh removes it. */
 #playlog-table .playlog-row.seq-drop-pending,
 #intent-table .intent-seq-row.seq-drop-pending {
@@ -2967,6 +2958,78 @@ button.seq-drop-action.confirm-pending {
   color: var(--stat-reject);
 }
 
+#playlog-table .playlog-row {
+  touch-action: pan-y;
+}
+
+#playlog-table .playlog-row.playlog-row-swiping {
+  touch-action: none;
+  transition: none;
+}
+
+/* Touch swipe preview / armed confirm: tint cells; symbol sits on the lead. */
+#playlog-table .playlog-row.playlog-swipe-preview-drop > td,
+#playlog-table .playlog-row.playlog-swipe-armed-drop > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-reject) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#playlog-table .playlog-row.playlog-swipe-preview-play > td,
+#playlog-table .playlog-row.playlog-swipe-armed-play > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-tagged) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#playlog-table .playlog-lead-cell.playlog-swipe-confirm-host,
+#playlog-table .playlog-side-cell.playlog-swipe-confirm-host {
+  position: relative;
+}
+
+#playlog-table button.playlog-swipe-confirm.symbol-btn {
+  --playlog-swipe-btn: 2.5rem;
+  position: absolute;
+  top: 50%;
+  z-index: 4;
+  margin: 0;
+  width: var(--playlog-swipe-btn);
+  height: var(--playlog-swipe-btn);
+  min-width: var(--playlog-swipe-btn);
+  min-height: var(--playlog-swipe-btn);
+  font-size: 1.15rem;
+  box-shadow: 0 0 0 2px var(--card);
+  opacity: calc(0.35 + 0.65 * var(--playlog-swipe-progress, 1));
+  pointer-events: none;
+}
+
+/* Drop (left swipe): over the lead. Play (right swipe): over Length/cache. */
+#playlog-table .playlog-swipe-confirm-drop {
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--stat-reject);
+  background: color-mix(in srgb, var(--stat-reject) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--stat-reject) 55%, transparent);
+}
+
+#playlog-table .playlog-swipe-confirm-play {
+  right: 0.35rem;
+  left: auto;
+  transform: translateY(-50%);
+  color: color-mix(in srgb, var(--stat-tagged) 70%, var(--fg));
+  background: color-mix(in srgb, var(--stat-tagged) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--stat-tagged) 55%, transparent);
+}
+
+#playlog-table .playlog-row.playlog-swipe-armed .playlog-swipe-confirm {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 #playlog-table .playlog-past {
   color: var(--muted);
 }
@@ -2987,6 +3050,25 @@ button.seq-drop-action.confirm-pending {
   bottom: 0;
   z-index: 3;
   background: var(--card);
+}
+
+/* Swipe tint must win over sticky current’s solid card fill. */
+#playlog-table .playlog-row.playlog-current.playlog-swipe-preview-drop > td,
+#playlog-table .playlog-row.playlog-current.playlog-swipe-armed-drop > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-reject) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#playlog-table .playlog-row.playlog-current.playlog-swipe-preview-play > td,
+#playlog-table .playlog-row.playlog-current.playlog-swipe-armed-play > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-tagged) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
 }
 
 /* Jump-back click only while current is actually stuck. */
