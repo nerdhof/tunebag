@@ -48,7 +48,9 @@ def _file_row(mix: Mix, agent: DeviceAgent) -> dict[str, Any]:
     }
 
 
-def _mix_row(mix: Mix, artists_by_id: dict[UUID, Artist]) -> dict[str, Any]:
+def _mix_row(
+    mix: Mix, artists_by_id: dict[UUID, Artist], *, has_cover: bool
+) -> dict[str, Any]:
     """Serialize a Release for Catalog JSON responses."""
     artist = artists_by_id.get(mix.artist_id)
     artist_name = artist.name if artist is not None else "Unknown"
@@ -73,6 +75,7 @@ def _mix_row(mix: Mix, artists_by_id: dict[UUID, Artist]) -> dict[str, Any]:
         "last_heard_at": (
             mix.last_heard_at.isoformat() if mix.last_heard_at is not None else None
         ),
+        "has_cover": has_cover,
     }
 
 
@@ -598,7 +601,12 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         agent.commit_reject_file_deletes()
         artists_by_id = {a.id: a for a in agent.artists()}
         return {
-            "mixes": [_mix_row(mix, artists_by_id) for mix in agent.mixes()]
+            "mixes": [
+                _mix_row(
+                    mix, artists_by_id, has_cover=agent.has_cover(mix.id)
+                )
+                for mix in agent.mixes()
+            ]
         }
 
     @app.get("/api/playlog")

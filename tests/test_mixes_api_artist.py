@@ -41,6 +41,7 @@ def test_mixes_api_includes_artist_fields(tmp_path: Path) -> None:
     assert row["platform"] == Platform.SOUNDCLOUD.value
     assert row["title"] == "Set A"
     assert row["size_bytes"] == 4_000_000
+    assert row["has_cover"] is False
 
 
 def test_player_api_uses_catalog_artist_name(tmp_path: Path) -> None:

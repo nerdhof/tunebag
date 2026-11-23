@@ -397,6 +397,12 @@ def test_add_artists_caches_cover_and_player_api(tmp_path: Path) -> None:
     agent.play(intent.id, mix.id)
 
     client = TestClient(create_app(agent))
+    mixes_res = client.get("/api/mixes")
+    assert mixes_res.status_code == 200
+    mixes_body = mixes_res.json()
+    assert len(mixes_body["mixes"]) == 1
+    assert mixes_body["mixes"][0]["has_cover"] is True
+
     player = client.get("/api/player")
     assert player.status_code == 200
     body = player.json()
@@ -547,6 +553,12 @@ def test_player_ui_has_cover_slot() -> None:
     assert 'id="playlog-intent-play"' in html
     assert "playlog-queued-intent-label" not in html
     assert "focus-toolbar-filters" in html[html.index('id="playlog"') : html.index('id="playlog-table"')]
+    # Catalog table: Cover | Release | Length | Rating | Tags
+    catalog_html = html[html.index('id="catalog-table"') : html.index('id="catalog-body"')]
+    assert 'class="catalog-cover-col"' in catalog_html
+    assert "catalog-cover-cell" in js
+    assert "catalog-cover-placeholder" in js
+    assert "#catalog-table .catalog-cover" in css
     assert "syncPlaylogIntentPlayButton" in js
     cover_at = html.index('id="player-cover"')
     text_at = html.index('class="player-below-text"')
