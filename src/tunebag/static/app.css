@@ -1131,6 +1131,19 @@ body.tunebag-app #player {
   gap: 0.35rem 0.5rem;
 }
 
+/* Narrow only: soft-fold collapses annotate (larger UI keeps Rate/Reject/Tag). */
+@media (max-width: 40rem) {
+  .form-row.player-meta {
+    max-height: calc(12rem * var(--player-label-factor, 1));
+    opacity: var(--player-label-factor, 1);
+    overflow: hidden;
+  }
+
+  #player.is-annotate-collapsed .form-row.player-meta {
+    pointer-events: none;
+  }
+}
+
 /* Compact playing-track title: sits at cover bottom (above seek); crossfades in
  * as angled seek labels fade out. */
 .player-current-track {

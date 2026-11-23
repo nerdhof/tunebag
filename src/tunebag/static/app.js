@@ -3633,14 +3633,16 @@ function syncPlayerNowStack() {
   const rowWidth = row.clientWidth;
   const titleNeeds = measurePlayerTitleIntrinsicWidth(title);
   // Floor cover to title + rating/tags height so small clients don’t shrink
-  // the art below the chrome stack beside it.
+  // the art below the chrome stack beside it. Omit meta only when narrow
+  // soft-fold has collapsed annotate (wider UI keeps meta in the floor).
   const meta = row.querySelector(".player-meta");
+  const annotateCollapsed = player?.classList.contains("is-annotate-collapsed");
   const titleMarginBottom =
     Number.parseFloat(getComputedStyle(title).marginBottom) || 0;
+  const metaHeight =
+    !annotateCollapsed && meta ? meta.getBoundingClientRect().height : 0;
   const chromeMinPx =
-    title.getBoundingClientRect().height +
-    titleMarginBottom +
-    (meta ? meta.getBoundingClientRect().height : 0);
+    title.getBoundingClientRect().height + titleMarginBottom + metaHeight;
   const minRem = clamp(
     Math.max(PLAYER_COVER_MIN_REM, pxToRem(chromeMinPx)),
     PLAYER_COVER_MIN_REM,
@@ -3869,12 +3871,27 @@ function syncPlayerCollapse() {
   player.style.setProperty("--player-cover-scale", coverScale.toFixed(4));
   player.style.setProperty("--player-label-factor", labelFactor.toFixed(4));
   player.classList.toggle("is-stuck", stuck);
+  // Annotate fold only on narrow layouts (larger UI / cover keeps Rate/Reject/Tag).
+  const narrowAnnotateFold = window.matchMedia("(max-width: 40rem)").matches;
+  const annotateCollapsed = narrowAnnotateFold && labelFactor < 0.05;
+  player.classList.toggle("is-annotate-collapsed", annotateCollapsed);
   player.classList.remove(
     "is-beside",
     "is-labels-collapsed",
     "is-compact-cover",
     "is-compact-no-labels",
   );
+
+  const meta = player.querySelector(".player-meta");
+  if (meta) {
+    if (annotateCollapsed) {
+      meta.setAttribute("aria-hidden", "true");
+      meta.inert = true;
+    } else {
+      meta.removeAttribute("aria-hidden");
+      meta.inert = false;
+    }
+  }
 
   // Keep collapse spacer at 0 — flex shell absorbs player height changes.
   const spacer = playerCollapseSpacer;
