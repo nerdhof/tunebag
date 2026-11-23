@@ -262,20 +262,24 @@ def test_catalog_ui_contract_has_rejected_filter_and_unreject() -> None:
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
     assert 'id="catalog-show-rejected"' in html
+    assert 'id="catalog-name-filter"' in html
     assert 'id="catalog-source-filters"' in html
     assert 'id="catalog-star-filters"' in html
     assert 'id="catalog-tag-filters"' in html
-    # Catalog filter order: tags → sources → stars → rejected
+    # Catalog filter order: name → tags → sources → stars → rejected
+    name_i = html.index('id="catalog-name-filter"')
     tag_i = html.index('id="catalog-tag-filters"')
     source_i = html.index('id="catalog-source-filters"')
     star_i = html.index('id="catalog-star-filters"')
     rejected_i = html.index('id="catalog-show-rejected"')
-    assert tag_i < source_i < star_i < rejected_i
+    assert name_i < tag_i < source_i < star_i < rejected_i
     assert "showRejectedCatalog" in js
     assert "syncRejectedToggle" in js
     assert "catalogFilterPlatforms" in js
     assert "catalogFilterMinStars" in js
     assert "catalogFilterTags" in js
+    assert "catalogNameFilter" in js
+    assert "matchesNameFilter" in js
     assert "confirmRemove: false" in js
     assert "mixMatchesCatalogFilters" in js
     assert "mountCatalogStarFloor" in js
@@ -308,13 +312,16 @@ def test_intent_list_ui_contract_has_tag_artist_platform_filters() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
+    assert 'id="intent-name-filter"' in html
     assert 'id="intent-tag-filters"' in html
     assert 'id="intent-artist-filters"' in html
     assert 'id="intent-source-filters"' in html
+    name_i = html.index('id="intent-name-filter"')
     tag_i = html.index('id="intent-tag-filters"')
     artist_i = html.index('id="intent-artist-filters"')
     source_i = html.index('id="intent-source-filters"')
-    assert tag_i < artist_i < source_i
+    assert name_i < tag_i < artist_i < source_i
+    assert "intentNameFilter" in js
     assert "intentListFilterTags" in js
     assert "intentListFilterArtistIds" in js
     assert "intentListFilterPlatforms" in js
@@ -325,6 +332,33 @@ def test_intent_list_ui_contract_has_tag_artist_platform_filters() -> None:
     # Must not shadow helper intentFilterPlatforms()
     assert "function intentFilterPlatforms(" in js
     assert js.count("let intentFilterPlatforms") == 0
+
+
+def test_name_filter_ui_contract_on_intents_catalog_cache() -> None:
+    """Name filter inputs sit in Intents/Catalog/Cache toolbars and wire match helpers."""
+    root = Path(__file__).resolve().parents[1] / "src" / "tunebag" / "static"
+    html = (root / "index.html").read_text()
+    js = (root / "app.js").read_text()
+    css = (root / "app.css").read_text()
+    assert 'id="intent-name-filter"' in html
+    assert 'id="catalog-name-filter"' in html
+    assert 'id="cache-name-filter"' in html
+    assert "name-filter-input" in html
+    assert ".name-filter-input" in css
+    assert "function matchesNameFilter(" in js
+    assert "catalogNameFilter" in js
+    assert "intentNameFilter" in js
+    assert "cacheNameFilter" in js
+    assert "mountCacheNameFilter" in js
+    assert "resetCacheNameFilter" in js
+    assert "NAME_FILTER_DEBOUNCE_MS" in js
+    assert "matchesNameFilter(cacheNameFilter, file.title, file.artist)" in js
+    assert "No cache rows match this filter" in js
+    # Cache name filter precedes metered toggle in the Filters row
+    cache_pane = html[html.index('id="cache"') : html.index('id="peers"')]
+    assert cache_pane.index('id="cache-name-filter"') < cache_pane.index(
+        'id="metered-toggle"'
+    )
 
 
 def test_unreject_api_clears_committed_reject(tmp_path: Path) -> None:

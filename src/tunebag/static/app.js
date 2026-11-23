@@ -17,6 +17,8 @@ let catalogFilterPlatforms = [];
 let catalogFilterMinStars = null;
 /** Catalog tag filter (AND); empty = no tag constraint. */
 let catalogFilterTags = [];
+/** Catalog name filter (title or artist substring); empty = any. */
+let catalogNameFilter = "";
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let catalogTagFilterEditor = null;
 /** @type {{ setFloor: (n: number|null) => void, getFloor: () => number|null } | null} */
@@ -28,6 +30,17 @@ let intentListFilterArtistIds = [];
 /** Intent list source filter (OR); empty = any.
  * Named apart from helper intentFilterPlatforms(). */
 let intentListFilterPlatforms = [];
+/** Intent list name filter (substring); empty = any. */
+let intentNameFilter = "";
+/** Cache name filter (title or artist substring); empty = any. */
+let cacheNameFilter = "";
+/** @type {ReturnType<typeof setTimeout> | null} */
+let catalogNameFilterTimer = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let intentNameFilterTimer = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let cacheNameFilterTimer = null;
+const NAME_FILTER_DEBOUNCE_MS = 150;
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let intentTagFilterEditor = null;
 /** @type {ReturnType<typeof mountArtistEditor> | null} */
@@ -4525,6 +4538,24 @@ function scheduleSoftRejectRefresh(mixId, rejectedAtIso) {
   softRejectTimers.set(mixId, handle);
 }
 
+/**
+ * Case-insensitive substring match across non-empty string parts.
+ * Empty / whitespace-only query matches everything.
+ * @param {string} query
+ * @param {...(string|null|undefined)} parts
+ */
+function matchesNameFilter(query, ...parts) {
+  const needle = String(query || "")
+    .trim()
+    .toLowerCase();
+  if (!needle) return true;
+  return parts.some((part) =>
+    String(part || "")
+      .toLowerCase()
+      .includes(needle),
+  );
+}
+
 function mixMatchesCatalogFilters(mix) {
   if (!showRejectedCatalog && isHardRejected(mix)) return false;
   if (
@@ -4542,6 +4573,9 @@ function mixMatchesCatalogFilters(mix) {
     catalogFilterTags.length &&
     !catalogFilterTags.every((t) => (mix.tags || []).includes(t))
   ) {
+    return false;
+  }
+  if (!matchesNameFilter(catalogNameFilter, mix.title, mix.artist)) {
     return false;
   }
   return true;
@@ -4608,6 +4642,19 @@ function syncRejectedToggle(btn, on) {
 }
 
 function mountCatalogFilters() {
+  const nameInput = document.getElementById("catalog-name-filter");
+  if (nameInput) {
+    catalogNameFilter = String(nameInput.value || "");
+    nameInput.addEventListener("input", () => {
+      catalogNameFilter = String(nameInput.value || "");
+      if (catalogNameFilterTimer != null) clearTimeout(catalogNameFilterTimer);
+      catalogNameFilterTimer = setTimeout(() => {
+        catalogNameFilterTimer = null;
+        void refreshAffectedSurfaces(["mixes"], { force: true });
+      }, NAME_FILTER_DEBOUNCE_MS);
+    });
+  }
+
   const sourcesRoot = document.getElementById("catalog-source-filters");
   if (sourcesRoot) {
     sourcesRoot.replaceChildren();
@@ -4686,8 +4733,15 @@ function resetCatalogFilters() {
   catalogFilterPlatforms = [];
   catalogFilterMinStars = null;
   catalogFilterTags = [];
+  catalogNameFilter = "";
   showRejectedCatalog = false;
   syncRejectedToggle(document.getElementById("catalog-show-rejected"), false);
+  const nameInput = document.getElementById("catalog-name-filter");
+  if (nameInput) nameInput.value = "";
+  if (catalogNameFilterTimer != null) {
+    clearTimeout(catalogNameFilterTimer);
+    catalogNameFilterTimer = null;
+  }
   const sourcesRoot = document.getElementById("catalog-source-filters");
   if (sourcesRoot) {
     for (const btn of sourcesRoot.querySelectorAll(".source-toggle")) {
@@ -4723,10 +4777,26 @@ function intentMatchesListFilters(intent) {
       return false;
     }
   }
+  if (!matchesNameFilter(intentNameFilter, intent.name)) {
+    return false;
+  }
   return true;
 }
 
 function mountIntentListFilters() {
+  const nameInput = document.getElementById("intent-name-filter");
+  if (nameInput) {
+    intentNameFilter = String(nameInput.value || "");
+    nameInput.addEventListener("input", () => {
+      intentNameFilter = String(nameInput.value || "");
+      if (intentNameFilterTimer != null) clearTimeout(intentNameFilterTimer);
+      intentNameFilterTimer = setTimeout(() => {
+        intentNameFilterTimer = null;
+        void refreshIntents({ force: true });
+      }, NAME_FILTER_DEBOUNCE_MS);
+    });
+  }
+
   const tagsRoot = document.getElementById("intent-tag-filters");
   if (tagsRoot) {
     tagsRoot.replaceChildren();
@@ -4814,13 +4884,44 @@ function resetIntentListFilters() {
   intentListFilterTags = [];
   intentListFilterArtistIds = [];
   intentListFilterPlatforms = [];
+  intentNameFilter = "";
   intentTagFilterEditor?.setTags([]);
   intentArtistFilterEditor?.setIds([]);
+  const nameInput = document.getElementById("intent-name-filter");
+  if (nameInput) nameInput.value = "";
+  if (intentNameFilterTimer != null) {
+    clearTimeout(intentNameFilterTimer);
+    intentNameFilterTimer = null;
+  }
   const sourcesRoot = document.getElementById("intent-source-filters");
   if (sourcesRoot) {
     for (const btn of sourcesRoot.querySelectorAll(".source-toggle")) {
       btn.setAttribute("aria-pressed", "false");
     }
+  }
+}
+
+function mountCacheNameFilter() {
+  const nameInput = document.getElementById("cache-name-filter");
+  if (!nameInput) return;
+  cacheNameFilter = String(nameInput.value || "");
+  nameInput.addEventListener("input", () => {
+    cacheNameFilter = String(nameInput.value || "");
+    if (cacheNameFilterTimer != null) clearTimeout(cacheNameFilterTimer);
+    cacheNameFilterTimer = setTimeout(() => {
+      cacheNameFilterTimer = null;
+      void refreshFiles({ force: true });
+    }, NAME_FILTER_DEBOUNCE_MS);
+  });
+}
+
+function resetCacheNameFilter() {
+  cacheNameFilter = "";
+  const nameInput = document.getElementById("cache-name-filter");
+  if (nameInput) nameInput.value = "";
+  if (cacheNameFilterTimer != null) {
+    clearTimeout(cacheNameFilterTimer);
+    cacheNameFilterTimer = null;
   }
 }
 
@@ -6132,7 +6233,13 @@ async function refreshFilesNow({ force = false } = {}) {
     return;
   }
 
+  let paintedGroups = 0;
   for (const group of groups) {
+    const visibleMixes = (group.mixes || []).filter((file) =>
+      matchesNameFilter(cacheNameFilter, file.title, file.artist),
+    );
+    if (!visibleMixes.length) continue;
+    paintedGroups += 1;
     const groupKey = cacheGroupKey(group);
     const expanded = expandedCacheIntents.has(groupKey);
 
@@ -6176,7 +6283,7 @@ async function refreshFilesNow({ force = false } = {}) {
     });
     body.appendChild(header);
 
-    for (const file of group.mixes || []) {
+    for (const file of visibleMixes) {
       const tr = document.createElement("tr");
       tr.className = "cache-mix-row";
       tr.dataset.groupId = groupKey;
@@ -6254,6 +6361,17 @@ async function refreshFilesNow({ force = false } = {}) {
       tr.appendChild(actionCell);
       body.appendChild(tr);
     }
+  }
+  if (!paintedGroups) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = "muted";
+    td.textContent = cacheNameFilter.trim()
+      ? "No cache rows match this filter"
+      : "No assigned audio yet — create an intent with hours, or use Fill now on an Intent";
+    tr.appendChild(td);
+    body.appendChild(tr);
   }
   patchPlaylogCacheFromFiles(data);
 }
@@ -6979,7 +7097,8 @@ async function refreshIntents({ force = false } = {}) {
     const filtersActive =
       intentListFilterTags.length ||
       intentListFilterArtistIds.length ||
-      intentListFilterPlatforms.length;
+      intentListFilterPlatforms.length ||
+      intentNameFilter.trim();
     td.textContent =
       !allIntents.length
         ? "No intents yet"
@@ -8008,6 +8127,8 @@ function connectViewNotices() {
   resetCatalogFilters();
   mountIntentListFilters();
   resetIntentListFilters();
+  mountCacheNameFilter();
+  resetCacheNameFilter();
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();
