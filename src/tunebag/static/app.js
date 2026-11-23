@@ -3891,17 +3891,40 @@ function onFocusScrollHomeClick(event) {
 }
 
 /**
- * Create/reparent the shared ⌃ circle as an overlay at the end of the active
- * table pane (bottom-right over the scrollport).
+ * Create/reparent the shared ⌃ chip as a bottom-center overlay on the active
+ * table scrollport (same grid cell; no layout space). Mini face mimics player
+ * cover + seek.
  */
 function ensureFocusScrollHomeBtn() {
   let btn = focusScrollHomeBtn;
   if (!btn) {
     btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "focus-scroll-home-btn";
+    btn.className = "focus-scroll-home-btn symbol-btn";
     btn.hidden = true;
-    setSymbolButton(btn, BTN.scrollHome, "Scroll to top");
+    btn.setAttribute("aria-label", "Scroll to top");
+    btn.dataset.tip = "Scroll to top";
+
+    const face = document.createElement("span");
+    face.className = "focus-scroll-home-face";
+    face.setAttribute("aria-hidden", "true");
+
+    const row = document.createElement("span");
+    row.className = "focus-scroll-home-row";
+
+    const cover = document.createElement("span");
+    cover.className = "focus-scroll-home-cover";
+
+    const caret = document.createElement("span");
+    caret.className = "focus-scroll-home-caret";
+    caret.textContent = BTN.scrollHome;
+
+    const seek = document.createElement("span");
+    seek.className = "focus-scroll-home-seek";
+
+    row.append(cover, caret);
+    face.append(row, seek);
+    btn.appendChild(face);
     btn.addEventListener("click", onFocusScrollHomeClick);
     focusScrollHomeBtn = btn;
   }
