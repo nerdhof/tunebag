@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -209,6 +209,11 @@ class MarkPlayedBody(BaseModel):
 
 class DropSequenceBody(BaseModel):
     mix_id: UUID
+
+
+class QueueSequenceBody(BaseModel):
+    mix_id: UUID
+    position: Literal["front", "back"]
 
 
 class RateBody(BaseModel):
@@ -672,6 +677,18 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail="cover not available")
         data, media_type = payload
         return Response(content=data, media_type=media_type)
+
+    @app.get("/api/mixes/{mix_id}/matching-intents")
+    def matching_intents(mix_id: UUID) -> dict:
+        try:
+            intents = agent.matching_intents(mix_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "intents": [
+                {"id": str(intent.id), "name": intent.name} for intent in intents
+            ]
+        }
 
     @app.post("/api/mixes/{mix_id}/rate")
     def rate_mix(mix_id: UUID, body: RateBody) -> dict:
@@ -1149,6 +1166,33 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             "ok": True,
             "intent_id": str(intent_id),
             "mix_id": str(body.mix_id),
+            "entries": [
+                {
+                    "mix_id": str(entry.mix_id),
+                    "position": entry.position,
+                    "bucket": entry.bucket.value,
+                }
+                for entry in sequence.entries
+            ],
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
+        }
+
+    @app.post("/api/intents/{intent_id}/sequence/queue")
+    def queue_on_sequence(intent_id: UUID, body: QueueSequenceBody) -> dict:
+        try:
+            sequence = agent.queue_on_sequence(
+                intent_id, body.mix_id, body.position
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "intent_id": str(intent_id),
+            "mix_id": str(body.mix_id),
+            "position": body.position,
             "entries": [
                 {
                     "mix_id": str(entry.mix_id),

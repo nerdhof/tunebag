@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from typing import Literal
 from uuid import UUID
 
 from tunebag.domain import (
@@ -22,6 +23,8 @@ from tunebag.domain import (
     StarBucket,
     Stars,
 )
+
+QueuePosition = Literal["front", "back"]
 
 
 def bucket_for(mix: Mix) -> StarBucket:
@@ -105,6 +108,33 @@ def _draw_bucket(
         if pick <= cumulative:
             return bucket
     return next(iter(live))
+
+
+def place_in_sequence(
+    current: Sequence,
+    mix: Mix,
+    *,
+    at: QueuePosition,
+) -> Sequence:
+    """Remove ``mix`` if present, then insert at front or back; reindex positions."""
+    others = [entry for entry in current.entries if entry.mix_id != mix.id]
+    placed = SequenceEntry(
+        mix_id=mix.id,
+        position=0,
+        bucket=bucket_for(mix),
+    )
+    ordered = [placed, *others] if at == "front" else [*others, placed]
+    return Sequence(
+        intent_id=current.intent_id,
+        entries=[
+            SequenceEntry(
+                mix_id=entry.mix_id,
+                position=index,
+                bucket=entry.bucket,
+            )
+            for index, entry in enumerate(ordered)
+        ],
+    )
 
 
 def fill_sequence(

@@ -100,6 +100,7 @@ const BTN = {
   reject: "✕",
   unreject: "↺",
   drop: "⊖",
+  queue: "↪",
   add: "✚",
   save: "✓",
   cancel: "×",
@@ -4963,7 +4964,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!data.mixes.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 5;
+      td.colSpan = 6;
       td.className = "muted";
       td.textContent = "No releases yet";
       tr.appendChild(td);
@@ -4986,7 +4987,7 @@ async function refreshMixes({ force = false } = {}) {
       header.setAttribute("role", "button");
 
       const artistCell = document.createElement("td");
-      artistCell.colSpan = 5;
+      artistCell.colSpan = 6;
       const artistInner = document.createElement("div");
       artistInner.className = "artist-row-inner";
       const foldMain = document.createElement("div");
@@ -5104,6 +5105,15 @@ async function refreshMixes({ force = false } = {}) {
         tr.dataset.mixId = mix.id;
         tr.hidden = !expanded;
 
+        const queueCell = document.createElement("td");
+        queueCell.className = "catalog-queue-cell";
+        const showAsRejected =
+          (mix.rejected && !unrejectPending) || rejectPending;
+        if (!showAsRejected) {
+          mountCatalogQueueControl({ cell: queueCell, mix });
+        }
+        tr.appendChild(queueCell);
+
         const coverCell = document.createElement("td");
         coverCell.className = "catalog-cover-cell";
         if (mix.has_cover) {
@@ -5160,7 +5170,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!body.children.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 5;
+      td.colSpan = 6;
       td.className = "muted";
       td.textContent = "No releases match these filters";
       tr.appendChild(td);
@@ -5207,6 +5217,264 @@ async function dropFromSequence(intentId, mixId) {
   return data;
 }
 
+/** POST Queue onto sequence (front|back); throws Error with server detail. */
+async function queueOnSequence(intentId, mixId, position) {
+  const res = await fetch(`/api/intents/${intentId}/sequence/queue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mix_id: mixId, position }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    throw new Error(
+      typeof detail === "string" ? detail : "Queue on sequence failed",
+    );
+  }
+  return data;
+}
+
+async function fetchMatchingIntents(mixId) {
+  const res = await fetch(`/api/mixes/${mixId}/matching-intents`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    throw new Error(
+      typeof detail === "string" ? detail : "Could not load matching intents",
+    );
+  }
+  return data.intents || [];
+}
+
+let openCatalogQueuePicker = null;
+
+function closeCatalogQueuePicker() {
+  if (!openCatalogQueuePicker) return;
+  openCatalogQueuePicker.close();
+  openCatalogQueuePicker = null;
+}
+
+/**
+ * Catalog split Queue control: prepend (↪ flipped) | append (↪).
+ * @param {{ cell: HTMLElement, mix: object }} opts
+ */
+function mountCatalogQueueControl({ cell, mix }) {
+  cell.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "catalog-queue-split";
+  wrap.setAttribute("role", "group");
+  wrap.setAttribute("aria-label", "Queue");
+
+  const frontBtn = document.createElement("button");
+  frontBtn.type = "button";
+  frontBtn.className = "catalog-queue-half catalog-queue-front";
+  frontBtn.setAttribute("aria-label", "Queue at front");
+  frontBtn.dataset.tip = "Queue at front";
+  const frontGlyph = document.createElement("span");
+  frontGlyph.className = "catalog-queue-glyph";
+  frontGlyph.setAttribute("aria-hidden", "true");
+  frontGlyph.textContent = BTN.queue;
+  frontBtn.appendChild(frontGlyph);
+
+  const backBtn = document.createElement("button");
+  backBtn.type = "button";
+  backBtn.className = "catalog-queue-half catalog-queue-back";
+  backBtn.setAttribute("aria-label", "Queue at back");
+  backBtn.dataset.tip = "Queue at back";
+  const backGlyph = document.createElement("span");
+  backGlyph.className = "catalog-queue-glyph";
+  backGlyph.setAttribute("aria-hidden", "true");
+  backGlyph.textContent = BTN.queue;
+  backBtn.appendChild(backGlyph);
+
+  wrap.appendChild(frontBtn);
+  wrap.appendChild(backBtn);
+  cell.appendChild(wrap);
+
+  async function openPicker(position, anchorBtn) {
+    closeCatalogQueuePicker();
+    const pickerWrap = document.createElement("div");
+    pickerWrap.className = "catalog-queue-picker tag-picker-wrap";
+    pickerWrap.addEventListener("click", (event) => event.stopPropagation());
+    pickerWrap.addEventListener("pointerdown", (event) =>
+      event.stopPropagation(),
+    );
+
+    const filterInput = document.createElement("input");
+    filterInput.type = "text";
+    filterInput.className = "tag-picker-input";
+    filterInput.placeholder = "intent";
+    filterInput.autocomplete = "off";
+    filterInput.spellcheck = false;
+
+    const suggestList = document.createElement("div");
+    suggestList.className = "tag-suggest-list";
+    const loading = document.createElement("div");
+    loading.className = "muted";
+    loading.textContent = "Loading…";
+    suggestList.appendChild(loading);
+
+    pickerWrap.appendChild(filterInput);
+    pickerWrap.appendChild(suggestList);
+    cell.appendChild(pickerWrap);
+    anchorBtn.setAttribute("aria-expanded", "true");
+
+    let intents = [];
+    let highlightIndex = 0;
+    let closed = false;
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      pickerWrap.remove();
+      frontBtn.removeAttribute("aria-expanded");
+      backBtn.removeAttribute("aria-expanded");
+      document.removeEventListener("pointerdown", onDocPointer, true);
+      document.removeEventListener("keydown", onDocKey, true);
+      if (openCatalogQueuePicker === api) openCatalogQueuePicker = null;
+    }
+
+    const api = { close };
+    openCatalogQueuePicker = api;
+
+    function onDocPointer(event) {
+      if (!pickerWrap.contains(event.target) && !wrap.contains(event.target)) {
+        close();
+      }
+    }
+
+    function onDocKey(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    }
+
+    document.addEventListener("pointerdown", onDocPointer, true);
+    document.addEventListener("keydown", onDocKey, true);
+
+    function visibleIntents() {
+      const q = (filterInput.value || "").trim().toLowerCase();
+      if (!q) return intents;
+      return intents.filter((intent) =>
+        String(intent.name || "")
+          .toLowerCase()
+          .includes(q),
+      );
+    }
+
+    function paintHighlight() {
+      const rows = [...suggestList.querySelectorAll("button.tag-suggest")];
+      rows.forEach((row, index) => {
+        row.classList.toggle("is-active", index === highlightIndex);
+      });
+    }
+
+    function renderSuggestions() {
+      suggestList.innerHTML = "";
+      const rows = visibleIntents();
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = "No matching intents";
+        suggestList.appendChild(empty);
+        return;
+      }
+      highlightIndex = Math.min(highlightIndex, rows.length - 1);
+      rows.forEach((intent, index) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "tag-suggest";
+        btn.textContent = intent.name || "(unnamed)";
+        if (index === highlightIndex) btn.classList.add("is-active");
+        btn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void chooseIntent(intent);
+        });
+        suggestList.appendChild(btn);
+      });
+    }
+
+    async function chooseIntent(intent) {
+      close();
+      wrap.classList.add("catalog-queue-pending");
+      wrap.setAttribute("aria-busy", "true");
+      frontBtn.disabled = true;
+      backBtn.disabled = true;
+      try {
+        await queueOnSequence(intent.id, mix.id, position);
+        const where = position === "front" ? "front" : "back";
+        showNotice(`Queued at ${where} of ${intent.name || "intent"}`, "ok");
+        await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
+        void refreshAffectedSurfaces(["cache"], { force: true });
+      } catch (err) {
+        showNotice(err?.message || "Queue failed", "warn");
+        wrap.classList.remove("catalog-queue-pending");
+        wrap.removeAttribute("aria-busy");
+        frontBtn.disabled = false;
+        backBtn.disabled = false;
+      }
+    }
+
+    filterInput.addEventListener("input", () => {
+      highlightIndex = 0;
+      renderSuggestions();
+    });
+    filterInput.addEventListener("keydown", (event) => {
+      const rows = visibleIntents();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const intent = rows[highlightIndex] || rows[0];
+        if (intent) void chooseIntent(intent);
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        highlightIndex = Math.min(
+          highlightIndex + 1,
+          Math.max(0, rows.length - 1),
+        );
+        paintHighlight();
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        highlightIndex = Math.max(highlightIndex - 1, 0);
+        paintHighlight();
+      }
+    });
+
+    filterInput.focus();
+    try {
+      intents = await fetchMatchingIntents(mix.id);
+      if (!closed) renderSuggestions();
+    } catch (err) {
+      if (closed) return;
+      suggestList.innerHTML = "";
+      const fail = document.createElement("div");
+      fail.className = "muted";
+      fail.textContent = err?.message || "Could not load intents";
+      suggestList.appendChild(fail);
+    }
+  }
+
+  frontBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void openPicker("front", frontBtn);
+  });
+  backBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void openPicker("back", backBtn);
+  });
+}
+
+/**
+ * Commit Drop with pending chrome (hover confirm-click or touch swipe).
+ * @param {{ row: HTMLElement | null, intentId: string, mixId: string, dropBtn?: HTMLButtonElement | null }} opts
+ */
 /**
  * Commit Drop with pending chrome (hover confirm-click or touch swipe).
  * @param {{ row: HTMLElement | null, intentId: string, mixId: string, dropBtn?: HTMLButtonElement | null }} opts

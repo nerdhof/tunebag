@@ -10,7 +10,7 @@ Implementation may lag; see **Gaps vs current code** at the end.
 |---------|-----|
 | **Player** | Transport + annotate the *now-playing* Release |
 | **Playlog** | Global completed (Played) past + Intent assignment now/upcoming; Queued Intent select + Play now; cover hover ▶ / ◀ / ⏸; upcoming `#` Drop (hover) / left-swipe → ⊖ confirm (touch); right-swipe → ▶ confirm (touch); Cache under Length |
-| **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release |
+| **Catalog** | Browse/filter full Catalog; manage Artists (ingest/refresh/delete); annotate any Release; Queue matching Releases onto an Intent Sequence (front/back) |
 | **Intents** | Define plans; assign device hours; rebuild Sequence; cover hover Switch to intent; Fill now |
 | **Cache** | Inspect File completeness; Metered |
 | **Activity** | Observe local agent work (fills, syncs) — read-only |
@@ -39,6 +39,7 @@ Canonical UI labels (tips / accessible names). Domain meaning in parentheses whe
 | **Switch to intent** / **Play now** | Select that Intent as the Player’s current Intent and start/continue playback on its sequence; when that Intent is already playing, the control pauses (same as Player Pause). Intents cover hover uses Switch to intent; Playlog Queued Intent control uses Play now |
 | **Regenerate sequence** | Full rebuild of Sequence / assignments for one Intent (explicit; Played / Skipped / Reject use Sequence fillup instead — keep remaining queue order, append only if device hours need it) |
 | **Drop from sequence** | Remove one Release from this Intent’s Sequence (trim + Sequence fillup); not Played / Skipped / Reject; may re-enter later. After commit the row greys out until refresh. **Hover:** confirm-click (⊖ → 💥) on Playlog upcoming `#` and Intent Shared sequence `#`. **Touch Playlog:** left-swipe past threshold arms a red ⊖ chip (tap to Drop); swipe is preview only. **Touch Intents Shared sequence:** Drop unavailable for now (show `#` only). Not for the live current Release |
+| **Queue** / **Queue at front** / **Queue at back** | Place a Release at the front or back of one matching Intent’s Sequence (move if already present; then Sequence fillup). Does not Switch to intent or start playback. Catalog: split control (↪ flipped = front, ↪ = back) opens a matching-Intent picker. Not for Rejected or the live current Release of that Intent |
 | **Refresh artist** / **Refresh all artists** | Re-ingest from origin for one / all Artists |
 | **Fill now** | Metered override: fill one Intent to its full device budget |
 | **Sync** | Exchange Event logs with reachable trusted Peers (+ maintenance nudge). Not “reload UI” |
@@ -49,7 +50,7 @@ Shared control set wherever a surface’s job includes annotate:
 
 **Rate**, **Tag**, **Reject** (confirm-click), **Un-reject** (when the Release is Rejected).
 
-Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸; touch swipe → confirm chip); Switch to intent on Intent cover hover; Drop from sequence on Playlog upcoming / Intent Shared sequence `#` (hover confirm-click; touch Playlog left-swipe → ⊖ confirm); Player transport verbs; Catalog Rejected filter chip.
+Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸; touch swipe → confirm chip); Switch to intent on Intent cover hover; Drop from sequence on Playlog upcoming / Intent Shared sequence `#` (hover confirm-click; touch Playlog left-swipe → ⊖ confirm); Queue on Catalog release rows (split front/back → matching-Intent picker); Player transport verbs; Catalog Rejected filter chip.
 
 ## Surface × action matrix
 
@@ -61,6 +62,7 @@ Surface-specific (not in the kit): row transport on Playlog (▶ / ◀ / ⏸; to
 | Un-reject | no | yes (if Rejected) | yes (if Rejected) | — | — | — | — |
 | Play / Pause (row) | — | yes | — | — | — | — | — |
 | Drop from sequence | — | yes (upcoming) | — | yes (Shared sequence) | — | — | — |
+| Queue (front / back) | — | — | yes (if not Rejected) | — | — | — | — |
 | Play / Pause / Stop / Skip / Mark played / Seek | yes | — | — | — | — | — | — |
 | Switch to intent / Play now | — | yes (Queued Intent filter row) | — | yes (cover hover) | — | — | — |
 | Regenerate sequence | — | — | — | yes | — | — | — |

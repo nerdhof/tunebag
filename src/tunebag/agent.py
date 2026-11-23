@@ -95,6 +95,7 @@ from tunebag.reject import (
 )
 from tunebag.release_cache import OriginFetch, ReleaseCache
 from tunebag.release_layout import album_timeline_location
+from tunebag.sequence import QueuePosition, matches_filter, place_in_sequence
 from tunebag.sequence_provision import SequenceProvisioner
 from tunebag.skip import SkipBuffer
 from tunebag.source import (
@@ -3283,6 +3284,70 @@ class DeviceAgent:
                     self._prune_unassigned_files()
                 # Async fill so the Drop HTTP reply (and UI refresh) is not blocked
                 # on origin downloads — same pattern as intent upsert fill_async.
+                self.request_fill()
+        sequence = self.catalog.sequences.get(intent_id)
+        if sequence is None:
+            raise KeyError(f"sequence not found for intent {intent_id}")
+        return sequence
+
+    def matching_intents(self, mix_id: UUID) -> list[Intent]:
+        """Intents whose filter accepts this Release (rejected → empty)."""
+        mix = self.catalog.mixes.get(mix_id)
+        if mix is None:
+            raise KeyError(f"unknown mix {mix_id}")
+        if mix.rejected:
+            return []
+        return [
+            intent
+            for intent in self.catalog.intents.values()
+            if matches_filter(
+                mix, intent.tags, intent.artist_ids, intent.platforms
+            )
+        ]
+
+    def queue_on_sequence(
+        self,
+        intent_id: UUID,
+        mix_id: UUID,
+        position: QueuePosition,
+    ) -> Sequence:
+        """Place a Release at the front or back of one Intent's Sequence, then fillup.
+
+        Moves the Release if it is already in the Sequence. Does not Switch to
+        intent or start playback. Refuses the live current Release for this
+        Intent (use Skip). See ADR-0012.
+        """
+        if position not in ("front", "back"):
+            raise ValueError("position must be 'front' or 'back'")
+        intent = self.catalog.intents.get(intent_id)
+        if intent is None:
+            raise KeyError(f"unknown intent {intent_id}")
+        mix = self.catalog.mixes.get(mix_id)
+        if mix is None:
+            raise KeyError(f"unknown mix {mix_id}")
+        if mix.rejected:
+            raise ValueError("rejected Release cannot be queued")
+        if not matches_filter(
+            mix, intent.tags, intent.artist_ids, intent.platforms
+        ):
+            raise ValueError("Release does not match Intent filter")
+        current = self.catalog.sequences.get(intent_id)
+        if current is None:
+            raise KeyError(f"sequence not found for intent {intent_id}")
+        if (
+            mix_id == self._current_mix_id
+            and self._playback.intent_id == intent_id
+        ):
+            raise ValueError("cannot queue the currently playing Release")
+        placed = place_in_sequence(current, mix, at=position)
+        with self._defer_auto_sync():
+            with self._view_notice_batch():
+                with self._journal.hold():
+                    for draft in self._sequence_provisioner.provision_fillup(
+                        intent, self.catalog, current=placed
+                    ):
+                        self._append_and_apply(draft.type, draft.payload)
+                    self._prune_unassigned_files()
                 self.request_fill()
         sequence = self.catalog.sequences.get(intent_id)
         if sequence is None:

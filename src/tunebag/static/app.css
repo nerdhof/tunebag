@@ -2759,6 +2759,93 @@ button.seq-drop-action.confirm-pending {
   box-shadow: 0 1px 0 color-mix(in srgb, var(--muted) 25%, transparent);
 }
 
+#catalog-table .catalog-queue-col,
+#catalog-table .catalog-queue-cell {
+  width: calc(var(--control-height) * 4 / 3 + 0.5rem);
+  padding-left: 0.25rem;
+  padding-right: 0.15rem;
+  position: relative;
+  vertical-align: middle;
+}
+
+/* One symbol-btn chrome, 4/3 × 4/3 (two 2/3-tall halves stacked). */
+#catalog-table .catalog-queue-split {
+  display: inline-flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: calc(var(--control-height) * 4 / 3);
+  min-width: calc(var(--control-height) * 4 / 3);
+  height: calc(var(--control-height) * 4 / 3);
+  min-height: calc(var(--control-height) * 4 / 3);
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  overflow: hidden;
+  background: transparent;
+  vertical-align: middle;
+}
+
+#catalog-table .catalog-queue-split.catalog-queue-pending {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+#catalog-table button.catalog-queue-half {
+  display: inline-flex;
+  flex: 0 0 calc(var(--control-height) * 2 / 3);
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: calc(var(--control-height) * 2 / 3);
+  min-height: calc(var(--control-height) * 2 / 3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Divider between stacked halves. */
+#catalog-table button.catalog-queue-half.catalog-queue-back {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+#catalog-table .catalog-queue-glyph {
+  display: inline-block;
+  line-height: 1;
+}
+
+/* Prepend: ↪ flipped vertically. */
+#catalog-table .catalog-queue-front .catalog-queue-glyph {
+  transform: scaleY(-1);
+}
+
+#catalog-table button.catalog-queue-half:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+#catalog-table button.catalog-queue-half:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+#catalog-table .catalog-queue-picker {
+  position: absolute;
+  left: 0;
+  top: calc(100% - 0.15rem);
+  z-index: 20;
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
 #catalog-table .catalog-cover-col,
 #catalog-table .catalog-cover-cell {
   width: 3.25rem;
