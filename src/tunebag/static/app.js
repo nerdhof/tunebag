@@ -3697,17 +3697,15 @@ function wheelDeltaYPx(event) {
 }
 
 /**
- * Wheel fold-first: collapse/expand the player before the table scrolls, so the
- * first row stays put while more rows appear as the player shrinks.
+ * Fold-first wheel accounting for a pane scrollport. Returns true when the
+ * delta was consumed by player collapse/expand (caller should not scroll).
+ * @param {HTMLElement} pane
+ * @param {WheelEvent} event
  */
-function onFocusPaneWheelFold(event) {
-  if (suppressPlayerCollapseFromPane) return;
-  const pane = event.currentTarget;
-  if (!(pane instanceof HTMLElement)) return;
-  if (pane !== focusPaneScrollEl(activeFocusTab)) return;
-
+function applyFocusPaneWheelFold(pane, event) {
+  if (suppressPlayerCollapseFromPane) return false;
   const dy = wheelDeltaYPx(event);
-  if (!dy) return;
+  if (!dy) return false;
 
   const home = paneScrollHomeTop(activeFocusTab);
   const atHome = pane.scrollTop <= home + 1;
@@ -3716,14 +3714,42 @@ function onFocusPaneWheelFold(event) {
     event.preventDefault();
     setPlayerCollapseDepthPx(playerCollapseScrollPx + dy);
     paneCollapseLastScrollTop = pane.scrollTop;
-    return;
+    return true;
   }
 
   if (dy < 0 && atHome && playerCollapseScrollPx > 0) {
     event.preventDefault();
     setPlayerCollapseDepthPx(playerCollapseScrollPx + dy);
     paneCollapseLastScrollTop = pane.scrollTop;
+    return true;
   }
+
+  return false;
+}
+
+/**
+ * Wheel fold-first: collapse/expand the player before the table scrolls, so the
+ * first row stays put while more rows appear as the player shrinks.
+ */
+function onFocusPaneWheelFold(event) {
+  const pane = event.currentTarget;
+  if (!(pane instanceof HTMLElement)) return;
+  if (pane !== focusPaneScrollEl(activeFocusTab)) return;
+  applyFocusPaneWheelFold(pane, event);
+}
+
+/**
+ * ⌃ overlay sits above the scrollport — forward wheel so the table still
+ * scrolls (and fold-first still runs) while the chip stays clickable.
+ */
+function onFocusScrollHomeWheel(event) {
+  const pane = focusPaneScrollEl(activeFocusTab);
+  if (!pane) return;
+  if (applyFocusPaneWheelFold(pane, event)) return;
+  const dy = wheelDeltaYPx(event);
+  if (!dy) return;
+  event.preventDefault();
+  pane.scrollTop += dy;
 }
 
 /**
@@ -3926,6 +3952,7 @@ function ensureFocusScrollHomeBtn() {
     face.append(row, seek);
     btn.appendChild(face);
     btn.addEventListener("click", onFocusScrollHomeClick);
+    btn.addEventListener("wheel", onFocusScrollHomeWheel, { passive: false });
     focusScrollHomeBtn = btn;
   }
   const pane = document.querySelector(`[data-focus-pane="${activeFocusTab}"]`);
