@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -286,3 +287,61 @@ def test_refresh_intent_folders_links_mix_and_album(tmp_path: Path) -> None:
         album_track_filename(0, album.tracks[0]),
         album_track_filename(1, album.tracks[1]),
     ]
+
+
+def _album_many_tracks(*, title: str, n_tracks: int = 12) -> Mix:
+    artist_id = new_id()
+    tracks = tuple(
+        AlbumTrack(
+            platform_id=f"t{i}",
+            title=f"Track {i} longer title for race window",
+            url=f"https://example.com/t{i}",
+            duration_seconds=60,
+            size_bytes=10,
+        )
+        for i in range(n_tracks)
+    )
+    return Mix(
+        id=new_id(),
+        artist_id=artist_id,
+        platform=Platform.BANDCAMP,
+        platform_id=f"album-{new_id()}",
+        title=title,
+        url="https://example.com/album",
+        duration_seconds=60 * n_tracks,
+        size_bytes=10 * n_tracks,
+        kind=ReleaseKind.ALBUM,
+        tracks=tracks,
+    )
+
+
+def test_concurrent_refresh_intent_folders_does_not_raise(tmp_path: Path) -> None:
+    """Wipe-and-rebuild must not interleave across threads (playlog vs fill)."""
+    catalog = CatalogState(data_dir=tmp_path)
+    cache = ReleaseCache(tmp_path, catalog)
+    albums = [
+        _album_many_tracks(
+            title="Das Beste von kurz nach früher bis jetzt und noch mehr"
+        )
+        for _ in range(6)
+    ]
+    for album in albums:
+        _seed(catalog, album)
+        cache.store_album(album, [b"x" * 32 for _ in album.tracks])
+    mix_ids = [album.id for album in albums]
+    intent_id = uuid4()
+
+    errors: list[BaseException] = []
+
+    def _refresh() -> None:
+        try:
+            cache.refresh_intent_folders([intent_id], lambda _iid: mix_ids)
+        except BaseException as exc:  # noqa: BLE001 — collect for assertion
+            errors.append(exc)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _i: _refresh(), range(24)))
+
+    assert errors == []
+    folder = cache.intent_folder(intent_id)
+    assert len(list(folder.iterdir())) == len(mix_ids)

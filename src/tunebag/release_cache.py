@@ -8,6 +8,7 @@ urgency / metered / preferred-origin policy stay on DeviceAgent.
 from __future__ import annotations
 
 import shutil
+import threading
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -58,6 +59,8 @@ class ReleaseCache:
         self._on_changed = on_changed
         # In-memory Mix blobs (Albums live only on disk under blobs/<id>/).
         self._memory: dict[UUID, bytes] = {}
+        # Wipe-and-rebuild intent folders; concurrent callers must not interleave.
+        self._intent_folders_lock = threading.Lock()
 
     def blob_path(self, mix_id: UUID) -> Path:
         return blob_path(self.data_dir, mix_id)
@@ -255,29 +258,31 @@ class ReleaseCache:
         intent_ids: Iterable[UUID],
         assigned_mix_ids: Callable[[UUID], Sequence[UUID]],
     ) -> None:
-        self._remove_orphan_intent_folders(intent_ids)
-        for intent_id in intent_ids:
-            folder = self.intent_folder(intent_id)
-            for existing in folder.iterdir():
-                if existing.is_dir() and not existing.is_symlink():
-                    shutil.rmtree(existing, ignore_errors=True)
-                elif existing.is_file() or existing.is_symlink():
-                    existing.unlink()
-            for mix_id in assigned_mix_ids(intent_id):
-                if not self.has(mix_id):
-                    continue
-                mix = self.catalog.mixes.get(mix_id)
-                if mix is None:
-                    continue
-                if mix.kind is ReleaseKind.ALBUM:
-                    self._link_album(folder, mix)
-                else:
-                    self._link_mix(folder, mix)
+        with self._intent_folders_lock:
+            self._remove_orphan_intent_folders(intent_ids)
+            for intent_id in intent_ids:
+                folder = self.intent_folder(intent_id)
+                for existing in folder.iterdir():
+                    if existing.is_dir() and not existing.is_symlink():
+                        shutil.rmtree(existing, ignore_errors=True)
+                    elif existing.is_file() or existing.is_symlink():
+                        existing.unlink()
+                for mix_id in assigned_mix_ids(intent_id):
+                    if not self.has(mix_id):
+                        continue
+                    mix = self.catalog.mixes.get(mix_id)
+                    if mix is None:
+                        continue
+                    if mix.kind is ReleaseKind.ALBUM:
+                        self._link_album(folder, mix)
+                    else:
+                        self._link_mix(folder, mix)
 
     def remove_intent_folder(self, intent_id: UUID) -> None:
-        folder = self.data_dir / "intents" / str(intent_id)
-        if folder.is_dir():
-            shutil.rmtree(folder, ignore_errors=True)
+        with self._intent_folders_lock:
+            folder = self.data_dir / "intents" / str(intent_id)
+            if folder.is_dir():
+                shutil.rmtree(folder, ignore_errors=True)
 
     def _ensure_mix(
         self,
