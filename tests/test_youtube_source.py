@@ -293,6 +293,7 @@ def test_youtube_listing_enables_ejs_without_cookies(
     assert len(captured) == 1
     opts = captured[0]
     assert opts.get("remote_components") == ["ejs:github"]
+    assert opts.get("extractor_args") == {"youtubetab": {"skip": ["authcheck"]}}
     assert opts.get("skip_download") is True
     assert "cookiefile" not in opts
     assert "cookiesfrombrowser" not in opts
@@ -334,6 +335,9 @@ def test_youtube_listing_forwards_cookiefile(
     assert listing.platform_id == CHANNEL_ID
     assert captured[0]["cookiefile"] == "/tmp/yt.txt"
     assert "cookiesfrombrowser" not in captured[0]
+    assert captured[0]["extractor_args"] == {
+        "youtubetab": {"skip": ["authcheck"]}
+    }
 
 
 def test_youtube_listing_forwards_cookies_from_browser(
@@ -373,6 +377,9 @@ def test_youtube_listing_forwards_cookies_from_browser(
     assert listing.platform_id == CHANNEL_ID
     assert captured[0]["cookiesfrombrowser"] == ("chrome", "Default", None, None)
     assert "cookiefile" not in captured[0]
+    assert captured[0]["extractor_args"] == {
+        "youtubetab": {"skip": ["authcheck"]}
+    }
 
 
 def test_youtube_listing_auth_challenge_surfaces_actionable_error(
