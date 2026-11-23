@@ -2507,6 +2507,15 @@ button.seq-drop-action.confirm-pending {
   opacity: 0;
 }
 
+@media (hover: none) {
+  button.seq-drop-action.symbol-btn {
+    opacity: 0.92;
+  }
+  .seq-drop-stack .seq-drop-label {
+    opacity: 0;
+  }
+}
+
 /* After Drop confirm: mute the row until Playlog/intent refresh removes it. */
 #playlog-table .playlog-row.seq-drop-pending,
 #intent-table .intent-seq-row.seq-drop-pending {
