@@ -371,6 +371,7 @@ function mountTagEditor(root, options) {
   const getCatalogTags = options.getCatalogTags || (() => catalogTagsCache);
   const confirmRemove = options.confirmRemove !== false;
   const untaggedSentinel = options.untaggedSentinel === true;
+  const addLabel = options.addLabel || "Add tag";
   let tags = untaggedSentinel
     ? normalizeIntentTags(options.tags || [])
     : (options.tags || [])
@@ -759,8 +760,8 @@ function mountTagEditor(root, options) {
     addBtn.type = "button";
     addBtn.className = "tag-chip-add";
     addBtn.textContent = "+";
-    addBtn.setAttribute("aria-label", "Add tag");
-    addBtn.dataset.tip = "Add tag";
+    addBtn.setAttribute("aria-label", addLabel);
+    addBtn.dataset.tip = addLabel;
     addBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -817,6 +818,7 @@ function mountArtistEditor(root, options) {
   const getCatalogArtists =
     options.getCatalogArtists || (() => catalogArtistsCache);
   const confirmRemove = options.confirmRemove !== false;
+  const addLabel = options.addLabel || "Add artist";
   /** @type {{id: string, name: string}[]} */
   let artists = [...(options.artists || [])];
   let confirming = null;
@@ -1136,8 +1138,8 @@ function mountArtistEditor(root, options) {
     addBtn.type = "button";
     addBtn.className = "tag-chip-add";
     addBtn.textContent = "+";
-    addBtn.setAttribute("aria-label", "Add artist");
-    addBtn.dataset.tip = "Add artist";
+    addBtn.setAttribute("aria-label", addLabel);
+    addBtn.dataset.tip = addLabel;
     addBtn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2155,12 +2157,14 @@ function mountIntentComposer(root, options) {
       initial.tags != null ? initial.tags : [UNTAGGED_TAG],
     confirmRemove: false,
     untaggedSentinel: true,
+    addLabel: "Filter tags",
     async onAdd() {},
     async onRemove() {},
   });
   const artistEditor = mountArtistEditor(artistsMount, {
     artists: [],
     confirmRemove: false,
+    addLabel: "Filter artists",
     async onAdd() {},
     async onRemove() {},
   });
@@ -4662,6 +4666,7 @@ function mountCatalogFilters() {
     catalogTagFilterEditor = mountTagEditor(tagsRoot, {
       tags: [],
       confirmRemove: false,
+      addLabel: "Filter tags",
       getCatalogTags: () => catalogTagsCache,
       async onAdd(tag) {
         catalogFilterTags = [...catalogFilterTags, tag];
@@ -4728,6 +4733,7 @@ function mountIntentListFilters() {
     intentTagFilterEditor = mountTagEditor(tagsRoot, {
       tags: [],
       confirmRemove: false,
+      addLabel: "Filter tags",
       getCatalogTags: () => catalogTagsCache,
       async onAdd(tag) {
         intentListFilterTags = [...intentListFilterTags, tag];
@@ -4748,6 +4754,7 @@ function mountIntentListFilters() {
     intentArtistFilterEditor = mountArtistEditor(artistsRoot, {
       artists: [],
       confirmRemove: false,
+      addLabel: "Filter artists",
       getCatalogArtists: () => catalogArtistsCache,
       async onAdd(artist) {
         intentListFilterArtistIds = [...intentListFilterArtistIds, artist.id];

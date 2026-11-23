@@ -555,13 +555,19 @@ body.tunebag-app .focus-pane {
   max-width: 100%;
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem 1rem;
   margin: 0 0 0.25rem;
   padding: 0.15rem 0 0.2rem;
   background: var(--card);
+}
+
+/* Expanded create/add composers need a second row; collapsed chrome stays one line. */
+.focus-toolbar:has(.add-form-open) {
+  flex-wrap: wrap;
+  align-items: flex-start;
 }
 
 .focus-pane-scroll {
@@ -579,7 +585,7 @@ body.tunebag-app .focus-pane {
 
 .focus-toolbar-filters {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.35rem 0.55rem;
   min-width: 0;
@@ -588,11 +594,12 @@ body.tunebag-app .focus-pane {
 
 .focus-toolbar-actions {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 0.35rem;
   margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .focus-toolbar-actions #sync-btn {
@@ -602,22 +609,42 @@ body.tunebag-app .focus-pane {
 .focus-toolbar-actions #intent-form,
 .focus-toolbar-actions #artists-form {
   margin: 0;
-  width: 100%;
+  width: auto;
+}
+
+.focus-toolbar-actions #artists-form.form-row {
+  flex-wrap: nowrap;
+  align-items: center;
+  margin: 0;
+}
+
+.focus-toolbar-actions .add-form-actions {
+  margin: 0;
 }
 
 .focus-toolbar-actions:has(#intent-form.add-form-open),
 .focus-toolbar-actions:has(#artists-form.add-form-open) {
   flex: 1 1 100%;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.focus-toolbar-actions:has(#intent-form.add-form-open) #intent-form,
+.focus-toolbar-actions:has(#artists-form.add-form-open) #artists-form {
+  width: 100%;
 }
 
 .focus-toolbar .catalog-toolbar {
+  /* Pack filters; do not inherit .catalog-toolbar { width: 100% } or actions wrap. */
   margin: 0;
+  flex: 1 1 auto;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .focus-toolbar .intent-toolbar {
-  /* Pack filters; do not inherit .catalog-toolbar { width: 100% } or Create wraps. */
   flex: 0 1 auto;
-  width: auto;
   gap: 0.5rem;
 }
 
