@@ -2366,6 +2366,18 @@ button.seq-drop-action.confirm-pending {
   display: none;
 }
 
+/* After Reject confirm: mute like Soft Reject until Catalog/Playlog refresh. */
+#catalog-table .mix-row.reject-pending,
+#playlog-table .playlog-row.reject-pending,
+#player.reject-pending {
+  opacity: 0.72;
+}
+
+#catalog-table .mix-row.unreject-pending,
+#playlog-table .playlog-row.unreject-pending {
+  opacity: 0.85;
+}
+
 #peers pre {
   max-width: 100%;
   min-width: 0;
@@ -3089,6 +3101,11 @@ button.seq-drop-action.confirm-pending {
 }
 
 .star-rating-star.is-empty {
+  color: var(--muted);
+}
+
+/* Intermediate Rate feedback: grey stars while POST is in flight. */
+.star-rating.is-pending .star-rating-star.is-filled {
   color: var(--muted);
 }
 

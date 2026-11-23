@@ -195,7 +195,7 @@ def test_reject_and_skip_commit_fillup_policies() -> None:
     assert after_catalog_change(
         actions, CatalogChange(CatalogChangeReason.REJECT_COMMIT)
     )
-    assert actions.calls == [("fillup_all", None), ("fill_caches", None)]
+    assert actions.calls == [("fillup_all", None), ("request_fill", None)]
 
     actions = FakeActions()
     mix_id = uuid4()

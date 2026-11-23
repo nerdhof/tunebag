@@ -107,9 +107,9 @@ flowchart LR
 
 ## Reactivity rules
 
-1. **After a user mutation**, refresh affected surfaces via the shared `refreshAffectedSurfaces` path with `force` where an open editor would otherwise skip DOM rebuild.
+1. **After a user mutation**, refresh affected surfaces via the shared `refreshAffectedSurfaces` path with `force` where an open editor would otherwise skip DOM rebuild. Annotate / play controls may paint **local pending chrome** immediately (grey Rate stars, muted Reject row, Drop greying, play/pause button flip) and kick that refresh in the background so the control does not wait on the remount; Drop remains the precedent.
 2. **View notices** refetch listed sections **without** `force` so in-progress editors (`focusInside`) are preserved.
-3. **Non-Catalog pending** must be API-visible if the UI shows it. Reject no longer uses a pre-commit undo buffer; Soft/Hard use Reject author time on Catalog/API snapshots.
+3. **Non-Catalog pending** must be API-visible if the UI shows it. Reject no longer uses a pre-commit undo buffer; Soft/Hard use Reject author time on Catalog/API snapshots. Reject Catalog maintenance is Sequence fillup + async Cache fill (same shape as Skip / Mark played), so the Reject POST is not blocked on origin downloads.
 4. **Activity**, **pairing session**, and **Player** are notice-driven (pairing may keep a short poll only while `pending_confirm` waits on the other device). Player seekbar position ticks locally between notices; natural end-of-Release is watched on the agent while playing.
 5. **Action outcome feedback** (errors, validation, notable successes) uses the player overlay (`#player-notice`, 5s); View notices remain refetch-only. Pairing session choreography tips stay in `#pair-session-hint`.
 

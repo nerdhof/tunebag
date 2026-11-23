@@ -126,8 +126,11 @@ def after_catalog_change(actions: MaintenanceActions, change: CatalogChange) -> 
         return True
 
     if reason is CatalogChangeReason.REJECT_COMMIT:
+        # Async fill so Reject never blocks the UI on origin downloads
+        # (same shape as MARK_PLAYED / SKIP_COMMIT). Soft-reject file deletes
+        # stay on the Soft→Hard timer path.
         actions.fillup_all_sequences()
-        actions.fill_caches()
+        actions.request_fill()
         return True
 
     if reason is CatalogChangeReason.ARTIST_DELETE:

@@ -60,6 +60,10 @@ let lastPlayerIntentId = null;
 let playlogScrollIntentId = null;
 /** In-flight Drop keys (`intentId:mixId`) — grey row, hide Drop until refresh. */
 const pendingSequenceDrops = new Set();
+/** In-flight Reject mix ids — mute row until refresh. */
+const pendingRejects = new Set();
+/** In-flight Un-reject mix ids — clear mute until refresh. */
+const pendingUnrejects = new Set();
 /** @type {ReturnType<typeof mountTagEditor> | null} */
 let playerTagEditor = null;
 /** @type {ReturnType<typeof mountStarRating> | null} */
@@ -2815,15 +2819,22 @@ function mountStarRating(root, { stars = null, interactive = true, onRate = null
 
   let current = stars != null && stars !== "" ? Number(stars) : null;
   let busy = false;
+  let pending = false;
 
   function paint() {
     const filled = current != null ? current : 0;
     root.dataset.stars = current != null ? String(current) : "";
+    root.classList.toggle("is-pending", pending);
     root.replaceChildren();
     root.setAttribute(
       "aria-label",
       current != null ? `${current} of 5 stars` : "Unrated",
     );
+    if (pending) {
+      root.setAttribute("aria-busy", "true");
+    } else {
+      root.removeAttribute("aria-busy");
+    }
     for (let s = 1; s <= 5; s += 1) {
       const isFilled = s <= filled;
       if (!interactive) {
@@ -2846,11 +2857,18 @@ function mountStarRating(root, { stars = null, interactive = true, onRate = null
       btn.addEventListener("click", async (event) => {
         event.stopPropagation();
         if (!onRate || busy) return;
+        const previous = current;
+        current = s;
         busy = true;
+        pending = true;
         paint();
         try {
           await onRate(s);
-          current = s;
+          pending = false;
+        } catch (err) {
+          current = previous;
+          pending = false;
+          console.error(err);
         } finally {
           busy = false;
           paint();
@@ -2863,7 +2881,9 @@ function mountStarRating(root, { stars = null, interactive = true, onRate = null
   paint();
   return {
     setStars(value) {
+      if (busy) return;
       current = value != null && value !== "" ? Number(value) : null;
+      pending = false;
       paint();
     },
     getStars() {
@@ -2946,7 +2966,7 @@ function mountRowAnnotateKit({
       if (!rateRes.ok) {
         throw new Error("Rate failed");
       }
-      await refreshAfterAnnotateMutation();
+      void refreshAfterAnnotateMutation();
     },
   });
 
@@ -2969,9 +2989,28 @@ function mountRowAnnotateKit({
     armedLabel: "really reject?",
     stopPropagation: true,
     async onConfirm() {
-      const res = await fetch(`/api/mixes/${mix.id}/reject`, { method: "POST" });
-      if (res.ok) {
-        await refreshAfterAnnotateMutation();
+      const row = actionsRoot.closest("tr");
+      markRejectPending(mix.id, row);
+      rejectBtn.hidden = true;
+      rejectBtn.disabled = true;
+      try {
+        const res = await fetch(`/api/mixes/${mix.id}/reject`, {
+          method: "POST",
+        });
+        if (!res.ok) {
+          clearRejectPending(mix.id, { restore: true });
+          rejectBtn.hidden = false;
+          rejectBtn.disabled = false;
+          return;
+        }
+        void refreshAfterAnnotateMutation().finally(() => {
+          clearRejectPending(mix.id);
+        });
+      } catch (err) {
+        clearRejectPending(mix.id, { restore: true });
+        rejectBtn.hidden = false;
+        rejectBtn.disabled = false;
+        console.error(err);
       }
     },
   });
@@ -2986,12 +3025,29 @@ function mountRowAnnotateKit({
   if (allowUnreject) {
     unRejectBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      const res = await fetch(`/api/mixes/${mix.id}/un-reject`, {
-        method: "POST",
-      });
-      if (res.ok) {
+      const row = actionsRoot.closest("tr");
+      markUnrejectPending(mix.id, row);
+      unRejectBtn.hidden = true;
+      unRejectBtn.disabled = true;
+      try {
+        const res = await fetch(`/api/mixes/${mix.id}/un-reject`, {
+          method: "POST",
+        });
+        if (!res.ok) {
+          clearUnrejectPending(mix.id, { restore: true });
+          unRejectBtn.hidden = false;
+          unRejectBtn.disabled = false;
+          return;
+        }
         clearSoftRejectTimer(mix.id);
-        await refreshAfterAnnotateMutation({ intents: true });
+        void refreshAfterAnnotateMutation({ intents: true }).finally(() => {
+          clearUnrejectPending(mix.id);
+        });
+      } catch (err) {
+        clearUnrejectPending(mix.id, { restore: true });
+        unRejectBtn.hidden = false;
+        unRejectBtn.disabled = false;
+        console.error(err);
       }
     });
   } else {
@@ -3011,13 +3067,13 @@ function mountRowAnnotateKit({
     async onAdd(tag) {
       await handlers.onAdd(tag);
       if (refreshAfterTag) {
-        await refreshAfterAnnotateMutation();
+        void refreshAfterAnnotateMutation();
       }
     },
     async onRemove(tag) {
       await handlers.onRemove(tag);
       if (refreshAfterTag) {
-        await refreshAfterAnnotateMutation();
+        void refreshAfterAnnotateMutation();
       }
     },
   });
@@ -3035,16 +3091,20 @@ function syncRowAnnotateRejectButtons({
   mix,
   allowUnreject = true,
 }) {
-  if (mix.rejected) {
+  const rejectPending = isRejectPending(mix.id);
+  const unrejectPending = isUnrejectPending(mix.id);
+  if (rejectPending || (mix.rejected && !unrejectPending)) {
     rejectBtn.hidden = true;
-    if (unRejectBtn) unRejectBtn.hidden = !allowUnreject;
-    if (isSoftRejected(mix)) {
+    if (unRejectBtn) {
+      unRejectBtn.hidden = !allowUnreject || rejectPending || unrejectPending;
+    }
+    if (!rejectPending && isSoftRejected(mix)) {
       scheduleSoftRejectRefresh(mix.id, mix.rejected_at);
     } else {
       clearSoftRejectTimer(mix.id);
     }
   } else {
-    rejectBtn.hidden = false;
+    rejectBtn.hidden = unrejectPending;
     if (unRejectBtn) unRejectBtn.hidden = true;
     clearSoftRejectTimer(mix.id);
   }
@@ -3093,23 +3153,34 @@ function mountPlayerAnnotateKit({
     armedSymbol: BTN.confirmDelete,
     armedLabel: "really reject?",
     async onConfirm() {
-      const player = await (await fetch("/api/player")).json();
-      if (!player.current_mix_id) {
+      const mixId = getMixId();
+      if (!mixId) {
         showNotice("Nothing to reject", "warn");
         return;
       }
+      markRejectPending(mixId);
+      rejectBtn.hidden = true;
+      rejectBtn.disabled = true;
       try {
-        const res = await fetch(`/api/mixes/${player.current_mix_id}/reject`, {
+        const res = await fetch(`/api/mixes/${mixId}/reject`, {
           method: "POST",
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
+          clearRejectPending(mixId, { restore: true });
+          rejectBtn.hidden = false;
+          rejectBtn.disabled = false;
           showNotice(data.detail || "Reject failed", "error");
           return;
         }
         showNotice("Rejected", "ok");
-        await refreshAfterAnnotateMutation();
+        void refreshAfterAnnotateMutation().finally(() => {
+          clearRejectPending(mixId);
+        });
       } catch (err) {
+        clearRejectPending(mixId, { restore: true });
+        rejectBtn.hidden = false;
+        rejectBtn.disabled = false;
         showNotice("Reject request failed", "error");
         console.error(err);
       }
@@ -4830,7 +4901,19 @@ async function refreshMixes({ force = false } = {}) {
       for (const mix of visibleMixes) {
         const tr = document.createElement("tr");
         tr.className = "mix-row";
-        if (mix.rejected) tr.classList.add("mix-rejected");
+        const rejectPending = isRejectPending(mix.id);
+        const unrejectPending = isUnrejectPending(mix.id);
+        if ((mix.rejected && !unrejectPending) || rejectPending) {
+          tr.classList.add("mix-rejected");
+        }
+        if (rejectPending) {
+          tr.classList.add("reject-pending");
+          tr.setAttribute("aria-busy", "true");
+        }
+        if (unrejectPending) {
+          tr.classList.add("unreject-pending");
+          tr.setAttribute("aria-busy", "true");
+        }
         tr.dataset.artistId = group.artistId;
         tr.dataset.mixId = mix.id;
         tr.hidden = !expanded;
@@ -4931,6 +5014,86 @@ async function dropFromSequence(intentId, mixId) {
     );
   }
   return data;
+}
+
+/** @param {string} mixId */
+function annotateRowsForMix(mixId) {
+  if (!mixId) return [];
+  return [
+    ...document.querySelectorAll(
+      `tr.mix-row[data-mix-id="${CSS.escape(mixId)}"], tr.playlog-row[data-mix-id="${CSS.escape(mixId)}"]`,
+    ),
+  ];
+}
+
+function isRejectPending(mixId) {
+  return Boolean(mixId) && pendingRejects.has(mixId);
+}
+
+function isUnrejectPending(mixId) {
+  return Boolean(mixId) && pendingUnrejects.has(mixId);
+}
+
+/** Mute Catalog/Playlog rows immediately while Reject POST is in flight. */
+function markRejectPending(mixId, row = null) {
+  if (!mixId) return;
+  pendingRejects.add(mixId);
+  pendingUnrejects.delete(mixId);
+  const rows = new Set(annotateRowsForMix(mixId));
+  if (row) rows.add(row);
+  for (const el of rows) {
+    el.classList.add("reject-pending", "mix-rejected");
+    el.setAttribute("aria-busy", "true");
+  }
+  document.getElementById("player")?.classList.toggle(
+    "reject-pending",
+    currentMixId === mixId,
+  );
+}
+
+/**
+ * @param {string} mixId
+ * @param {{ restore?: boolean }} [opts] restore=true removes optimistic mix-rejected (failed POST).
+ */
+function clearRejectPending(mixId, { restore = false } = {}) {
+  if (!mixId) return;
+  pendingRejects.delete(mixId);
+  for (const el of annotateRowsForMix(mixId)) {
+    el.classList.remove("reject-pending");
+    el.removeAttribute("aria-busy");
+    if (restore) el.classList.remove("mix-rejected");
+  }
+  if (currentMixId === mixId) {
+    document.getElementById("player")?.classList.remove("reject-pending");
+  }
+}
+
+/** Clear Reject mute immediately while Un-reject POST is in flight. */
+function markUnrejectPending(mixId, row = null) {
+  if (!mixId) return;
+  pendingUnrejects.add(mixId);
+  pendingRejects.delete(mixId);
+  const rows = new Set(annotateRowsForMix(mixId));
+  if (row) rows.add(row);
+  for (const el of rows) {
+    el.classList.add("unreject-pending");
+    el.classList.remove("mix-rejected", "playlog-soft-rejected", "reject-pending");
+    el.setAttribute("aria-busy", "true");
+  }
+}
+
+/**
+ * @param {string} mixId
+ * @param {{ restore?: boolean }} [opts] restore=true re-applies Reject mute (failed Un-reject).
+ */
+function clearUnrejectPending(mixId, { restore = false } = {}) {
+  if (!mixId) return;
+  pendingUnrejects.delete(mixId);
+  for (const el of annotateRowsForMix(mixId)) {
+    el.classList.remove("unreject-pending");
+    el.removeAttribute("aria-busy");
+    if (restore) el.classList.add("mix-rejected");
+  }
 }
 
 /**
@@ -5143,7 +5306,8 @@ async function playlogPlayMix(mixId) {
     }
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
-    await refreshAfterIntentPlaybackMutation();
+    applyPlaybackMutationChrome(data, intentId);
+    void refreshAfterIntentPlaybackMutation();
   } catch (err) {
     showNotice("Play request failed", "error");
     console.error(err);
@@ -5158,7 +5322,8 @@ async function playlogPause() {
       showNotice(data.detail || "Pause failed", "error");
       return;
     }
-    await refreshAfterIntentPlaybackMutation();
+    applyPlaybackMutationChrome(data, lastPlayerIntentId);
+    void refreshAfterIntentPlaybackMutation();
   } catch (err) {
     showNotice("Pause request failed", "error");
     console.error(err);
@@ -5351,8 +5516,22 @@ async function refreshPlaylog({ force = false } = {}) {
     if (offset < 0) tr.classList.add("playlog-past");
     if (offset === 0) tr.classList.add("playlog-current");
     if (offset > 0) tr.classList.add("playlog-upcoming");
-    if (item.rejected) tr.classList.add("mix-rejected");
-    if (item.soft_rejected) tr.classList.add("playlog-soft-rejected");
+    const rejectPending = isRejectPending(item.id);
+    const unrejectPending = isUnrejectPending(item.id);
+    if ((item.rejected && !unrejectPending) || rejectPending) {
+      tr.classList.add("mix-rejected");
+    }
+    if (item.soft_rejected && !unrejectPending) {
+      tr.classList.add("playlog-soft-rejected");
+    }
+    if (rejectPending) {
+      tr.classList.add("reject-pending");
+      tr.setAttribute("aria-busy", "true");
+    }
+    if (unrejectPending) {
+      tr.classList.add("unreject-pending");
+      tr.setAttribute("aria-busy", "true");
+    }
     const dropPending =
       Boolean(intentId) && isSequenceDropPending(intentId, item.id);
     if (dropPending) {
@@ -5672,6 +5851,21 @@ function isIntentCurrentlyPlaying(intentId) {
   );
 }
 
+/** Immediate play/pause chrome from a mutation response; full remount is background. */
+function applyPlaybackMutationChrome(data, intentId = null) {
+  const playing = Boolean(data?.playing);
+  const resolvedIntent =
+    intentId || data?.intent_id || lastPlayerIntentId || null;
+  if (data?.mix?.id) {
+    currentMixId = data.mix.id;
+  } else if (data?.current_mix_id) {
+    currentMixId = data.current_mix_id;
+  }
+  updatePlayPauseButton(playing);
+  updateIntentPlayButtons(playing, resolvedIntent);
+  setPlayerLocalClock(playing);
+}
+
 async function pausePlayback() {
   // Keep the player intent on whatever is actually playing so resume stays correct.
   if (lastPlayerIntentId) {
@@ -5693,7 +5887,10 @@ async function pausePlayback() {
     showNotice("Paused · marked played", "ok");
   }
   lastPlayheadCommitAt = Date.now();
-  await refreshAfterIntentPlaybackMutation({ markedPlayed: Boolean(data.played) });
+  applyPlaybackMutationChrome(data, lastPlayerIntentId);
+  void refreshAfterIntentPlaybackMutation({
+    markedPlayed: Boolean(data.played),
+  });
   return true;
 }
 
@@ -5715,7 +5912,8 @@ async function playIntent(intentId) {
   }
   lastPlayheadCommitAt = Date.now();
   playheadPlayedNotifiedForMix = null;
-  await refreshAfterIntentPlaybackMutation();
+  applyPlaybackMutationChrome(data, intentId);
+  void refreshAfterIntentPlaybackMutation();
   return true;
 }
 
@@ -7586,12 +7784,12 @@ if (playerSeekbar) {
 }
 
 async function rateCurrentPlayerMix(stars) {
-  const player = await (await fetch("/api/player")).json();
-  if (!player.current_mix_id) {
+  const mixId = currentMixId;
+  if (!mixId) {
     showNotice("Nothing to rate", "warn");
     throw new Error("Nothing to rate");
   }
-  const res = await fetch(`/api/mixes/${player.current_mix_id}/rate`, {
+  const res = await fetch(`/api/mixes/${mixId}/rate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ stars: Number(stars) }),
@@ -7601,7 +7799,7 @@ async function rateCurrentPlayerMix(stars) {
     showNotice(data.detail || "Rate failed", "error");
     throw new Error(data.detail || "Rate failed");
   }
-  await refreshAfterAnnotateMutation();
+  void refreshAfterAnnotateMutation();
 }
 
 document.getElementById("catalog-show-rejected")?.addEventListener("click", async (event) => {
