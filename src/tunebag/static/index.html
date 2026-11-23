@@ -293,15 +293,25 @@
         >
           <div class="focus-toolbar">
             <div class="focus-toolbar-filters catalog-toolbar intent-toolbar">
-              <input
-                id="intent-name-filter"
-                class="name-filter-input"
-                type="text"
-                placeholder="Filter name…"
-                autocomplete="off"
-                aria-label="Filter intents by name"
-              />
-              
+              <div class="name-filter">
+                <input
+                  id="intent-name-filter"
+                  class="name-filter-input"
+                  type="text"
+                  placeholder="Filter name…"
+                  autocomplete="off"
+                  aria-label="Filter intents by name"
+                />
+                <button
+                  type="button"
+                  class="name-filter-clear"
+                  hidden
+                  aria-label="Clear name filter"
+                  title="Clear"
+                >
+                  ×
+                </button>
+              </div>
               <div
                 id="intent-tag-filters"
                 class="catalog-tag-filters"
@@ -361,15 +371,25 @@
         >
           <div class="focus-toolbar">
             <div class="focus-toolbar-filters catalog-toolbar">
-              <input
-                id="catalog-name-filter"
-                class="name-filter-input"
-                type="text"
-                placeholder="Filter release or artist…"
-                autocomplete="off"
-                aria-label="Filter releases by title or artist"
-              />
-              
+              <div class="name-filter">
+                <input
+                  id="catalog-name-filter"
+                  class="name-filter-input"
+                  type="text"
+                  placeholder="Filter release or artist…"
+                  autocomplete="off"
+                  aria-label="Filter releases by title or artist"
+                />
+                <button
+                  type="button"
+                  class="name-filter-clear"
+                  hidden
+                  aria-label="Clear name filter"
+                  title="Clear"
+                >
+                  ×
+                </button>
+              </div>
               <div
                 id="catalog-tag-filters"
                 class="catalog-tag-filters"
@@ -460,15 +480,25 @@
         >
           <div class="focus-toolbar">
             <div class="focus-toolbar-filters">
-              <input
-                id="cache-name-filter"
-                class="name-filter-input"
-                type="text"
-                placeholder="Filter release or artist…"
-                autocomplete="off"
-                aria-label="Filter cache by title or artist"
-              />
-              
+              <div class="name-filter">
+                <input
+                  id="cache-name-filter"
+                  class="name-filter-input"
+                  type="text"
+                  placeholder="Filter release or artist…"
+                  autocomplete="off"
+                  aria-label="Filter cache by title or artist"
+                />
+                <button
+                  type="button"
+                  class="name-filter-clear"
+                  hidden
+                  aria-label="Clear name filter"
+                  title="Clear"
+                >
+                  ×
+                </button>
+              </div>
               <label
                 class="metered-toggle"
                 title="Simulate a metered link: origin downloads stay at current + one ahead"

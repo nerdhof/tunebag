@@ -4584,6 +4584,60 @@ function matchesNameFilter(query, ...parts) {
   );
 }
 
+/** Show/hide the × clear control for a free-text name filter. */
+function syncNameFilterClear(input) {
+  if (!input) return;
+  const clearBtn = input
+    .closest(".name-filter")
+    ?.querySelector(".name-filter-clear");
+  if (clearBtn) clearBtn.hidden = !String(input.value || "").length;
+}
+
+/**
+ * Debounced free-text name filter + × clear control.
+ * @param {HTMLInputElement | null} input
+ * @param {{
+ *   setValue: (value: string) => void,
+ *   getTimer: () => ReturnType<typeof setTimeout> | null,
+ *   setTimer: (timer: ReturnType<typeof setTimeout> | null) => void,
+ *   refresh: () => void,
+ * }} opts
+ */
+function mountNameFilterInput(input, opts) {
+  if (!input) return;
+  const clearBtn = input
+    .closest(".name-filter")
+    ?.querySelector(".name-filter-clear");
+
+  opts.setValue(String(input.value || ""));
+  syncNameFilterClear(input);
+
+  input.addEventListener("input", () => {
+    opts.setValue(String(input.value || ""));
+    syncNameFilterClear(input);
+    const prev = opts.getTimer();
+    if (prev != null) clearTimeout(prev);
+    opts.setTimer(
+      setTimeout(() => {
+        opts.setTimer(null);
+        opts.refresh();
+      }, NAME_FILTER_DEBOUNCE_MS),
+    );
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    input.value = "";
+    opts.setValue("");
+    syncNameFilterClear(input);
+    const prev = opts.getTimer();
+    if (prev != null) {
+      clearTimeout(prev);
+      opts.setTimer(null);
+    }
+    opts.refresh();
+    input.focus();
+  });
+}
 
 function mixMatchesCatalogFilters(mix) {
   if (!showRejectedCatalog && isHardRejected(mix)) return false;
@@ -4671,18 +4725,20 @@ function syncRejectedToggle(btn, on) {
 }
 
 function mountCatalogFilters() {
-  const nameInput = document.getElementById("catalog-name-filter");
-  if (nameInput) {
-    catalogNameFilter = String(nameInput.value || "");
-    nameInput.addEventListener("input", () => {
-      catalogNameFilter = String(nameInput.value || "");
-      if (catalogNameFilterTimer != null) clearTimeout(catalogNameFilterTimer);
-      catalogNameFilterTimer = setTimeout(() => {
-        catalogNameFilterTimer = null;
-        void refreshAffectedSurfaces(["mixes"], { force: true });
-      }, NAME_FILTER_DEBOUNCE_MS);
-    });
-  }
+  mountNameFilterInput(document.getElementById("catalog-name-filter"), {
+    setValue(value) {
+      catalogNameFilter = value;
+    },
+    getTimer() {
+      return catalogNameFilterTimer;
+    },
+    setTimer(timer) {
+      catalogNameFilterTimer = timer;
+    },
+    refresh() {
+      void refreshAffectedSurfaces(["mixes"], { force: true });
+    },
+  });
 
   const sourcesRoot = document.getElementById("catalog-source-filters");
   if (sourcesRoot) {
@@ -4767,6 +4823,7 @@ function resetCatalogFilters() {
   syncRejectedToggle(document.getElementById("catalog-show-rejected"), false);
   const nameInput = document.getElementById("catalog-name-filter");
   if (nameInput) nameInput.value = "";
+  syncNameFilterClear(nameInput);
   if (catalogNameFilterTimer != null) {
     clearTimeout(catalogNameFilterTimer);
     catalogNameFilterTimer = null;
@@ -4813,18 +4870,20 @@ function intentMatchesListFilters(intent) {
 }
 
 function mountIntentListFilters() {
-  const nameInput = document.getElementById("intent-name-filter");
-  if (nameInput) {
-    intentNameFilter = String(nameInput.value || "");
-    nameInput.addEventListener("input", () => {
-      intentNameFilter = String(nameInput.value || "");
-      if (intentNameFilterTimer != null) clearTimeout(intentNameFilterTimer);
-      intentNameFilterTimer = setTimeout(() => {
-        intentNameFilterTimer = null;
-        void refreshIntents({ force: true });
-      }, NAME_FILTER_DEBOUNCE_MS);
-    });
-  }
+  mountNameFilterInput(document.getElementById("intent-name-filter"), {
+    setValue(value) {
+      intentNameFilter = value;
+    },
+    getTimer() {
+      return intentNameFilterTimer;
+    },
+    setTimer(timer) {
+      intentNameFilterTimer = timer;
+    },
+    refresh() {
+      void refreshIntents({ force: true });
+    },
+  });
 
   const tagsRoot = document.getElementById("intent-tag-filters");
   if (tagsRoot) {
@@ -4918,6 +4977,7 @@ function resetIntentListFilters() {
   intentArtistFilterEditor?.setIds([]);
   const nameInput = document.getElementById("intent-name-filter");
   if (nameInput) nameInput.value = "";
+  syncNameFilterClear(nameInput);
   if (intentNameFilterTimer != null) {
     clearTimeout(intentNameFilterTimer);
     intentNameFilterTimer = null;
@@ -4931,16 +4991,19 @@ function resetIntentListFilters() {
 }
 
 function mountCacheNameFilter() {
-  const nameInput = document.getElementById("cache-name-filter");
-  if (!nameInput) return;
-  cacheNameFilter = String(nameInput.value || "");
-  nameInput.addEventListener("input", () => {
-    cacheNameFilter = String(nameInput.value || "");
-    if (cacheNameFilterTimer != null) clearTimeout(cacheNameFilterTimer);
-    cacheNameFilterTimer = setTimeout(() => {
-      cacheNameFilterTimer = null;
+  mountNameFilterInput(document.getElementById("cache-name-filter"), {
+    setValue(value) {
+      cacheNameFilter = value;
+    },
+    getTimer() {
+      return cacheNameFilterTimer;
+    },
+    setTimer(timer) {
+      cacheNameFilterTimer = timer;
+    },
+    refresh() {
       void refreshFiles({ force: true });
-    }, NAME_FILTER_DEBOUNCE_MS);
+    },
   });
 }
 
@@ -4948,6 +5011,7 @@ function resetCacheNameFilter() {
   cacheNameFilter = "";
   const nameInput = document.getElementById("cache-name-filter");
   if (nameInput) nameInput.value = "";
+  syncNameFilterClear(nameInput);
   if (cacheNameFilterTimer != null) {
     clearTimeout(cacheNameFilterTimer);
     cacheNameFilterTimer = null;

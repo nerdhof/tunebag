@@ -345,7 +345,11 @@ def test_name_filter_ui_contract_on_intents_catalog_cache() -> None:
     assert 'id="cache-name-filter"' in html
     assert "name-filter-input" in html
     assert ".name-filter-input" in css
+    assert "name-filter-clear" in html
+    assert "button.name-filter-clear" in css
     assert "function matchesNameFilter(" in js
+    assert "function mountNameFilterInput(" in js
+    assert "function syncNameFilterClear(" in js
     assert "catalogNameFilter" in js
     assert "intentNameFilter" in js
     assert "cacheNameFilter" in js

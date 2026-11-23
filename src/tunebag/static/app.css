@@ -594,16 +594,25 @@ body.tunebag-app .focus-pane {
   flex: 1 1 auto;
 }
 
-.name-filter-input {
-  appearance: none;
-  box-sizing: border-box;
+.name-filter {
+  position: relative;
+  display: flex;
   flex: 0 1 14rem;
   width: 14rem;
   min-width: 8rem;
   max-width: 100%;
+  align-items: center;
+}
+
+.name-filter-input {
+  appearance: none;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   height: var(--control-height);
   min-height: var(--control-height);
-  padding: 0 0.5rem;
+  padding: 0 1.65rem 0 0.5rem;
   border-radius: 4px;
   border: 1px solid var(--muted);
   background: var(--bg);
@@ -611,6 +620,38 @@ body.tunebag-app .focus-pane {
   font: inherit;
   font-size: inherit;
   line-height: calc(var(--control-height) - 2px);
+}
+
+button.name-filter-clear {
+  position: absolute;
+  right: 0.28rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+button.name-filter-clear:hover {
+  background: color-mix(in srgb, var(--muted) 80%, transparent);
+  color: var(--bg);
+}
+
+button.name-filter-clear[hidden] {
+  display: none;
 }
 
 .focus-toolbar-actions {
