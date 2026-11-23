@@ -7,7 +7,7 @@
     <link rel="icon" href="/static/favicon.svg?v=2" type="image/svg+xml" />
     <link rel="icon" href="/static/favicon.ico?v=2" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2" />
-    <link rel="stylesheet" href="/static/app.css?v=106" />
+    <link rel="stylesheet" href="/static/app.css?v=109" />
   </head>
   <body class="tunebag-app">
     <header id="app-chrome" class="app-chrome">
@@ -61,6 +61,7 @@
     </header>
     <main>
       <section id="player">
+        <p id="player-notice" class="player-notice" role="status" aria-live="polite" hidden></p>
         <!-- Cover | title+meta (title always beside; ellipsis when tight). -->
         <div class="player-now-row">
           <img id="player-cover" class="player-cover" alt="" hidden width="200" height="200" />
@@ -120,8 +121,6 @@
             </div>
           </div>
         </div>
-        <p id="player-reject-status" class="muted" hidden></p>
-        <p id="player-status" class="muted" role="status"></p>
       </section>
 
       <div id="focus" class="focus-region">
@@ -267,6 +266,23 @@
           hidden
         >
           <div class="focus-toolbar">
+            <div class="focus-toolbar-filters catalog-toolbar intent-toolbar">
+              <div
+                id="intent-tag-filters"
+                class="catalog-tag-filters"
+                title="Show intents that include all of these tags (empty = any)"
+              ></div>
+              <div
+                id="intent-artist-filters"
+                class="catalog-tag-filters intent-artist-filters"
+                title="Show intents that include any of these artists (empty = any)"
+              ></div>
+              <div
+                id="intent-source-filters"
+                class="catalog-source-filters"
+                title="Show intents that include these sources (none = any)"
+              ></div>
+            </div>
             <div class="focus-toolbar-actions">
               <form id="intent-form">
                 <div id="intent-create-composer" class="add-form-fields intent-composer" hidden></div>
@@ -297,7 +313,6 @@
                 <tbody id="intent-table-body"></tbody>
               </table>
             </div>
-            <p id="intent-status" class="muted" role="status"></p>
           </div>
         </section>
 
@@ -311,16 +326,11 @@
         >
           <div class="focus-toolbar">
             <div class="focus-toolbar-filters catalog-toolbar">
-              <button
-                type="button"
-                id="catalog-show-rejected"
-                class="source-toggle"
-                aria-pressed="false"
-                title="Show rejected releases (muted)"
-                aria-label="Show rejected releases"
-              >
-                ♲
-              </button>
+              <div
+                id="catalog-tag-filters"
+                class="catalog-tag-filters"
+                title="Show releases that have all of these tags (empty = any)"
+              ></div>
               <div
                 id="catalog-source-filters"
                 class="catalog-source-filters"
@@ -331,11 +341,16 @@
                 class="catalog-star-filters"
                 title="Minimum rating (click again to clear)"
               ></div>
-              <div
-                id="catalog-tag-filters"
-                class="catalog-tag-filters"
-                title="Show releases that have all of these tags (empty = any)"
-              ></div>
+              <button
+                type="button"
+                id="catalog-show-rejected"
+                class="source-toggle"
+                aria-pressed="false"
+                title="Show rejected releases (muted)"
+                aria-label="Show rejected releases"
+              >
+                ♲
+              </button>
             </div>
             <div class="focus-toolbar-actions">
               <form id="artists-form" class="form-row">
@@ -378,6 +393,7 @@
               <table id="catalog-table">
                 <thead>
                   <tr>
+                    <th class="catalog-cover-col" aria-label="Cover"></th>
                     <th>Release</th>
                     <th>Length</th>
                     <th>Rating</th>
@@ -387,7 +403,6 @@
                 <tbody id="catalog-body"></tbody>
               </table>
             </div>
-            <p id="artists-status" class="muted" role="status"></p>
           </div>
         </section>
 
@@ -411,7 +426,6 @@
             </div>
           </div>
           <div class="focus-pane-scroll">
-            <p id="fill-status" class="muted" role="status"></p>
             <div id="cache-table-wrap">
               <table id="cache-table">
                 <thead>
@@ -441,7 +455,6 @@
           <div class="focus-toolbar">
             <div class="focus-toolbar-actions">
               <button type="button" id="sync-btn" aria-label="Sync catalog" data-tip="Sync catalog">⇄</button>
-              <p id="sync-status" class="muted" role="status"></p>
             </div>
           </div>
           <div class="focus-pane-scroll">
@@ -535,13 +548,13 @@
                     />
                   </label>
                 </div>
+                <p id="pair-session-hint" class="muted pair-session-hint" hidden></p>
               </div>
               <div class="form-row add-form-actions">
                 <button type="submit" id="pair-join-btn" aria-label="Join peer" data-tip="Join peer">✚</button>
                 <button type="button" id="pair-form-cancel" hidden aria-label="Cancel" data-tip="Cancel">×</button>
               </div>
             </form>
-            <p id="pair-status" class="muted" role="status"></p>
           </div>
         </section>
 
@@ -559,6 +572,6 @@
         </section>
       </div>
     </main>
-    <script src="/static/app.js?v=101"></script>
+    <script src="/static/app.js?v=103"></script>
   </body>
 </html>

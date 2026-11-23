@@ -11,7 +11,7 @@ const expandedIntentSequences = new Set();
 const hoursEditorState = new Map();
 /** Catalog Rejected filter (default off). */
 let showRejectedCatalog = false;
-/** Catalog source filter (OR); default all platforms once mounted. */
+/** Catalog source filter (OR); empty = any. */
 let catalogFilterPlatforms = [];
 /** Catalog minimum stars filter; null = any rating (incl. unrated). */
 let catalogFilterMinStars = null;
@@ -21,8 +21,23 @@ let catalogFilterTags = [];
 let catalogTagFilterEditor = null;
 /** @type {{ setFloor: (n: number|null) => void, getFloor: () => number|null } | null} */
 let catalogStarFilter = null;
+/** Intent list tag filter (AND); empty = any. */
+let intentListFilterTags = [];
+/** Intent list artist filter (OR); empty = any. */
+let intentListFilterArtistIds = [];
+/** Intent list source filter (OR); empty = any.
+ * Named apart from helper intentFilterPlatforms(). */
+let intentListFilterPlatforms = [];
+/** @type {ReturnType<typeof mountTagEditor> | null} */
+let intentTagFilterEditor = null;
+/** @type {ReturnType<typeof mountArtistEditor> | null} */
+let intentArtistFilterEditor = null;
 /** Soft Rejected window (matches backend SOFT_REJECT_SECONDS). */
 const SOFT_REJECT_MS = 5 * 60 * 1000;
+/** Player notice overlay auto-clear. */
+const PLAYER_NOTICE_MS = 5 * 1000;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let playerNoticeTimer = null;
 /** @type {Map<string, number>} mixId → timeout when Soft ages to Hard (list refresh) */
 const softRejectTimers = new Map();
 let lastPlayheadCommitAt = 0;
@@ -80,6 +95,7 @@ const BTN = {
   copy: "⎘",
   expandSeq: "▼",
   collapseSeq: "▲",
+  scrollHome: "⌃",
 };
 
 function setSymbolButton(btn, symbol, label) {
@@ -1358,6 +1374,51 @@ function isHardRejected(mix, nowMs = Date.now()) {
   return !!(mix && mix.rejected && !isSoftRejected(mix, nowMs));
 }
 
+/**
+ * Important action outcome on the player overlay (latest-wins, 5s timeout).
+ * @param {string} message
+ * @param {"ok"|"warn"|"error"} [kind="ok"]
+ */
+function showNotice(message, kind = "ok") {
+  const el = document.getElementById("player-notice");
+  if (!el) return;
+  const text = String(message || "").trim();
+  if (!text) {
+    clearNotice();
+    return;
+  }
+  const safeKind = kind === "warn" || kind === "error" ? kind : "ok";
+  el.textContent = text;
+  el.dataset.kind = safeKind;
+  el.hidden = false;
+  if (playerNoticeTimer != null) clearTimeout(playerNoticeTimer);
+  playerNoticeTimer = setTimeout(() => {
+    playerNoticeTimer = null;
+    clearNotice();
+  }, PLAYER_NOTICE_MS);
+}
+
+function clearNotice() {
+  if (playerNoticeTimer != null) {
+    clearTimeout(playerNoticeTimer);
+    playerNoticeTimer = null;
+  }
+  const el = document.getElementById("player-notice");
+  if (!el) return;
+  el.textContent = "";
+  el.removeAttribute("data-kind");
+  el.hidden = true;
+}
+
+/** Durable pairing-session choreography hint (not the player overlay). */
+function setPairSessionHint(text) {
+  const el = document.getElementById("pair-session-hint");
+  if (!el) return;
+  const value = String(text || "").trim();
+  el.textContent = value;
+  el.hidden = !value;
+}
+
 let actionTipEl = null;
 let actionTipActive = null;
 
@@ -1611,6 +1672,7 @@ function setFocusTab(tabId, { updateHash = true } = {}) {
       updatePlaylogStickyMetrics();
       syncPlaylogCurrentStuck();
     }
+    syncFocusScrollHomeBtn();
   });
 }
 
@@ -2211,15 +2273,14 @@ function mountIntentComposer(root, options) {
       return;
     }
     if (sumChances(values.chancePcts) !== 100) {
-      const status = document.getElementById("intent-status");
-      if (status) {
-        status.textContent = `Rating chances must sum to 100% (got ${sumChances(values.chancePcts)})`;
-      }
+      showNotice(
+        `Rating chances must sum to 100% (got ${sumChances(values.chancePcts)})`,
+        "warn",
+      );
       return;
     }
     if (!values.platforms.length) {
-      const status = document.getElementById("intent-status");
-      if (status) status.textContent = "Keep at least one source active";
+      showNotice("Keep at least one source active", "warn");
       return;
     }
     saving = true;
@@ -2333,8 +2394,6 @@ function expandCreateForm() {
       },
     },
     async onSave(values) {
-      const status = document.getElementById("intent-status");
-      status.textContent = "Creating intent…";
       try {
         const res = await fetch("/api/intents", {
           method: "POST",
@@ -2344,24 +2403,25 @@ function expandCreateForm() {
         const data = await res.json();
         if (!res.ok) {
           const detail = data.detail;
-          status.textContent =
+          showNotice(
             typeof detail === "string"
               ? detail
-              : detail?.[0]?.msg || "Create intent failed";
+              : detail?.[0]?.msg || "Create intent failed",
+            "error",
+          );
           return;
         }
         const filling = data.fill_in_progress ? " · filling caches…" : "";
-        status.textContent = `Created “${data.intent.name}”${filling}`;
+        showNotice(`Created “${data.intent.name}”${filling}`, "ok");
         collapseCreateForm();
         await refreshIntents({ force: true });
         await refreshFiles();
       } catch (err) {
-        status.textContent = "Create intent request failed";
+        showNotice("Create intent request failed", "error");
         console.error(err);
       }
     },
     onCancel() {
-      document.getElementById("intent-status").textContent = "";
       collapseCreateForm();
     },
   });
@@ -2508,6 +2568,7 @@ function collapsePairForm() {
   const pin = document.getElementById("pair-code");
   if (url) url.value = "";
   if (pin) pin.value = "";
+  setPairSessionHint("");
   pairCollapsible?.collapse();
 }
 
@@ -2524,6 +2585,7 @@ function renderPairSession(session) {
     cancelBtn.hidden = true;
     qr.hidden = true;
     pinEl.value = "";
+    setPairSessionHint("");
     stopPairPoll();
     return;
   }
@@ -2582,7 +2644,8 @@ async function refreshPairingSession() {
     const refresh = await fetch("/api/pair/session/refresh", { method: "POST" });
     const data = await refresh.json();
     if (data.complete && data.peer) {
-      document.getElementById("pair-status").textContent = `Paired with ${data.peer.name}`;
+      showNotice(`Paired with ${data.peer.name}`, "ok");
+      setPairSessionHint("");
       renderPairSession(data.session || { active: false });
       collapsePairForm();
       await refreshPeers();
@@ -2658,8 +2721,6 @@ function applyTrustedPeersList(peers) {
     bindConfirmDelete(unpairBtn, {
       label: `Unpair ${peer.name}`,
       onConfirm: async () => {
-        const status = document.getElementById("sync-status");
-        if (status) status.textContent = `Unpairing ${peer.name}…`;
         try {
           const res = await fetch(`/api/peers/${peer.id}/unpair`, {
             method: "POST",
@@ -2667,18 +2728,18 @@ function applyTrustedPeersList(peers) {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) {
             const detail = data.detail;
-            if (status) {
-              status.textContent =
-                typeof detail === "string"
-                  ? detail
-                  : detail?.[0]?.msg || "Unpair failed";
-            }
+            showNotice(
+              typeof detail === "string"
+                ? detail
+                : detail?.[0]?.msg || "Unpair failed",
+              "error",
+            );
             return;
           }
           applyPeersPayload(data);
-          if (status) status.textContent = `Unpaired ${peer.name}`;
+          showNotice(`Unpaired ${peer.name}`, "ok");
         } catch (err) {
-          if (status) status.textContent = "Unpair request failed";
+          showNotice("Unpair request failed", "error");
           console.error(err);
         }
       },
@@ -2828,7 +2889,6 @@ function mountStarRating(root, { stars = null, interactive = true, onRate = null
  *   actionsRoot?: HTMLElement,
  *   tagRoot?: HTMLElement,
  *   rejectBtn?: HTMLElement,
- *   statusEl?: HTMLElement,
  *   rateInteractive?: boolean,
  *   allowUnreject?: boolean,
  *   refreshAfterTag?: boolean,
@@ -2996,7 +3056,6 @@ function syncRowAnnotateRejectButtons({
  *   starsRoot: HTMLElement,
  *   tagRoot: HTMLElement,
  *   rejectBtn: HTMLElement,
- *   statusEl?: HTMLElement|null,
  *   getMixId: () => string|null,
  *   onRate: (stars: number) => void|Promise<void>,
  * }} options
@@ -3005,7 +3064,6 @@ function mountPlayerAnnotateKit({
   starsRoot,
   tagRoot,
   rejectBtn,
-  statusEl = null,
   getMixId,
   onRate,
 }) {
@@ -3035,10 +3093,9 @@ function mountPlayerAnnotateKit({
     armedSymbol: BTN.confirmDelete,
     armedLabel: "really reject?",
     async onConfirm() {
-      const status = document.getElementById("player-status");
       const player = await (await fetch("/api/player")).json();
       if (!player.current_mix_id) {
-        if (status) status.textContent = "Nothing to reject";
+        showNotice("Nothing to reject", "warn");
         return;
       }
       try {
@@ -3047,13 +3104,13 @@ function mountPlayerAnnotateKit({
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          if (status) status.textContent = data.detail || "Reject failed";
+          showNotice(data.detail || "Reject failed", "error");
           return;
         }
-        if (status) status.textContent = "Rejected";
+        showNotice("Rejected", "ok");
         await refreshAfterAnnotateMutation();
       } catch (err) {
-        if (status) status.textContent = "Reject request failed";
+        showNotice("Reject request failed", "error");
         console.error(err);
       }
     },
@@ -3063,19 +3120,11 @@ function mountPlayerAnnotateKit({
     if (!rejectBtn) return;
     if (data.rejected) {
       rejectBtn.hidden = true;
-      if (statusEl) {
-        statusEl.hidden = false;
-        statusEl.textContent = isSoftRejected(data) ? "Rejected (soft)" : "Rejected";
-      }
       if (isSoftRejected(data) && data.current_mix_id) {
         scheduleSoftRejectRefresh(data.current_mix_id, data.rejected_at);
       }
     } else {
       rejectBtn.hidden = false;
-      if (statusEl) {
-        statusEl.hidden = true;
-        statusEl.textContent = "";
-      }
     }
   }
 
@@ -3314,7 +3363,6 @@ function syncSeekProgress(seekbar) {
 }
 
 async function seekToPlayerPosition(positionSeconds) {
-  const status = document.getElementById("player-status");
   const seekbar = document.getElementById("player-seekbar");
   const position = Math.max(0, Math.round(Number(positionSeconds) || 0));
   lastKnownPositionSeconds = position;
@@ -3336,14 +3384,9 @@ async function seekToPlayerPosition(positionSeconds) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      if (status) status.textContent = data.detail || "Seek failed";
+      showNotice(data.detail || "Seek failed", "error");
       await refreshPlayer();
       return false;
-    }
-    if (status) {
-      status.textContent = data.played
-        ? `Seeked to ${formatClock(position)} · marked played`
-        : `Seeked to ${formatClock(position)}`;
     }
     if (data.played && data.mix_id) {
       playheadPlayedNotifiedForMix = data.mix_id;
@@ -3354,7 +3397,7 @@ async function seekToPlayerPosition(positionSeconds) {
     await refreshIntents();
     return true;
   } catch (err) {
-    if (status) status.textContent = "Seek request failed";
+    showNotice("Seek request failed", "error");
     console.error(err);
     await refreshPlayer();
     return false;
@@ -3727,11 +3770,13 @@ function syncPlayerCollapse() {
   const key = `${stuck ? 1 : 0}:${coverScale.toFixed(3)}:${labelFactor.toFixed(3)}`;
   if (key === playerCollapseKey) {
     syncPlayerStickyHeightVar();
+    syncFocusScrollHomeBtn();
     return;
   }
   playerCollapseKey = key;
   syncPlayerStickyHeightVar();
   syncFocusTabsHeightVar();
+  syncFocusScrollHomeBtn();
 }
 
 function schedulePlayerCollapse() {
@@ -3740,6 +3785,66 @@ function schedulePlayerCollapse() {
     playerCollapseRaf = 0;
     syncPlayerCollapse();
   });
+}
+
+/** @type {HTMLButtonElement | null} */
+let focusScrollHomeBtn = null;
+
+/** True when active pane is past home or the player is soft-collapsed. */
+function focusScrollHomeNeeded() {
+  const el = focusPaneScrollEl(activeFocusTab);
+  if (!el) return false;
+  if (playerCollapseScrollPx > 0) return true;
+  return el.scrollTop > paneScrollHomeTop(activeFocusTab) + 1;
+}
+
+/** Jump active pane to home scroll and fully expand the player. */
+function onFocusScrollHomeClick(event) {
+  event.preventDefault();
+  const el = focusPaneScrollEl(activeFocusTab);
+  if (!el) return;
+  const home = paneScrollHomeTop(activeFocusTab);
+  suppressPlayerCollapseFromPane = true;
+  try {
+    el.scrollTop = home;
+    paneCollapseLastScrollTop = home;
+    expandPlayerCollapseFully();
+    saveFocusTabScroll(activeFocusTab);
+    if (activeFocusTab === "playlog") {
+      syncPlaylogCurrentStuck();
+    }
+  } finally {
+    suppressPlayerCollapseFromPane = false;
+  }
+  syncFocusScrollHomeBtn();
+}
+
+/**
+ * Create/reparent the shared ⌃ circle as an overlay at the end of the active
+ * table pane (bottom-right over the scrollport).
+ */
+function ensureFocusScrollHomeBtn() {
+  let btn = focusScrollHomeBtn;
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "focus-scroll-home-btn";
+    btn.hidden = true;
+    setSymbolButton(btn, BTN.scrollHome, "Scroll to top");
+    btn.addEventListener("click", onFocusScrollHomeClick);
+    focusScrollHomeBtn = btn;
+  }
+  const pane = document.querySelector(`[data-focus-pane="${activeFocusTab}"]`);
+  if (pane && btn.parentElement !== pane) {
+    pane.appendChild(btn);
+  }
+  return btn;
+}
+
+/** Show/hide ⌃ from active pane scroll + player collapse depth. */
+function syncFocusScrollHomeBtn() {
+  const btn = ensureFocusScrollHomeBtn();
+  btn.hidden = !focusScrollHomeNeeded();
 }
 
 /** Publish focus-tabs (+ active toolbar) height for layout metrics. */
@@ -4466,6 +4571,130 @@ function resetCatalogFilters() {
   catalogTagFilterEditor?.setTags([]);
 }
 
+/**
+ * Intent list toolbar filters: tags (AND), artists (OR), sources (OR).
+ * Empty selection = no constraint for that dimension.
+ * @param {{ id?: string, tags?: string[], artist_ids?: string[], platforms?: string[] }} intent
+ */
+function intentMatchesListFilters(intent) {
+  if (editingIntentId && intent.id === editingIntentId) return true;
+  if (
+    intentListFilterTags.length &&
+    !intentListFilterTags.every((t) => (intent.tags || []).includes(t))
+  ) {
+    return false;
+  }
+  if (intentListFilterArtistIds.length) {
+    const ids = new Set((intent.artist_ids || []).map(String));
+    if (!intentListFilterArtistIds.some((id) => ids.has(String(id)))) {
+      return false;
+    }
+  }
+  if (intentListFilterPlatforms.length) {
+    const platforms = new Set(intent.platforms || []);
+    if (!intentListFilterPlatforms.some((p) => platforms.has(p))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function mountIntentListFilters() {
+  const tagsRoot = document.getElementById("intent-tag-filters");
+  if (tagsRoot) {
+    tagsRoot.replaceChildren();
+    intentListFilterTags = [];
+    intentTagFilterEditor = mountTagEditor(tagsRoot, {
+      tags: [],
+      confirmRemove: false,
+      getCatalogTags: () => catalogTagsCache,
+      async onAdd(tag) {
+        intentListFilterTags = [...intentListFilterTags, tag];
+        await refreshIntents({ force: true });
+      },
+      async onRemove(tag) {
+        intentListFilterTags = intentListFilterTags.filter((t) => t !== tag);
+        await refreshIntents({ force: true });
+      },
+    });
+    tagsRoot.setAttribute("aria-label", "Intent filter tags");
+  }
+
+  const artistsRoot = document.getElementById("intent-artist-filters");
+  if (artistsRoot) {
+    artistsRoot.replaceChildren();
+    intentListFilterArtistIds = [];
+    intentArtistFilterEditor = mountArtistEditor(artistsRoot, {
+      artists: [],
+      confirmRemove: false,
+      getCatalogArtists: () => catalogArtistsCache,
+      async onAdd(artist) {
+        intentListFilterArtistIds = [...intentListFilterArtistIds, artist.id];
+        await refreshIntents({ force: true });
+      },
+      async onRemove(artist) {
+        intentListFilterArtistIds = intentListFilterArtistIds.filter(
+          (id) => id !== artist.id,
+        );
+        await refreshIntents({ force: true });
+      },
+    });
+    artistsRoot.setAttribute("aria-label", "Intent filter artists");
+  }
+
+  const sourcesRoot = document.getElementById("intent-source-filters");
+  if (sourcesRoot) {
+    sourcesRoot.replaceChildren();
+    const platformsRoot = document.createElement("div");
+    platformsRoot.className = "source-toggles";
+    platformsRoot.setAttribute("role", "group");
+    platformsRoot.setAttribute("aria-label", "Intent sources");
+    for (const platform of DEFAULT_INTENT_PLATFORMS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "source-toggle";
+      btn.dataset.platform = platform;
+      btn.setAttribute("aria-pressed", "false");
+      btn.title = PLATFORM_LABELS[platform] || platform;
+      btn.setAttribute("aria-label", PLATFORM_LABELS[platform] || platform);
+      btn.innerHTML = PLATFORM_SVG[platform] || "";
+      platformsRoot.appendChild(btn);
+    }
+    sourcesRoot.appendChild(platformsRoot);
+    intentListFilterPlatforms = [];
+
+    function readPlatforms() {
+      return Array.from(platformsRoot.querySelectorAll(".source-toggle"))
+        .filter((btn) => btn.getAttribute("aria-pressed") === "true")
+        .map((btn) => btn.dataset.platform)
+        .filter(Boolean);
+    }
+
+    platformsRoot.addEventListener("click", async (event) => {
+      const btn = event.target.closest(".source-toggle");
+      if (!btn || !platformsRoot.contains(btn)) return;
+      const pressed = btn.getAttribute("aria-pressed") === "true";
+      btn.setAttribute("aria-pressed", pressed ? "false" : "true");
+      intentListFilterPlatforms = readPlatforms();
+      await refreshIntents({ force: true });
+    });
+  }
+}
+
+function resetIntentListFilters() {
+  intentListFilterTags = [];
+  intentListFilterArtistIds = [];
+  intentListFilterPlatforms = [];
+  intentTagFilterEditor?.setTags([]);
+  intentArtistFilterEditor?.setIds([]);
+  const sourcesRoot = document.getElementById("intent-source-filters");
+  if (sourcesRoot) {
+    for (const btn of sourcesRoot.querySelectorAll(".source-toggle")) {
+      btn.setAttribute("aria-pressed", "false");
+    }
+  }
+}
+
 async function refreshMixes({ force = false } = {}) {
   const body = document.getElementById("catalog-body");
   const res = await fetch("/api/mixes");
@@ -4477,7 +4706,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!data.mixes.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 4;
+      td.colSpan = 5;
       td.className = "muted";
       td.textContent = "No releases yet";
       tr.appendChild(td);
@@ -4500,7 +4729,7 @@ async function refreshMixes({ force = false } = {}) {
       header.setAttribute("role", "button");
 
       const artistCell = document.createElement("td");
-      artistCell.colSpan = 4;
+      artistCell.colSpan = 5;
       const artistInner = document.createElement("div");
       artistInner.className = "artist-row-inner";
       const foldMain = document.createElement("div");
@@ -4535,18 +4764,19 @@ async function refreshMixes({ force = false } = {}) {
       setSymbolButton(refreshBtn, BTN.refresh, "Refresh artist");
       refreshBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const status = document.getElementById("artists-status");
-        status.textContent = `Refreshing “${group.artistName}”…`;
         try {
           const data = await postRefreshArtists([group.artistId]);
           if (!data.ok) {
-            status.textContent = data.detail || "Refresh artist failed";
+            showNotice(data.detail || "Refresh artist failed", "error");
             return;
           }
-          status.textContent = `Refreshed “${group.artistName}” · ${data.added} new release(s)`;
+          showNotice(
+            `Refreshed “${group.artistName}” · ${data.added} new release(s)`,
+            "ok",
+          );
           await refreshMixes();
         } catch (err) {
-          status.textContent = "Refresh artist request failed";
+          showNotice("Refresh artist request failed", "error");
           console.error(err);
         }
       });
@@ -4558,24 +4788,22 @@ async function refreshMixes({ force = false } = {}) {
         label: "Delete artist",
         stopPropagation: true,
         onConfirm: async () => {
-          const status = document.getElementById("artists-status");
-          status.textContent = "Deleting…";
           try {
             const res = await fetch(`/api/artists/${group.artistId}`, {
               method: "DELETE",
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-              status.textContent = data.detail || "Delete artist failed";
+              showNotice(data.detail || "Delete artist failed", "error");
               return;
             }
             expandedCatalogArtists.delete(group.artistId);
-            status.textContent = `Deleted “${group.artistName}”`;
+            showNotice(`Deleted “${group.artistName}”`, "ok");
             await refreshMixes();
             await refreshIntents({ force: true });
             await refreshFiles();
           } catch (err) {
-            status.textContent = "Delete artist request failed";
+            showNotice("Delete artist request failed", "error");
             console.error(err);
           }
         },
@@ -4606,6 +4834,27 @@ async function refreshMixes({ force = false } = {}) {
         tr.dataset.artistId = group.artistId;
         tr.dataset.mixId = mix.id;
         tr.hidden = !expanded;
+
+        const coverCell = document.createElement("td");
+        coverCell.className = "catalog-cover-cell";
+        if (mix.has_cover) {
+          const img = document.createElement("img");
+          img.className = "catalog-cover";
+          img.alt = mix.title
+            ? `Cover art for ${mix.title}`
+            : "Release cover art";
+          img.width = 48;
+          img.height = 48;
+          img.loading = "lazy";
+          img.src = `/api/mixes/${mix.id}/cover`;
+          coverCell.appendChild(img);
+        } else {
+          const placeholder = document.createElement("span");
+          placeholder.className = "catalog-cover-placeholder";
+          placeholder.setAttribute("aria-hidden", "true");
+          coverCell.appendChild(placeholder);
+        }
+        tr.appendChild(coverCell);
 
         const title = document.createElement("td");
         title.textContent = mix.title || "";
@@ -4642,7 +4891,7 @@ async function refreshMixes({ force = false } = {}) {
     if (!body.children.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 4;
+      td.colSpan = 5;
       td.className = "muted";
       td.textContent = "No releases match these filters";
       tr.appendChild(td);
@@ -4688,14 +4937,13 @@ async function dropFromSequence(intentId, mixId) {
  * Hover-reveal Drop on a sequence `#` cell (Playlog upcoming / Shared sequence).
  * Confirm-click (⊖ → 💥) like Reject / Delete. On confirm, grey the row immediately
  * and hide Drop until the backend refresh lands (or restore on failure).
- * @param {{ cell: HTMLElement, intentId: string, mixId: string, labelText: string, statusEl?: HTMLElement | null }} opts
+ * @param {{ cell: HTMLElement, intentId: string, mixId: string, labelText: string }} opts
  */
 function mountSequenceDropControl({
   cell,
   intentId,
   mixId,
   labelText,
-  statusEl = null,
 }) {
   cell.classList.add("seq-drop-cell");
   cell.replaceChildren();
@@ -4724,7 +4972,7 @@ function mountSequenceDropControl({
       btn.disabled = true;
       try {
         await dropFromSequence(intentId, mixId);
-        if (statusEl) statusEl.textContent = "Dropped from sequence";
+        showNotice("Dropped from sequence", "ok");
         // Playlog/intents first (row should vanish); Cache can lag behind.
         await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
         void refreshAffectedSurfaces(["cache"], { force: true });
@@ -4737,10 +4985,10 @@ function mountSequenceDropControl({
         }
         btn.hidden = false;
         btn.disabled = false;
-        if (statusEl) {
-          statusEl.textContent =
-            err instanceof Error ? err.message : "Drop from sequence failed";
-        }
+        showNotice(
+          err instanceof Error ? err.message : "Drop from sequence failed",
+          "error",
+        );
         console.error(err);
       }
     },
@@ -4878,9 +5126,8 @@ function patchPlaylogCacheFromFiles(data) {
 
 async function playlogPlayMix(mixId) {
   const intentId = document.getElementById("player-intent")?.value;
-  const status = document.getElementById("player-status");
   if (!intentId) {
-    if (status) status.textContent = "Choose an intent";
+    showNotice("Choose an intent", "warn");
     return;
   }
   try {
@@ -4891,32 +5138,29 @@ async function playlogPlayMix(mixId) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      if (status) status.textContent = data.detail || "Play failed";
+      showNotice(data.detail || "Play failed", "error");
       return;
     }
-    if (status) status.textContent = "";
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
     await refreshAfterIntentPlaybackMutation();
   } catch (err) {
-    if (status) status.textContent = "Play request failed";
+    showNotice("Play request failed", "error");
     console.error(err);
   }
 }
 
 async function playlogPause() {
-  const status = document.getElementById("player-status");
   try {
     const res = await fetch("/api/player/pause", { method: "POST" });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      if (status) status.textContent = data.detail || "Pause failed";
+      showNotice(data.detail || "Pause failed", "error");
       return;
     }
-    if (status) status.textContent = "";
     await refreshAfterIntentPlaybackMutation();
   } catch (err) {
-    if (status) status.textContent = "Pause request failed";
+    showNotice("Pause request failed", "error");
     console.error(err);
   }
 }
@@ -5064,6 +5308,7 @@ function ensureFocusPaneScrollCollapse() {
         if (pane.closest('[data-focus-pane="playlog"]')) {
           syncPlaylogCurrentStuck();
         }
+        syncFocusScrollHomeBtn();
       },
       { passive: true },
     );
@@ -5123,7 +5368,6 @@ async function refreshPlaylog({ force = false } = {}) {
         intentId,
         mixId: item.id,
         labelText: formatPlaylogOffset(offset),
-        statusEl: document.getElementById("player-status"),
       });
     } else {
       offsetCell.textContent = formatPlaylogOffset(offset);
@@ -5332,16 +5576,8 @@ function updateRejectControls(data) {
   }
   // Fallback before kit mounts (should be rare).
   const rejectBtn = document.getElementById("player-reject");
-  const status = document.getElementById("player-reject-status");
-  if (!rejectBtn || !status) return;
+  if (!rejectBtn) return;
   rejectBtn.hidden = !!data.rejected;
-  if (data.rejected) {
-    status.hidden = false;
-    status.textContent = isSoftRejected(data) ? "Rejected (soft)" : "Rejected";
-  } else {
-    status.hidden = true;
-    status.textContent = "";
-  }
 }
 
 async function maybeCommitPlayhead(playing) {
@@ -5364,10 +5600,6 @@ async function maybeCommitPlayhead(playing) {
       const mixId = data.mix_id || null;
       if (mixId !== playheadPlayedNotifiedForMix) {
         playheadPlayedNotifiedForMix = mixId;
-        const status = document.getElementById("player-status");
-        if (status) {
-          status.textContent = `Playhead ${Math.round(lastKnownPositionSeconds)}s · marked played`;
-        }
         await refreshMixes();
         await refreshFiles();
         await refreshIntents();
@@ -5441,8 +5673,6 @@ function isIntentCurrentlyPlaying(intentId) {
 }
 
 async function pausePlayback() {
-  const status = document.getElementById("player-status");
-  if (status) status.textContent = "Pausing…";
   // Keep the player intent on whatever is actually playing so resume stays correct.
   if (lastPlayerIntentId) {
     syncPlayerIntentSelect(lastPlayerIntentId);
@@ -5456,23 +5686,23 @@ async function pausePlayback() {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (status) status.textContent = data.detail || "Pause failed";
+    showNotice(data.detail || "Pause failed", "error");
     return false;
   }
-  if (status) status.textContent = data.played ? "Paused · marked played" : "Paused";
+  if (data.played) {
+    showNotice("Paused · marked played", "ok");
+  }
   lastPlayheadCommitAt = Date.now();
   await refreshAfterIntentPlaybackMutation({ markedPlayed: Boolean(data.played) });
   return true;
 }
 
 async function playIntent(intentId) {
-  const status = document.getElementById("player-status");
   if (!intentId) {
-    if (status) status.textContent = "Choose an intent";
+    showNotice("Choose an intent", "warn");
     return false;
   }
   syncPlayerIntentSelect(intentId);
-  if (status) status.textContent = "Starting playback…";
   const res = await fetch("/api/player/play", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -5480,10 +5710,9 @@ async function playIntent(intentId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (status) status.textContent = data.detail || "Play failed";
+    showNotice(data.detail || "Play failed", "error");
     return false;
   }
-  if (status) status.textContent = "";
   lastPlayheadCommitAt = Date.now();
   playheadPlayedNotifiedForMix = null;
   await refreshAfterIntentPlaybackMutation();
@@ -5737,7 +5966,6 @@ async function refreshFilesNow({ force = false } = {}) {
         }
         currentBtn.addEventListener("click", async (event) => {
           event.stopPropagation();
-          const status = document.getElementById("fill-status");
           try {
             const res = await fetch("/api/current-mix", {
               method: "PUT",
@@ -5746,16 +5974,22 @@ async function refreshFilesNow({ force = false } = {}) {
             });
             const bodyJson = await res.json().catch(() => ({}));
             if (!res.ok) {
-              status.textContent = bodyJson.detail || "Could not set current release";
+              showNotice(
+                bodyJson.detail || "Could not set current release",
+                "error",
+              );
               return;
             }
             currentMixId = bodyJson.current_mix_id || null;
-            status.textContent = currentMixId
-              ? `Current release set · metered cap uses this + one ahead`
-              : "Current release cleared · metered cap uses assignment head";
+            showNotice(
+              currentMixId
+                ? "Current release set · metered cap uses this + one ahead"
+                : "Current release cleared · metered cap uses assignment head",
+              "ok",
+            );
             await refreshFiles();
           } catch (err) {
-            status.textContent = "Current release request failed";
+            showNotice("Current release request failed", "error");
             console.error(err);
           }
         });
@@ -5769,24 +6003,22 @@ async function refreshFilesNow({ force = false } = {}) {
 }
 
 async function saveDeviceHours(intentId, deviceId, hoursValue, expiresValue) {
-  const status = document.getElementById("intent-status");
   const hours = Number(hoursValue);
   if (!Number.isFinite(hours) || hours <= 0) {
-    status.textContent = "Hours must be greater than 0";
+    showNotice("Hours must be greater than 0", "warn");
     return false;
   }
   let expires_at = null;
   if (expiresValue !== "" && expiresValue != null) {
     const until = Number(expiresValue);
     if (!Number.isFinite(until) || until < 0) {
-      status.textContent = "Expires in must be a non-negative number of hours";
+      showNotice("Expires in must be a non-negative number of hours", "warn");
       return false;
     }
     if (until > 0) {
       expires_at = new Date(Date.now() + until * 3600 * 1000).toISOString();
     }
   }
-  status.textContent = "Saving device hours…";
   try {
     const res = await fetch(`/api/intents/${intentId}/hours`, {
       method: "PUT",
@@ -5799,24 +6031,23 @@ async function saveDeviceHours(intentId, deviceId, hoursValue, expiresValue) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      status.textContent = data.detail || "Save device hours failed";
+      showNotice(data.detail || "Save device hours failed", "error");
       return false;
     }
     const filling = data.fill_in_progress ? " · filling caches…" : "";
-    status.textContent = `Saved hours for ${deviceName(deviceId)}${filling}`;
+    showNotice(`Saved hours for ${deviceName(deviceId)}${filling}`, "ok");
     hoursEditorState.delete(intentId);
     await refreshIntents();
     await refreshFiles();
     return true;
   } catch (err) {
-    status.textContent = "Save device hours request failed";
+    showNotice("Save device hours request failed", "error");
     console.error(err);
     return false;
   }
 }
 
 async function deleteDeviceHours(intent, deviceId) {
-  const status = document.getElementById("intent-status");
   const name = deviceName(deviceId);
   const remaining = (intent.device_hours || [])
     .filter((dh) => dh.device_id !== deviceId)
@@ -5825,7 +6056,6 @@ async function deleteDeviceHours(intent, deviceId) {
       budget_seconds: dh.budget_seconds,
       expires_at: dh.expires_at,
     }));
-  status.textContent = "Removing device hours…";
   try {
     const res = await fetch(`/api/intents/${intent.id}`, {
       method: "PATCH",
@@ -5835,19 +6065,21 @@ async function deleteDeviceHours(intent, deviceId) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = data.detail;
-      status.textContent =
+      showNotice(
         typeof detail === "string"
           ? detail
-          : detail?.[0]?.msg || "Remove device hours failed";
+          : detail?.[0]?.msg || "Remove device hours failed",
+        "error",
+      );
       return;
     }
     const filling = data.fill_in_progress ? " · filling caches…" : "";
-    status.textContent = `Removed hours for ${name}${filling}`;
+    showNotice(`Removed hours for ${name}${filling}`, "ok");
     hoursEditorState.delete(intent.id);
     await refreshIntents();
     await refreshFiles();
   } catch (err) {
-    status.textContent = "Remove device hours request failed";
+    showNotice("Remove device hours request failed", "error");
     console.error(err);
   }
 }
@@ -6041,25 +6273,16 @@ function renderIntentCoverStack(mixIds, { intent = null } = {}) {
 
 /** Switch to intent / Pause from an Intent cover (or legacy row control). */
 async function switchToIntentFromRow(intent) {
-  const status = document.getElementById("intent-status");
   try {
     if (isIntentCurrentlyPlaying(intent.id)) {
       const ok = await pausePlayback();
-      if (status) {
-        status.textContent = ok
-          ? `Paused “${intent.name}”`
-          : document.getElementById("player-status")?.textContent || "Pause failed";
-      }
+      if (ok) showNotice(`Paused “${intent.name}”`, "ok");
       return;
     }
     const ok = await playIntent(intent.id);
-    if (status) {
-      status.textContent = ok
-        ? `Playing “${intent.name}”`
-        : document.getElementById("player-status")?.textContent || "Play failed";
-    }
+    if (ok) showNotice(`Playing “${intent.name}”`, "ok");
   } catch (err) {
-    if (status) status.textContent = "Switch to intent request failed";
+    showNotice("Switch to intent request failed", "error");
     console.error(err);
   }
 }
@@ -6170,7 +6393,6 @@ function appendIntentSequenceRows(frag, intent, seq) {
 
   const liveCurrentMixId =
     lastPlayerIntentId === intent.id ? currentMixId : null;
-  const statusEl = document.getElementById("intent-status");
 
   for (const entry of entries) {
     const tr = document.createElement("tr");
@@ -6196,7 +6418,6 @@ function appendIntentSequenceRows(frag, intent, seq) {
         intentId: intent.id,
         mixId: entry.mix_id,
         labelText,
-        statusEl,
       });
     } else {
       numCell.textContent = labelText;
@@ -6266,23 +6487,24 @@ function buildIntentActionButtons(intent) {
   regenerateBtn.type = "button";
   setSymbolButton(regenerateBtn, BTN.refresh, "Regenerate sequence");
   regenerateBtn.addEventListener("click", async () => {
-    const status = document.getElementById("intent-status");
-    status.textContent = `Regenerating sequence “${intent.name}”…`;
     try {
       const res = await fetch(`/api/intents/${intent.id}/refresh-sequence`, {
         method: "POST",
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        status.textContent = data.detail || "Regenerate sequence failed";
+        showNotice(data.detail || "Regenerate sequence failed", "error");
         return;
       }
-      status.textContent = data.fill_in_progress
-        ? `Regenerated “${intent.name}” · fill started`
-        : `Regenerated “${intent.name}”`;
+      showNotice(
+        data.fill_in_progress
+          ? `Regenerated “${intent.name}” · fill started`
+          : `Regenerated “${intent.name}”`,
+        "ok",
+      );
       await refreshAffectedSurfaces(["intents", "cache"], { force: true });
     } catch (err) {
-      status.textContent = "Regenerate sequence request failed";
+      showNotice("Regenerate sequence request failed", "error");
       console.error(err);
     }
   });
@@ -6291,21 +6513,22 @@ function buildIntentActionButtons(intent) {
   fillNowBtn.type = "button";
   setSymbolButton(fillNowBtn, BTN.fill, "Fill now");
   fillNowBtn.addEventListener("click", async () => {
-    const status = document.getElementById("intent-status");
-    status.textContent = `Fill now “${intent.name}”…`;
     try {
       const res = await fetch(`/api/intents/${intent.id}/fill-now`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        status.textContent = data.detail || "Fill now failed";
+        showNotice(data.detail || "Fill now failed", "error");
         return;
       }
-      status.textContent = data.fill_in_progress
-        ? `Fill now “${intent.name}” started · ${data.files} cached so far`
-        : `Fill now “${intent.name}” · ${data.files} cached`;
+      showNotice(
+        data.fill_in_progress
+          ? `Fill now “${intent.name}” started · ${data.files} cached so far`
+          : `Fill now “${intent.name}” · ${data.files} cached`,
+        "ok",
+      );
       await refreshAffectedSurfaces(["cache", "intents"], { force: true });
     } catch (err) {
-      status.textContent = "Fill now request failed";
+      showNotice("Fill now request failed", "error");
       console.error(err);
     }
   });
@@ -6315,13 +6538,11 @@ function buildIntentActionButtons(intent) {
   bindConfirmDelete(deleteBtn, {
     label: "Delete intent",
     onConfirm: async () => {
-      const status = document.getElementById("intent-status");
-      status.textContent = "Deleting…";
       try {
         const res = await fetch(`/api/intents/${intent.id}`, { method: "DELETE" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          status.textContent = data.detail || "Delete intent failed";
+          showNotice(data.detail || "Delete intent failed", "error");
           return;
         }
         if (editingIntentId === intent.id) {
@@ -6332,10 +6553,10 @@ function buildIntentActionButtons(intent) {
           }
         }
         hoursEditorState.delete(intent.id);
-        status.textContent = `Deleted “${intent.name}”`;
+        showNotice(`Deleted “${intent.name}”`, "ok");
         await refreshIntents({ force: true });
       } catch (err) {
-        status.textContent = "Delete intent request failed";
+        showNotice("Delete intent request failed", "error");
         console.error(err);
       }
     },
@@ -6469,7 +6690,8 @@ async function refreshIntents({ force = false } = {}) {
     editingIntentId = null;
   }
 
-  const intents = data.intents || [];
+  const allIntents = data.intents || [];
+  const intents = allIntents.filter(intentMatchesListFilters);
   const seqByIntentId = new Map();
   if (intents.length) {
     const seqResults = await Promise.all(
@@ -6498,7 +6720,16 @@ async function refreshIntents({ force = false } = {}) {
     const td = document.createElement("td");
     td.colSpan = 4;
     td.className = "muted";
-    td.textContent = "No intents yet";
+    const filtersActive =
+      intentListFilterTags.length ||
+      intentListFilterArtistIds.length ||
+      intentListFilterPlatforms.length;
+    td.textContent =
+      !allIntents.length
+        ? "No intents yet"
+        : filtersActive
+          ? "No intents match filters"
+          : "No intents yet";
     tr.appendChild(td);
     frag.appendChild(tr);
   }
@@ -6555,8 +6786,6 @@ async function refreshIntents({ force = false } = {}) {
           distribution: intent.distribution,
         },
         async onSave(values) {
-          const status = document.getElementById("intent-status");
-          status.textContent = "Saving intent…";
           try {
             const res = await fetch(`/api/intents/${intent.id}`, {
               method: "PATCH",
@@ -6566,14 +6795,16 @@ async function refreshIntents({ force = false } = {}) {
             const data = await res.json();
             if (!res.ok) {
               const detail = data.detail;
-              status.textContent =
+              showNotice(
                 typeof detail === "string"
                   ? detail
-                  : detail?.[0]?.msg || "Update intent failed";
+                  : detail?.[0]?.msg || "Update intent failed",
+                "error",
+              );
               return;
             }
             const filling = data.fill_in_progress ? " · filling caches…" : "";
-            status.textContent = `Updated “${data.intent.name}”${filling}`;
+            showNotice(`Updated “${data.intent.name}”${filling}`, "ok");
             editingIntentId = null;
             if (editComposer) {
               editComposer.destroy();
@@ -6582,12 +6813,11 @@ async function refreshIntents({ force = false } = {}) {
             await refreshIntents({ force: true });
             await refreshFiles();
           } catch (err) {
-            status.textContent = "Update intent request failed";
+            showNotice("Update intent request failed", "error");
             console.error(err);
           }
         },
         onCancel() {
-          document.getElementById("intent-status").textContent = "";
           cancelInlineIntentEdit();
         },
       });
@@ -6755,56 +6985,51 @@ async function copyPairPin() {
   if (ok) {
     markPairPinCopied(copyBtn);
   } else {
-    const status = document.getElementById("pair-status");
-    if (status) status.textContent = "Could not copy PIN — select and copy manually";
+    showNotice("Could not copy PIN — select and copy manually", "warn");
   }
 }
 
 async function startPairSession() {
-  const status = document.getElementById("pair-status");
-  status.textContent = "Starting pairing session…";
   try {
     const res = await fetch("/api/pair/session/start", { method: "POST" });
     let data = null;
     try {
       data = await res.json();
     } catch (parseErr) {
-      status.textContent = `Could not start pairing (HTTP ${res.status})`;
+      showNotice(`Could not start pairing (HTTP ${res.status})`, "error");
       console.error(parseErr);
       return;
     }
     if (!res.ok) {
       const detail = typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`;
-      status.textContent = detail || "Could not start pairing";
+      showNotice(detail || "Could not start pairing", "error");
       return;
     }
-    status.textContent = "Share the PIN (or QR) with the other device";
+    setPairSessionHint("Share the PIN (or QR) with the other device");
     renderPairSession(data);
   } catch (err) {
-    status.textContent = "Could not start pairing";
+    showNotice("Could not start pairing", "error");
     console.error(err);
   }
 }
 
 async function cancelPairSession() {
-  const status = document.getElementById("pair-status");
   try {
     await fetch("/api/pair/session/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    status.textContent = "Pairing cancelled";
+    setPairSessionHint("");
+    showNotice("Pairing cancelled", "ok");
     renderPairSession({ active: false });
   } catch (err) {
-    status.textContent = "Cancel failed";
+    showNotice("Cancel failed", "error");
     console.error(err);
   }
 }
 
 async function confirmPairSession() {
-  const status = document.getElementById("pair-status");
-  status.textContent = "Confirming…";
   try {
     const res = await fetch("/api/pair/session/confirm", {
       method: "POST",
@@ -6813,11 +7038,12 @@ async function confirmPairSession() {
     });
     const data = await res.json();
     if (!res.ok) {
-      status.textContent = data.detail || "Confirm failed";
+      showNotice(data.detail || "Confirm failed", "error");
       return;
     }
     if (data.complete && data.peer) {
-      status.textContent = `Paired with ${data.peer.name}`;
+      setPairSessionHint("");
+      showNotice(`Paired with ${data.peer.name}`, "ok");
       renderPairSession(data.session || { active: false });
       collapsePairForm();
       await refreshPeers();
@@ -6825,19 +7051,17 @@ async function confirmPairSession() {
       stopPairPoll();
       return;
     }
-    status.textContent = "Waiting for the other device to Confirm…";
+    setPairSessionHint("Waiting for the other device to Confirm…");
     if (data.session) {
       renderPairSession(data.session);
     }
   } catch (err) {
-    status.textContent = "Confirm failed";
+    showNotice("Confirm failed", "error");
     console.error(err);
   }
 }
 
 async function joinPairSession({ peer_url, pin, session_id }) {
-  const status = document.getElementById("pair-status");
-  status.textContent = "Joining…";
   try {
     const res = await fetch("/api/pair/session/join-remote", {
       method: "POST",
@@ -6846,14 +7070,14 @@ async function joinPairSession({ peer_url, pin, session_id }) {
     });
     const data = await res.json();
     if (!res.ok) {
-      status.textContent = data.detail || "Join failed";
+      showNotice(data.detail || "Join failed", "error");
       return false;
     }
-    status.textContent = "Compare the confirm code, then Confirm on both devices";
+    setPairSessionHint("Compare the confirm code, then Confirm on both devices");
     renderPairSession(data);
     return true;
   } catch (err) {
-    status.textContent = "Join failed";
+    showNotice("Join failed", "error");
     console.error(err);
     return false;
   }
@@ -6870,7 +7094,7 @@ pairCollapsible = bindCollapsibleAdd(document.getElementById("pair-form"), {
     document.getElementById("pair-code").value = "";
     const candidate = document.getElementById("pair-candidate");
     if (candidate) candidate.value = "";
-    document.getElementById("pair-status").textContent = "";
+    setPairSessionHint("");
     stopPairScan();
     const sessionCancel = document.getElementById("pair-cancel-btn");
     if (sessionCancel && !sessionCancel.hidden) {
@@ -6906,11 +7130,10 @@ document.getElementById("pair-candidate").addEventListener("focus", () => {
 
 document.getElementById("pair-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const status = document.getElementById("pair-status");
   const peerUrl = document.getElementById("peer-url").value.trim();
   const pin = document.getElementById("pair-code").value.trim();
   if (!peerUrl || !pin) {
-    status.textContent = "Peer URL and PIN are required";
+    showNotice("Peer URL and PIN are required", "warn");
     return;
   }
   await joinPairSession({ peer_url: peerUrl, pin });
@@ -6944,16 +7167,15 @@ function stopPairScan() {
 }
 
 async function handleScannedPairPayload(rawText) {
-  const status = document.getElementById("pair-status");
   let payload;
   try {
     payload = JSON.parse(rawText);
   } catch (err) {
-    status.textContent = "Scanned QR is not a pairing offer";
+    showNotice("Scanned QR is not a pairing offer", "error");
     return;
   }
   if (!payload || typeof payload !== "object" || payload.v !== 2 || !payload.pin || !payload.url) {
-    status.textContent = "Scanned QR is not an ephemeral pairing offer";
+    showNotice("Scanned QR is not an ephemeral pairing offer", "error");
     return;
   }
   document.getElementById("peer-url").value = payload.url;
@@ -6994,36 +7216,35 @@ async function tickPairScan(detector) {
 }
 
 async function startPairScan() {
-  const status = document.getElementById("pair-status");
   if (!window.isSecureContext) {
-    status.textContent = "Camera scan needs HTTPS or localhost; use short code instead";
+    setPairSessionHint("Camera scan needs HTTPS or localhost; use short code instead");
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
-    status.textContent = "Camera not available; use short code instead";
+    setPairSessionHint("Camera not available; use short code instead");
     return;
   }
   if (typeof BarcodeDetector === "undefined") {
-    status.textContent = "QR scan not supported in this browser; use short code instead";
+    setPairSessionHint("QR scan not supported in this browser; use short code instead");
     return;
   }
   let detector;
   try {
     detector = new BarcodeDetector({ formats: ["qr_code"] });
   } catch (err) {
-    status.textContent = "QR scan not supported in this browser; use short code instead";
+    setPairSessionHint("QR scan not supported in this browser; use short code instead");
     console.error(err);
     return;
   }
   stopPairScan();
-  status.textContent = "Starting camera…";
+  setPairSessionHint("Starting camera…");
   try {
     pairScanStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: { facingMode: { ideal: "environment" } },
     });
   } catch (err) {
-    status.textContent = "Camera permission denied; use short code instead";
+    setPairSessionHint("Camera permission denied; use short code instead");
     console.error(err);
     return;
   }
@@ -7034,11 +7255,11 @@ async function startPairScan() {
     await video.play();
   } catch (err) {
     stopPairScan();
-    status.textContent = "Could not start camera preview";
+    showNotice("Could not start camera preview", "error");
     console.error(err);
     return;
   }
-  status.textContent = "Point at the other device's QR…";
+  setPairSessionHint("Point at the other device's QR…");
   tickPairScan(detector);
 }
 
@@ -7047,7 +7268,7 @@ document.getElementById("pair-scan-btn").addEventListener("click", () => {
 });
 document.getElementById("pair-scan-stop").addEventListener("click", () => {
   stopPairScan();
-  document.getElementById("pair-status").textContent = "Scan stopped";
+  setPairSessionHint("Scan stopped");
 });
 
 function minDurationSecondsFromForm() {
@@ -7080,13 +7301,11 @@ artistsCollapsible = bindCollapsibleAdd(document.getElementById("artists-form"),
   focusSelector: "#artist-urls",
   onCancel: () => {
     document.getElementById("artist-urls").value = "";
-    document.getElementById("artists-status").textContent = "";
   },
 });
 
 document.getElementById("artists-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const status = document.getElementById("artists-status");
   const submitBtn = document.getElementById("artists-submit");
   const refreshBtn = document.getElementById("refresh-all-artists");
   if (submitBtn?.disabled) return;
@@ -7097,7 +7316,6 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
     .filter(Boolean);
   if (!urls.length) return;
   const min_duration_seconds = minDurationSecondsFromForm();
-  status.textContent = "Adding artists…";
   if (submitBtn) submitBtn.disabled = true;
   if (refreshBtn) refreshBtn.disabled = true;
   try {
@@ -7108,16 +7326,16 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
     });
     const data = await res.json();
     if (!res.ok) {
-      status.textContent = data.detail || "Add artists failed";
+      showNotice(data.detail || "Add artists failed", "error");
       return;
     }
-    status.textContent = `Added ${data.added} releases · ${data.artists} artists`;
+    showNotice(`Added ${data.added} releases · ${data.artists} artists`, "ok");
     document.getElementById("artist-urls").value = "";
     artistsCollapsible?.collapse();
     await refreshMixes();
     await refreshIntentArtistOptions();
   } catch (err) {
-    status.textContent = "Add artists request failed";
+    showNotice("Add artists request failed", "error");
     console.error(err);
   } finally {
     if (submitBtn) submitBtn.disabled = false;
@@ -7126,24 +7344,25 @@ document.getElementById("artists-form").addEventListener("submit", async (event)
 });
 
 document.getElementById("refresh-all-artists").addEventListener("click", async () => {
-  const status = document.getElementById("artists-status");
   const submitBtn = document.getElementById("artists-submit");
   const refreshBtn = document.getElementById("refresh-all-artists");
   if (refreshBtn?.disabled) return;
-  status.textContent = "Refreshing all artists…";
   if (refreshBtn) refreshBtn.disabled = true;
   if (submitBtn) submitBtn.disabled = true;
   try {
     const data = await postRefreshArtists(null);
     if (!data.ok) {
-      status.textContent = data.detail || "Refresh artists failed";
+      showNotice(data.detail || "Refresh artists failed", "error");
       return;
     }
-    status.textContent = `Refreshed · ${data.added} new release(s) · ${data.artists} artists`;
+    showNotice(
+      `Refreshed · ${data.added} new release(s) · ${data.artists} artists`,
+      "ok",
+    );
     await refreshMixes();
     await refreshIntentArtistOptions();
   } catch (err) {
-    status.textContent = "Refresh artists request failed";
+    showNotice("Refresh artists request failed", "error");
     console.error(err);
   } finally {
     if (refreshBtn) refreshBtn.disabled = false;
@@ -7159,32 +7378,31 @@ document.getElementById("intent-form")?.addEventListener("submit", (event) => {
 });
 
 document.getElementById("sync-btn").addEventListener("click", async () => {
-  const status = document.getElementById("sync-status");
-  status.textContent = "Syncing…";
   try {
     const res = await fetch("/api/sync", { method: "POST" });
     const data = await res.json();
     if (!res.ok) {
-      status.textContent = data.detail || "Sync failed";
+      showNotice(data.detail || "Sync failed", "error");
       return;
     }
-    status.textContent = data.fill_in_progress
-      ? `Synced · ${data.peers} peers · ${data.mixes} releases · filling caches…`
-      : `Synced · ${data.peers} peers · ${data.mixes} releases · ${data.files} cached`;
+    showNotice(
+      data.fill_in_progress
+        ? `Synced · ${data.peers} peers · ${data.mixes} releases · filling caches…`
+        : `Synced · ${data.peers} peers · ${data.mixes} releases · ${data.files} cached`,
+      "ok",
+    );
     await refreshPeers();
     await refreshMixes();
     await refreshIntents();
     await refreshFiles();
   } catch (err) {
-    status.textContent = "Sync request failed";
+    showNotice("Sync request failed", "error");
     console.error(err);
   }
 });
 
 document.getElementById("metered-toggle").addEventListener("change", async (event) => {
-  const status = document.getElementById("fill-status");
   const metered = event.target.checked;
-  status.textContent = metered ? "Marking link metered…" : "Marking link unmetered…";
   try {
     const res = await fetch("/api/metered", {
       method: "PUT",
@@ -7193,22 +7411,24 @@ document.getElementById("metered-toggle").addEventListener("change", async (even
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      status.textContent = data.detail || "Metered switch failed";
+      showNotice(data.detail || "Metered switch failed", "error");
       event.target.checked = !metered;
       return;
     }
-    status.textContent = data.metered
-      ? "Metered · origin capped to current + one ahead"
-      : "Unmetered · standing fill uses full hours";
+    showNotice(
+      data.metered
+        ? "Metered · origin capped to current + one ahead"
+        : "Unmetered · standing fill uses full hours",
+      "ok",
+    );
   } catch (err) {
-    status.textContent = "Metered switch request failed";
+    showNotice("Metered switch request failed", "error");
     event.target.checked = !metered;
     console.error(err);
   }
 });
 
 document.getElementById("player-play").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
   const btn = document.getElementById("player-play");
   try {
     if (btn.dataset.playing === "true" || lastPlayerPlaying) {
@@ -7218,13 +7438,12 @@ document.getElementById("player-play").addEventListener("click", async () => {
     }
     await playIntent(document.getElementById("player-intent").value);
   } catch (err) {
-    if (status) status.textContent = "Play request failed";
+    showNotice("Play request failed", "error");
     console.error(err);
   }
 });
 
 document.getElementById("playlog-intent-play")?.addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
   const intentId = document.getElementById("player-intent")?.value || "";
   try {
     if (intentId && isIntentCurrentlyPlaying(intentId)) {
@@ -7233,15 +7452,13 @@ document.getElementById("playlog-intent-play")?.addEventListener("click", async 
     }
     await playIntent(intentId);
   } catch (err) {
-    if (status) status.textContent = "Play now request failed";
+    showNotice("Play now request failed", "error");
     console.error(err);
   }
 });
 
 document.getElementById("player-mark").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
   const intentId = document.getElementById("player-intent").value;
-  status.textContent = "Marking played…";
   try {
     const body = intentId ? { intent_id: intentId } : {};
     const res = await fetch("/api/player/mark-played", {
@@ -7251,24 +7468,22 @@ document.getElementById("player-mark").addEventListener("click", async () => {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      status.textContent = data.detail || "Mark played failed";
+      showNotice(data.detail || "Mark played failed", "error");
       return;
     }
-    status.textContent = "";
+    showNotice("Marked played", "ok");
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = data.mix?.id || null;
     await refreshPlayer();
     await refreshFiles();
   } catch (err) {
-    status.textContent = "Mark played request failed";
+    showNotice("Mark played request failed", "error");
     console.error(err);
   }
 });
 
 document.getElementById("player-skip").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
   const intentId = document.getElementById("player-intent").value;
-  status.textContent = "Skipping…";
   try {
     const body = intentId ? { intent_id: intentId } : {};
     const res = await fetch("/api/player/skip", {
@@ -7278,35 +7493,33 @@ document.getElementById("player-skip").addEventListener("click", async () => {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      status.textContent = data.detail || "Skip failed";
+      showNotice(data.detail || "Skip failed", "error");
       return;
     }
-    status.textContent = "";
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
     await refreshPlayer();
     await refreshFiles();
   } catch (err) {
-    status.textContent = "Skip request failed";
+    showNotice("Skip request failed", "error");
     console.error(err);
   }
 });
 
 document.getElementById("player-stop").addEventListener("click", async () => {
-  const status = document.getElementById("player-status");
   try {
     await fetch("/api/player/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
-    status.textContent = "Stopped";
+    showNotice("Stopped", "ok");
     lastPlayheadCommitAt = Date.now();
     playheadPlayedNotifiedForMix = null;
     lastKnownPositionSeconds = 0;
     await refreshPlayer();
   } catch (err) {
-    status.textContent = "Stop request failed";
+    showNotice("Stop request failed", "error");
     console.error(err);
   }
 });
@@ -7373,10 +7586,9 @@ if (playerSeekbar) {
 }
 
 async function rateCurrentPlayerMix(stars) {
-  const status = document.getElementById("player-status");
   const player = await (await fetch("/api/player")).json();
   if (!player.current_mix_id) {
-    status.textContent = "Nothing to rate";
+    showNotice("Nothing to rate", "warn");
     throw new Error("Nothing to rate");
   }
   const res = await fetch(`/api/mixes/${player.current_mix_id}/rate`, {
@@ -7386,10 +7598,9 @@ async function rateCurrentPlayerMix(stars) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    status.textContent = data.detail || "Rate failed";
+    showNotice(data.detail || "Rate failed", "error");
     throw new Error(data.detail || "Rate failed");
   }
-  status.textContent = "";
   await refreshAfterAnnotateMutation();
 }
 
@@ -7520,15 +7731,14 @@ function connectViewNotices() {
       starsRoot: playerStarsRoot,
       tagRoot: playerTagRoot,
       rejectBtn: playerRejectBtn,
-      statusEl: document.getElementById("player-reject-status"),
       getMixId: () => currentMixId,
       async onRate(stars) {
         try {
           await rateCurrentPlayerMix(stars);
         } catch (err) {
-          const status = document.getElementById("player-status");
-          if (status && !status.textContent) {
-            status.textContent = "Rate request failed";
+          const notice = document.getElementById("player-notice");
+          if (!notice?.textContent) {
+            showNotice("Rate request failed", "error");
           }
           console.error(err);
           throw err;
@@ -7540,6 +7750,8 @@ function connectViewNotices() {
   }
   mountCatalogFilters();
   resetCatalogFilters();
+  mountIntentListFilters();
+  resetIntentListFilters();
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();
@@ -7555,6 +7767,7 @@ function connectViewNotices() {
   syncFocusTabsHeightVar();
   ensurePlaylogScrollChrome();
   ensureFocusPaneScrollCollapse();
+  syncFocusScrollHomeBtn();
   window.addEventListener("resize", () => {
     syncPlayerChrome();
     schedulePlayerCollapse();
