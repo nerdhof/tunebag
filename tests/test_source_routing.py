@@ -154,3 +154,22 @@ def test_soundcloud_upload_upscales_artwork_url() -> None:
     )
     assert upload is not None
     assert upload.cover_url == "https://i1.sndcdn.com/artworks-xyz-t500x500.jpg"
+
+
+def test_soundcloud_upload_falls_back_to_user_avatar() -> None:
+    from tunebag.source.soundcloud import _soundcloud_upload
+
+    upload = _soundcloud_upload(
+        {
+            "id": 102,
+            "title": "No Art",
+            "permalink_url": "https://soundcloud.com/dj/no-art",
+            "duration": 3_600_000,
+            "artwork_url": None,
+            "user": {
+                "avatar_url": "https://i1.sndcdn.com/avatars-xyz-large.jpg",
+            },
+        }
+    )
+    assert upload is not None
+    assert upload.cover_url == "https://i1.sndcdn.com/avatars-xyz-t500x500.jpg"

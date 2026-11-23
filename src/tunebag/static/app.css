@@ -382,7 +382,7 @@ body.tunebag-app .focus-region {
   width: 100%;
   min-width: 0;
   min-height: 0;
-  margin: 0.5rem 0 0;
+  margin: 0.25rem 0 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -396,7 +396,7 @@ body.tunebag-app .focus-region {
   display: flex;
   align-items: stretch;
   gap: 0.15rem;
-  margin: 0 0 0.65rem;
+  margin: 0 0 0.35rem;
   border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
   background: var(--bg);
 }
@@ -538,6 +538,7 @@ body.tunebag-app .focus-pane {
   width: 100%;
   min-width: 0;
   min-height: 0;
+  padding: 0.65rem 0.85rem;
   contain: inline-size;
 }
 
@@ -922,7 +923,36 @@ body.tunebag-app #player {
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
-  margin: 0.5rem 0 0;
+  margin: 0.35rem 0 0;
+  padding: 0.65rem 0.85rem;
+}
+
+/* Small clients: no floating cards — player / pane go edge-to-edge; tabs divide. */
+@media (max-width: 40rem) {
+  body.tunebag-app .app-chrome-inner {
+    padding-left: 0.65rem;
+    padding-right: 0.65rem;
+  }
+
+  body.tunebag-app main {
+    padding: 0;
+  }
+
+  body.tunebag-app #player,
+  body.tunebag-app .focus-pane {
+    margin: 0;
+    border-radius: 0;
+    padding: 0.5rem 0.65rem;
+  }
+
+  body.tunebag-app .focus-region {
+    margin: 0;
+  }
+
+  body.tunebag-app .focus-tabs {
+    margin: 0;
+    padding: 0 0.15rem;
+  }
 }
 
 /* After #player; height stays 0 in the flex shell (pane absorbs shrink). */
@@ -1099,6 +1129,19 @@ body.tunebag-app #player {
   flex-wrap: nowrap;
   align-items: center;
   gap: 0.35rem 0.5rem;
+}
+
+/* Narrow only: soft-fold collapses annotate (larger UI keeps Rate/Reject/Tag). */
+@media (max-width: 40rem) {
+  .form-row.player-meta {
+    max-height: calc(12rem * var(--player-label-factor, 1));
+    opacity: var(--player-label-factor, 1);
+    overflow: hidden;
+  }
+
+  #player.is-annotate-collapsed .form-row.player-meta {
+    pointer-events: none;
+  }
 }
 
 /* Compact playing-track title: sits at cover bottom (above seek); crossfades in
@@ -2477,15 +2520,6 @@ button.seq-drop-action.confirm-pending {
   opacity: 0;
 }
 
-@media (hover: none) {
-  button.seq-drop-action.symbol-btn {
-    opacity: 0.92;
-  }
-  .seq-drop-stack .seq-drop-label {
-    opacity: 0;
-  }
-}
-
 /* After Drop confirm: mute the row until Playlog/intent refresh removes it. */
 #playlog-table .playlog-row.seq-drop-pending,
 #intent-table .intent-seq-row.seq-drop-pending {
@@ -2937,6 +2971,78 @@ button.seq-drop-action.confirm-pending {
   color: var(--stat-reject);
 }
 
+#playlog-table .playlog-row {
+  touch-action: pan-y;
+}
+
+#playlog-table .playlog-row.playlog-row-swiping {
+  touch-action: none;
+  transition: none;
+}
+
+/* Touch swipe preview / armed confirm: tint cells; symbol sits on the lead. */
+#playlog-table .playlog-row.playlog-swipe-preview-drop > td,
+#playlog-table .playlog-row.playlog-swipe-armed-drop > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-reject) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#playlog-table .playlog-row.playlog-swipe-preview-play > td,
+#playlog-table .playlog-row.playlog-swipe-armed-play > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-tagged) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#playlog-table .playlog-lead-cell.playlog-swipe-confirm-host,
+#playlog-table .playlog-side-cell.playlog-swipe-confirm-host {
+  position: relative;
+}
+
+#playlog-table button.playlog-swipe-confirm.symbol-btn {
+  --playlog-swipe-btn: 2.5rem;
+  position: absolute;
+  top: 50%;
+  z-index: 4;
+  margin: 0;
+  width: var(--playlog-swipe-btn);
+  height: var(--playlog-swipe-btn);
+  min-width: var(--playlog-swipe-btn);
+  min-height: var(--playlog-swipe-btn);
+  font-size: 1.15rem;
+  box-shadow: 0 0 0 2px var(--card);
+  opacity: calc(0.35 + 0.65 * var(--playlog-swipe-progress, 1));
+  pointer-events: none;
+}
+
+/* Drop (left swipe): over the lead. Play (right swipe): over Length/cache. */
+#playlog-table .playlog-swipe-confirm-drop {
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--stat-reject);
+  background: color-mix(in srgb, var(--stat-reject) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--stat-reject) 55%, transparent);
+}
+
+#playlog-table .playlog-swipe-confirm-play {
+  right: 0.35rem;
+  left: auto;
+  transform: translateY(-50%);
+  color: color-mix(in srgb, var(--stat-tagged) 70%, var(--fg));
+  background: color-mix(in srgb, var(--stat-tagged) 22%, var(--card));
+  border-color: color-mix(in srgb, var(--stat-tagged) 55%, transparent);
+}
+
+#playlog-table .playlog-row.playlog-swipe-armed .playlog-swipe-confirm {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 #playlog-table .playlog-past {
   color: var(--muted);
 }
@@ -2949,7 +3055,7 @@ button.seq-drop-action.confirm-pending {
   font-weight: 600;
 }
 
-/* One row per entry → sticky works; cover spans the two internal lines.
+/* One row per entry → sticky works; lead (# + cover) sits beside two-line stacks.
    Keep sticky below open tag pickers (see :has(.tag-picker-wrap) below). */
 #playlog-table .playlog-row.playlog-current > td {
   position: sticky;
@@ -2957,6 +3063,25 @@ button.seq-drop-action.confirm-pending {
   bottom: 0;
   z-index: 3;
   background: var(--card);
+}
+
+/* Swipe tint must win over sticky current’s solid card fill. */
+#playlog-table .playlog-row.playlog-current.playlog-swipe-preview-drop > td,
+#playlog-table .playlog-row.playlog-current.playlog-swipe-armed-drop > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-reject) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
+}
+
+#playlog-table .playlog-row.playlog-current.playlog-swipe-preview-play > td,
+#playlog-table .playlog-row.playlog-current.playlog-swipe-armed-play > td {
+  background: color-mix(
+    in srgb,
+    var(--stat-tagged) calc(var(--playlog-swipe-progress, 1) * 32%),
+    var(--card)
+  );
 }
 
 /* Jump-back click only while current is actually stuck. */
@@ -2979,15 +3104,37 @@ button.seq-drop-action.confirm-pending {
   z-index: 13;
 }
 
-#playlog-table .playlog-offset,
-#playlog-table thead th:first-child {
-  font-variant-numeric: tabular-nums;
+/* # + cover share one lead column: stacked on narrow, side-by-side when wider. */
+#playlog-table .playlog-lead-col,
+#playlog-table .playlog-lead-cell {
   width: 2.75rem;
-  text-align: right;
-  vertical-align: middle;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+  vertical-align: top;
 }
 
-/* Upcoming Drop cells: keep the offset glyph on the same right edge as −N / 0. */
+#playlog-table .playlog-lead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.2rem 0.35rem;
+}
+
+#playlog-table .playlog-offset {
+  flex: 1 1 100%;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  line-height: 1.25;
+  padding-right: 0.35rem;
+}
+
+#playlog-table .playlog-lead-col {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Upcoming Drop: keep the offset glyph on the same right edge as −N / 0. */
 #playlog-table .playlog-offset.seq-drop-cell {
   text-align: right;
 }
@@ -3005,17 +3152,27 @@ button.seq-drop-action.confirm-pending {
   line-height: var(--control-height);
 }
 
-#playlog-table .playlog-cover-col,
-#playlog-table .playlog-cover-cell {
-  width: 3.25rem;
-  padding-left: 0.35rem;
-  padding-right: 0.35rem;
-}
-
 #playlog-table .playlog-cover-stack {
   position: relative;
+  flex: 0 0 auto;
   width: 2.75rem;
   height: 2.75rem;
+}
+
+@media (min-width: 40.01rem) {
+  #playlog-table .playlog-lead-col,
+  #playlog-table .playlog-lead-cell {
+    width: 6.2rem;
+  }
+
+  #playlog-table .playlog-lead {
+    flex-wrap: nowrap;
+  }
+
+  #playlog-table .playlog-offset {
+    flex: 0 0 3.1rem;
+    width: 3.1rem;
+  }
 }
 
 #playlog-table .playlog-cover,

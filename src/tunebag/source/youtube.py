@@ -456,6 +456,10 @@ def _youtube_extract_info(
         "skip_download": True,
         "extract_flat": "in_playlist",
         "remote_components": ["ejs:github"],
+        # Cookies mark the session authenticated. If the channel webpage fails
+        # to yield ytcfg (consent/bot page, rotated cookies), yt-dlp aborts
+        # unless authcheck is skipped. Tunebag only lists public OLAK releases.
+        "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
     }
     apply_ytdlp_cookies(opts, cookies, for_youtube=True)
     try:

@@ -1719,7 +1719,13 @@ function initFocusTabs() {
     const tab = event.target.closest("[data-focus-tab]");
     if (!tab || !tablist.contains(tab)) return;
     event.preventDefault();
-    setFocusTab(tab.dataset.focusTab);
+    const id = tab.dataset.focusTab;
+    // Re-click active tab → same as ⌃ / #player (pane home + expand player).
+    if (id === activeFocusTab) {
+      jumpFocusScrollHome();
+      return;
+    }
+    setFocusTab(id);
   });
   tablist.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -3627,14 +3633,16 @@ function syncPlayerNowStack() {
   const rowWidth = row.clientWidth;
   const titleNeeds = measurePlayerTitleIntrinsicWidth(title);
   // Floor cover to title + rating/tags height so small clients don’t shrink
-  // the art below the chrome stack beside it.
+  // the art below the chrome stack beside it. Omit meta only when narrow
+  // soft-fold has collapsed annotate (wider UI keeps meta in the floor).
   const meta = row.querySelector(".player-meta");
+  const annotateCollapsed = player?.classList.contains("is-annotate-collapsed");
   const titleMarginBottom =
     Number.parseFloat(getComputedStyle(title).marginBottom) || 0;
+  const metaHeight =
+    !annotateCollapsed && meta ? meta.getBoundingClientRect().height : 0;
   const chromeMinPx =
-    title.getBoundingClientRect().height +
-    titleMarginBottom +
-    (meta ? meta.getBoundingClientRect().height : 0);
+    title.getBoundingClientRect().height + titleMarginBottom + metaHeight;
   const minRem = clamp(
     Math.max(PLAYER_COVER_MIN_REM, pxToRem(chromeMinPx)),
     PLAYER_COVER_MIN_REM,
@@ -3863,12 +3871,27 @@ function syncPlayerCollapse() {
   player.style.setProperty("--player-cover-scale", coverScale.toFixed(4));
   player.style.setProperty("--player-label-factor", labelFactor.toFixed(4));
   player.classList.toggle("is-stuck", stuck);
+  // Annotate fold only on narrow layouts (larger UI / cover keeps Rate/Reject/Tag).
+  const narrowAnnotateFold = window.matchMedia("(max-width: 40rem)").matches;
+  const annotateCollapsed = narrowAnnotateFold && labelFactor < 0.05;
+  player.classList.toggle("is-annotate-collapsed", annotateCollapsed);
   player.classList.remove(
     "is-beside",
     "is-labels-collapsed",
     "is-compact-cover",
     "is-compact-no-labels",
   );
+
+  const meta = player.querySelector(".player-meta");
+  if (meta) {
+    if (annotateCollapsed) {
+      meta.setAttribute("aria-hidden", "true");
+      meta.inert = true;
+    } else {
+      meta.removeAttribute("aria-hidden");
+      meta.inert = false;
+    }
+  }
 
   // Keep collapse spacer at 0 — flex shell absorbs player height changes.
   const spacer = playerCollapseSpacer;
@@ -5158,6 +5181,11 @@ function isSequenceDropPending(intentId, mixId) {
   return pendingSequenceDrops.has(sequenceDropKey(intentId, mixId));
 }
 
+/** True when the UA has no hover (touch / coarse) — no hover-reveal Drop chrome. */
+function isHoverNone() {
+  return window.matchMedia("(hover: none)").matches;
+}
+
 /** POST Drop from sequence; throws Error with server detail on failure. */
 async function dropFromSequence(intentId, mixId) {
   const res = await fetch(`/api/intents/${intentId}/sequence/drop`, {
@@ -5173,6 +5201,50 @@ async function dropFromSequence(intentId, mixId) {
     );
   }
   return data;
+}
+
+/**
+ * Commit Drop with pending chrome (hover confirm-click or touch swipe).
+ * @param {{ row: HTMLElement | null, intentId: string, mixId: string, dropBtn?: HTMLButtonElement | null }} opts
+ */
+async function confirmDropFromSequence({
+  row,
+  intentId,
+  mixId,
+  dropBtn = null,
+}) {
+  pendingSequenceDrops.add(sequenceDropKey(intentId, mixId));
+  if (row) {
+    row.classList.add("seq-drop-pending");
+    row.setAttribute("aria-busy", "true");
+  }
+  if (dropBtn) {
+    dropBtn.hidden = true;
+    dropBtn.disabled = true;
+  }
+  try {
+    await dropFromSequence(intentId, mixId);
+    showNotice("Dropped from sequence", "ok");
+    // Playlog/intents first (row should vanish); Cache can lag behind.
+    await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
+    void refreshAffectedSurfaces(["cache"], { force: true });
+    pendingSequenceDrops.delete(sequenceDropKey(intentId, mixId));
+  } catch (err) {
+    pendingSequenceDrops.delete(sequenceDropKey(intentId, mixId));
+    if (row) {
+      row.classList.remove("seq-drop-pending");
+      row.removeAttribute("aria-busy");
+    }
+    if (dropBtn) {
+      dropBtn.hidden = false;
+      dropBtn.disabled = false;
+    }
+    showNotice(
+      err instanceof Error ? err.message : "Drop from sequence failed",
+      "error",
+    );
+    console.error(err);
+  }
 }
 
 /** @param {string} mixId */
@@ -5256,9 +5328,10 @@ function clearUnrejectPending(mixId, { restore = false } = {}) {
 }
 
 /**
- * Hover-reveal Drop on a sequence `#` cell (Playlog upcoming / Shared sequence).
+ * Hover-reveal Drop on a sequence `#` slot (Playlog upcoming / Shared sequence).
  * Confirm-click (⊖ → 💥) like Reject / Delete. On confirm, grey the row immediately
  * and hide Drop until the backend refresh lands (or restore on failure).
+ * Not mounted on `(hover: none)` — Playlog uses swipe Drop instead.
  * @param {{ cell: HTMLElement, intentId: string, mixId: string, labelText: string }} opts
  */
 function mountSequenceDropControl({
@@ -5284,40 +5357,270 @@ function mountSequenceDropControl({
     armedLabel: "really drop?",
     stopPropagation: true,
     async onConfirm() {
-      const row = cell.closest("tr");
-      pendingSequenceDrops.add(sequenceDropKey(intentId, mixId));
-      if (row) {
-        row.classList.add("seq-drop-pending");
-        row.setAttribute("aria-busy", "true");
-      }
-      btn.hidden = true;
-      btn.disabled = true;
-      try {
-        await dropFromSequence(intentId, mixId);
-        showNotice("Dropped from sequence", "ok");
-        // Playlog/intents first (row should vanish); Cache can lag behind.
-        await refreshAffectedSurfaces(["playlog", "intents"], { force: true });
-        void refreshAffectedSurfaces(["cache"], { force: true });
-        pendingSequenceDrops.delete(sequenceDropKey(intentId, mixId));
-      } catch (err) {
-        pendingSequenceDrops.delete(sequenceDropKey(intentId, mixId));
-        if (row) {
-          row.classList.remove("seq-drop-pending");
-          row.removeAttribute("aria-busy");
-        }
-        btn.hidden = false;
-        btn.disabled = false;
-        showNotice(
-          err instanceof Error ? err.message : "Drop from sequence failed",
-          "error",
-        );
-        console.error(err);
-      }
+      await confirmDropFromSequence({
+        row: cell.closest("tr"),
+        intentId,
+        mixId,
+        dropBtn: btn,
+      });
     },
   });
   stack.appendChild(label);
   stack.appendChild(btn);
   cell.appendChild(stack);
+}
+
+const PLAYLOG_SWIPE_THRESHOLD_PX = 56;
+const PLAYLOG_SWIPE_AXIS_RATIO = 1.5;
+const PLAYLOG_SWIPE_IGNORE_SEL =
+  "button, a, input, select, textarea, .tag-picker-wrap, .star-rating, .seq-drop-stack, .playlog-cover-action, .playlog-swipe-confirm";
+
+/** @type {HTMLElement | null} */
+let playlogSwipeArmedRow = null;
+
+/** Clear swipe preview / armed confirm chrome on a Playlog row. */
+function clearPlaylogSwipePreview(tr) {
+  if (!tr) return;
+  tr.classList.remove(
+    "playlog-row-swiping",
+    "playlog-swipe-preview-drop",
+    "playlog-swipe-preview-play",
+    "playlog-swipe-armed",
+    "playlog-swipe-armed-drop",
+    "playlog-swipe-armed-play",
+  );
+  tr.style.removeProperty("--playlog-swipe-progress");
+  tr.querySelector(".playlog-swipe-confirm")?.remove();
+  tr.querySelector(".playlog-swipe-confirm-host")?.classList.remove(
+    "playlog-swipe-confirm-host",
+  );
+  if (playlogSwipeArmedRow === tr) playlogSwipeArmedRow = null;
+}
+
+function clearOtherPlaylogSwipeArmed(except) {
+  for (const row of document.querySelectorAll(
+    "#playlog-table .playlog-row.playlog-swipe-armed",
+  )) {
+    if (row !== except) clearPlaylogSwipePreview(row);
+  }
+}
+
+/** Drop confirm on lead (left); Play confirm on Length cell (right). */
+function playlogSwipeConfirmHost(tr, kind) {
+  if (kind === "play") {
+    return (
+      tr.querySelector(".playlog-side-cell") ||
+      tr.lastElementChild ||
+      tr.querySelector(".playlog-lead-cell") ||
+      tr.firstElementChild
+    );
+  }
+  return tr.querySelector(".playlog-lead-cell") || tr.firstElementChild;
+}
+
+/**
+ * Arm a swipe action: keep red/green preview and show a confirm symbol to tap.
+ * @param {HTMLElement} tr
+ * @param {"drop" | "play"} kind
+ * @param {{ symbol: string, label: string, onConfirm: () => void | Promise<void> }} opts
+ */
+function armPlaylogSwipe(tr, kind, { symbol, label, onConfirm }) {
+  clearOtherPlaylogSwipeArmed(tr);
+  tr.classList.remove(
+    "playlog-row-swiping",
+    "playlog-swipe-preview-drop",
+    "playlog-swipe-preview-play",
+  );
+  tr.classList.add(
+    "playlog-swipe-armed",
+    `playlog-swipe-armed-${kind}`,
+  );
+  tr.style.setProperty("--playlog-swipe-progress", "1");
+  playlogSwipeArmedRow = tr;
+  const host = playlogSwipeConfirmHost(tr, kind);
+  if (!host) return;
+  for (const el of tr.querySelectorAll(".playlog-swipe-confirm-host")) {
+    if (el !== host) el.classList.remove("playlog-swipe-confirm-host");
+  }
+  host.classList.add("playlog-swipe-confirm-host");
+  let btn = tr.querySelector(".playlog-swipe-confirm");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+  }
+  if (btn.parentElement !== host) host.appendChild(btn);
+  btn.className = `playlog-swipe-confirm playlog-swipe-confirm-${kind}`;
+  btn.removeAttribute("aria-hidden");
+  btn.tabIndex = 0;
+  setSymbolButton(btn, symbol, label);
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    clearPlaylogSwipePreview(tr);
+    void onConfirm();
+  };
+}
+
+/**
+ * Touch Playlog: left swipe previews Drop (red + ⊖), right swipe previews Play
+ * (green + ▶/◀/⏸). Tap the symbol to confirm; swipe short / tap row dismisses.
+ * @param {HTMLElement} tr
+ * @param {{
+ *   canDrop: boolean,
+ *   onDrop: (() => void | Promise<void>) | null,
+ *   onPlay: (() => void | Promise<void>) | null,
+ *   playSymbol?: string | null,
+ *   playLabel?: string | null,
+ * }} opts
+ */
+function bindPlaylogRowSwipe(tr, { canDrop, onDrop, onPlay, playSymbol, playLabel }) {
+  if (!canDrop && !onPlay) return;
+
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  /** @type {null | "h" | "v"} */
+  let axis = null;
+  let dx = 0;
+  let dragging = false;
+
+  const ensurePreviewSymbol = (kind) => {
+    const host = playlogSwipeConfirmHost(tr, kind);
+    if (!host) return;
+    for (const el of tr.querySelectorAll(".playlog-swipe-confirm-host")) {
+      if (el !== host) el.classList.remove("playlog-swipe-confirm-host");
+    }
+    host.classList.add("playlog-swipe-confirm-host");
+    let btn = tr.querySelector(".playlog-swipe-confirm");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.tabIndex = -1;
+      btn.setAttribute("aria-hidden", "true");
+    }
+    if (btn.parentElement !== host) host.appendChild(btn);
+    btn.className = `playlog-swipe-confirm playlog-swipe-confirm-${kind} is-preview`;
+    if (kind === "drop") {
+      setSymbolButton(btn, BTN.drop, "Drop from sequence");
+    } else {
+      setSymbolButton(btn, playSymbol || BTN.play, playLabel || "Play this release");
+    }
+  };
+
+  const applyDragPreview = (rawDx) => {
+    let kind = null;
+    let progress = 0;
+    if (rawDx < 0 && canDrop) {
+      kind = "drop";
+      progress = Math.min(1, Math.abs(rawDx) / PLAYLOG_SWIPE_THRESHOLD_PX);
+    } else if (rawDx > 0 && onPlay) {
+      kind = "play";
+      progress = Math.min(1, rawDx / PLAYLOG_SWIPE_THRESHOLD_PX);
+    }
+    tr.classList.toggle("playlog-swipe-preview-drop", kind === "drop");
+    tr.classList.toggle("playlog-swipe-preview-play", kind === "play");
+    if (kind) {
+      tr.style.setProperty("--playlog-swipe-progress", progress.toFixed(3));
+      if (progress > 0.25) ensurePreviewSymbol(kind);
+    } else {
+      tr.style.removeProperty("--playlog-swipe-progress");
+      tr.querySelector(".playlog-swipe-confirm")?.remove();
+    }
+  };
+
+  const onPointerDown = (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (event.target?.closest?.(PLAYLOG_SWIPE_IGNORE_SEL)) return;
+    if (tr.classList.contains("seq-drop-pending")) return;
+    // Tap (no drag) on an armed row dismisses the preview.
+    if (tr.classList.contains("playlog-swipe-armed") && !dragging) {
+      // Defer clear to pointerup if this stays a tap.
+    }
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    axis = null;
+    dx = 0;
+    dragging = false;
+    try {
+      tr.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const onPointerMove = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const rawDx = event.clientX - startX;
+    const rawDy = event.clientY - startY;
+    if (axis == null) {
+      const adx = Math.abs(rawDx);
+      const ady = Math.abs(rawDy);
+      if (adx < 8 && ady < 8) return;
+      if (adx > ady * PLAYLOG_SWIPE_AXIS_RATIO) {
+        axis = "h";
+        dragging = true;
+        // New swipe clears prior armed chrome on this or other rows.
+        clearPlaylogSwipePreview(tr);
+        clearOtherPlaylogSwipeArmed(tr);
+        tr.classList.add("playlog-row-swiping");
+      } else {
+        axis = "v";
+        return;
+      }
+    }
+    if (axis !== "h") return;
+    event.preventDefault();
+    dx = rawDx;
+    applyDragPreview(dx);
+  };
+
+  const finish = (event) => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const committedAxis = axis;
+    const committedDx = dx;
+    const wasDragging = dragging;
+    pointerId = null;
+    axis = null;
+    dx = 0;
+    dragging = false;
+    tr.classList.remove("playlog-row-swiping");
+    tr.classList.remove("playlog-swipe-preview-drop", "playlog-swipe-preview-play");
+
+    if (committedAxis === "h" && wasDragging) {
+      if (committedDx <= -PLAYLOG_SWIPE_THRESHOLD_PX && canDrop && onDrop) {
+        armPlaylogSwipe(tr, "drop", {
+          symbol: BTN.drop,
+          label: "Drop from sequence",
+          onConfirm: onDrop,
+        });
+        return;
+      }
+      if (committedDx >= PLAYLOG_SWIPE_THRESHOLD_PX && onPlay) {
+        armPlaylogSwipe(tr, "play", {
+          symbol: playSymbol || BTN.play,
+          label: playLabel || "Play this release",
+          onConfirm: onPlay,
+        });
+        return;
+      }
+      clearPlaylogSwipePreview(tr);
+      return;
+    }
+
+    // Tap on armed row (not the confirm button) dismisses.
+    if (
+      !wasDragging &&
+      tr.classList.contains("playlog-swipe-armed") &&
+      !event.target?.closest?.(".playlog-swipe-confirm")
+    ) {
+      clearPlaylogSwipePreview(tr);
+    }
+  };
+
+  tr.addEventListener("pointerdown", onPointerDown);
+  tr.addEventListener("pointermove", onPointerMove);
+  tr.addEventListener("pointerup", finish);
+  tr.addEventListener("pointercancel", finish);
 }
 
 /** Fill a Length-column cell with Cache status (second playlog line). */
@@ -5667,7 +5970,7 @@ async function refreshPlaylog({ force = false } = {}) {
   const playing = Boolean(data.playing);
   for (const item of items) {
     const offset = Number(item.offset) || 0;
-    // One <tr> per entry so sticky works; cover + two-line stacks live inside cells.
+    // One <tr> per entry so sticky works; lead (# + cover) + two-line stacks.
     const tr = document.createElement("tr");
     tr.className = "playlog-row";
     tr.dataset.mixId = item.id;
@@ -5698,22 +6001,36 @@ async function refreshPlaylog({ force = false } = {}) {
       tr.setAttribute("aria-busy", "true");
     }
 
-    const offsetCell = document.createElement("td");
-    offsetCell.className = "playlog-offset";
-    if (offset > 0 && intentId && !dropPending) {
+    const canPlay = Boolean(item.playable);
+    const isLiveCurrent =
+      Boolean(data.current_mix_id) && item.id === data.current_mix_id;
+    const touchClient = isHoverNone();
+    const canDrop =
+      offset > 0 &&
+      Boolean(intentId) &&
+      !dropPending &&
+      !isLiveCurrent;
+
+    // Lead: # + cover in one cell — side-by-side when wide, stacked when narrow.
+    const leadCell = document.createElement("td");
+    leadCell.className = "playlog-lead-cell";
+    const lead = document.createElement("div");
+    lead.className = "playlog-lead";
+    const offsetEl = document.createElement("div");
+    offsetEl.className = "playlog-offset";
+    // Hover: confirm-click Drop on `#`. Touch: keep `#` visible; swipe Drop instead.
+    if (canDrop && !touchClient) {
       mountSequenceDropControl({
-        cell: offsetCell,
+        cell: offsetEl,
         intentId,
         mixId: item.id,
         labelText: formatPlaylogOffset(offset),
       });
     } else {
-      offsetCell.textContent = formatPlaylogOffset(offset);
+      offsetEl.textContent = formatPlaylogOffset(offset);
     }
-    tr.appendChild(offsetCell);
+    lead.appendChild(offsetEl);
 
-    const coverCell = document.createElement("td");
-    coverCell.className = "playlog-cover-cell";
     const coverStack = document.createElement("div");
     coverStack.className = "playlog-cover-stack";
     if (item.has_cover) {
@@ -5733,9 +6050,6 @@ async function refreshPlaylog({ force = false } = {}) {
       placeholder.setAttribute("aria-hidden", "true");
       coverStack.appendChild(placeholder);
     }
-    const canPlay = Boolean(item.playable);
-    const isLiveCurrent =
-      Boolean(data.current_mix_id) && item.id === data.current_mix_id;
     let actionSymbol = null;
     let actionLabel = null;
     let actionHandler = null;
@@ -5763,8 +6077,26 @@ async function refreshPlaylog({ force = false } = {}) {
       });
       coverStack.appendChild(actionBtn);
     }
-    coverCell.appendChild(coverStack);
-    tr.appendChild(coverCell);
+    lead.appendChild(coverStack);
+    leadCell.appendChild(lead);
+    tr.appendChild(leadCell);
+
+    if (touchClient) {
+      bindPlaylogRowSwipe(tr, {
+        canDrop,
+        onDrop: canDrop
+          ? () =>
+              confirmDropFromSequence({
+                row: tr,
+                intentId,
+                mixId: item.id,
+              })
+          : null,
+        onPlay: actionHandler,
+        playSymbol: actionSymbol,
+        playLabel: actionLabel,
+      });
+    }
 
     const mainCell = document.createElement("td");
     mainCell.className = "playlog-main-cell";
@@ -5824,18 +6156,21 @@ async function refreshPlaylog({ force = false } = {}) {
   if (data.upcoming_truncated) {
     const tr = document.createElement("tr");
     tr.className = "playlog-row playlog-truncated";
-    const offsetCell = document.createElement("td");
-    offsetCell.className = "playlog-offset muted";
-    offsetCell.textContent = "…";
-    const coverCell = document.createElement("td");
-    coverCell.className = "playlog-cover-cell";
+    const leadCell = document.createElement("td");
+    leadCell.className = "playlog-lead-cell";
+    const lead = document.createElement("div");
+    lead.className = "playlog-lead";
+    const offsetEl = document.createElement("div");
+    offsetEl.className = "playlog-offset muted";
+    offsetEl.textContent = "…";
+    lead.appendChild(offsetEl);
+    leadCell.appendChild(lead);
     const mainCell = document.createElement("td");
     mainCell.className = "playlog-main-cell muted";
     mainCell.textContent = "…";
     const sideCell = document.createElement("td");
     sideCell.className = "playlog-side-cell";
-    tr.appendChild(offsetCell);
-    tr.appendChild(coverCell);
+    tr.appendChild(leadCell);
     tr.appendChild(mainCell);
     tr.appendChild(sideCell);
     body.appendChild(tr);
@@ -6786,7 +7121,8 @@ function appendIntentSequenceRows(frag, intent, seq) {
       entry.mix_id &&
       !dropPending &&
       (!liveCurrentMixId || entry.mix_id !== liveCurrentMixId);
-    if (canDrop) {
+    // Hover: confirm-click Drop. Touch: show `#` only (no Intent swipe yet).
+    if (canDrop && !isHoverNone()) {
       mountSequenceDropControl({
         cell: numCell,
         intentId: intent.id,

@@ -136,8 +136,16 @@ def _soundcloud_upload(track: dict) -> Upload | None:
 
 
 def _soundcloud_cover_url(track: dict) -> str | None:
-    raw = track.get("artwork_url") or track.get("avatar_url")
-    if not raw or not isinstance(raw, str):
+    # Prefer track art; fall back to uploader avatar when artwork_url is null
+    # (SoundCloud shows the profile picture as the cover in that case).
+    raw = track.get("artwork_url")
+    if not (isinstance(raw, str) and raw.startswith("http")):
+        raw = track.get("avatar_url")
+    if not (isinstance(raw, str) and raw.startswith("http")):
+        user = track.get("user")
+        if isinstance(user, dict):
+            raw = user.get("avatar_url")
+    if not (isinstance(raw, str) and raw.startswith("http")):
         return None
     # API often returns "-large"; prefer a sharper square for UI.
     if "-large." in raw:
