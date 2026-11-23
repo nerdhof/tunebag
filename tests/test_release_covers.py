@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
 from tunebag.cover_cache import (
+    cover_fetch_headers,
     cover_media_type,
     cover_path,
+    default_cover_fetcher,
     hearthis_cover_fallback_urls,
 )
 from tunebag.domain import Platform
@@ -194,6 +196,61 @@ def test_cover_cache_falls_back_from_maxresdefault(tmp_path: Path) -> None:
     assert any(u.endswith("sddefault.jpg") for u in attempted)
 
 
+def test_cover_fetch_headers_origin_for_hearthis_cdn() -> None:
+    assert cover_fetch_headers(
+        "https://img.hearthis.at/x/image_track/1/w200_h200_q70.jpg"
+    ) == {"Origin": "https://hearthis.at"}
+    assert cover_fetch_headers("https://i1.sndcdn.com/art.jpg") == {}
+    assert cover_fetch_headers("https://hearthis.at/dj/track/") == {}
+
+
+def test_default_cover_fetcher_retries_hearthis_403_with_origin(monkeypatch) -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        origin = request.headers.get("origin")
+        seen.append(origin)
+        if origin:
+            return httpx.Response(200, content=JPEG_BYTES)
+        return httpx.Response(403, content=b"forbidden")
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_with_transport(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("tunebag.cover_cache.httpx.Client", client_with_transport)
+    data = default_cover_fetcher(
+        "https://img.hearthis.at/x/image_track/1/cover----w640_h640_c3a3a3a_q70.jpg"
+    )
+    assert data == JPEG_BYTES
+    assert seen == [None, "https://hearthis.at"]
+
+
+def test_default_cover_fetcher_keeps_bare_hearthis_200(monkeypatch) -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("origin"))
+        return httpx.Response(200, content=JPEG_BYTES)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_with_transport(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("tunebag.cover_cache.httpx.Client", client_with_transport)
+    data = default_cover_fetcher(
+        "https://img.hearthis.at/x/image_track/1/w200_h200_q70.jpg"
+    )
+    assert data == JPEG_BYTES
+    assert seen == [None]
+
+
 def test_cover_cache_falls_back_hearthis_size_on_403(tmp_path: Path) -> None:
     from uuid import uuid4
 
@@ -271,10 +328,14 @@ def test_hearthis_cover_urls_from_html_ranks_square_track_art() -> None:
     """
     urls = hearthis_cover_urls_from_html(html, track_id="13107798")
     assert urls[0].endswith("cover----w880_h880_c3a3a3a_q70.jpg")
-    assert all("/13107798/" in u for u in urls)
-    assert all("/image_user/" not in u for u in urls)
-    assert "btrue" in urls[-1]
-    assert not urls[-1].endswith(")")
+    track_urls = [u for u in urls if "/image_track/" in u]
+    assert all("/13107798/" in u for u in track_urls)
+    assert any("/image_user/" in u for u in urls)
+    assert urls.index(track_urls[-1]) < next(
+        i for i, u in enumerate(urls) if "/image_user/" in u
+    )
+    assert "btrue" in track_urls[-1]
+    assert not track_urls[-1].endswith(")")
 
 
 def test_hearthis_cover_fallback_urls_adds_c3_profile_sizes() -> None:

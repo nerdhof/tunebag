@@ -203,8 +203,14 @@ def hearthis_cover_urls_from_html(
         seen.add(candidate)
         user_scored.append((_hearthis_page_url_score(candidate), candidate))
 
-    scored = track_scored if track_scored else user_scored
-    scored.sort(key=lambda item: item[0], reverse=True)
+    # Prefer track art; keep uploader avatars as lower-priority fallbacks when
+    # every image_track CDN URL 403s (common for some older uploads).
+    track_scored.sort(key=lambda item: item[0], reverse=True)
+    user_scored.sort(key=lambda item: item[0], reverse=True)
+    if track_scored:
+        scored = track_scored + user_scored
+    else:
+        scored = user_scored
     return [url for _, url in scored]
 
 
@@ -221,9 +227,26 @@ def _hearthis_page_url_score(url: str) -> tuple[int, int, int]:
     return (overlay + square, width * height, width)
 
 
+def cover_fetch_headers(url: str) -> dict[str, str]:
+    """Optional hearthis CDN headers.
+
+    Some older ``img.hearthis.at`` artworks 403 unless ``Origin: https://hearthis.at``
+    is set; the same header 403s many normal thumbs. Callers should try bare first,
+    then retry with these headers on 403 only.
+    """
+    host = urlparse(url).netloc.lower()
+    if host == "img.hearthis.at" or host.endswith(".hearthis.at"):
+        return {"Origin": "https://hearthis.at"}
+    return {}
+
+
 def default_cover_fetcher(url: str) -> bytes:
     with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
         response = client.get(url)
+        if response.status_code == 403:
+            unlock = cover_fetch_headers(url)
+            if unlock:
+                response = client.get(url, headers=unlock)
         response.raise_for_status()
         return response.content
 
