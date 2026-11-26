@@ -198,6 +198,9 @@ def test_refresh_sequence_api_rerolls_seed(tmp_path: Path) -> None:
     for entry in after["entries"]:
         assert "has_cover" in entry
         assert isinstance(entry["has_cover"], bool)
+        assert entry["cache_status"] in ("cached", "loading", "pending", "absent")
+        assert "rejected" in entry
+        assert "soft_rejected" in entry
 
 
 def test_refresh_sequence_api_unknown_intent(tmp_path: Path) -> None:

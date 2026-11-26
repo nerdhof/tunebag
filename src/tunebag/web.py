@@ -1212,6 +1212,7 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=404, detail="sequence not found")
         mix_by_id = {mix.id: mix for mix in agent.mixes()}
         artists_by_id = {a.id: a for a in agent.artists()}
+        local_ids, downloads, now = agent.cache_ui_snapshot()
 
         def _entry_fields(entry) -> dict:
             mix = mix_by_id.get(entry.mix_id)
@@ -1221,6 +1222,9 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                     "title": None,
                     "duration_seconds": None,
                     "has_cover": False,
+                    "cache_status": "pending",
+                    "rejected": False,
+                    "soft_rejected": False,
                 }
             artist = artists_by_id.get(mix.artist_id)
             artist_name = artist.name if artist is not None else "Unknown"
@@ -1229,6 +1233,12 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                 "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": mix.duration_seconds,
                 "has_cover": agent.has_cover(entry.mix_id),
+                **agent.release_cache_ui_fields(
+                    mix,
+                    local_ids=local_ids,
+                    downloads=downloads,
+                    now=now,
+                ),
             }
 
         device_names = {

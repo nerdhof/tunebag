@@ -7,6 +7,10 @@ const expandedCatalogArtists = new Set();
 const expandedCacheIntents = new Set();
 /** Intent ids whose shared sequence rows are expanded in the Intents table. */
 const expandedIntentSequences = new Set();
+/** Last `/api/intents` list (unfiltered); used for local expand/collapse paint. */
+let intentListCache = [];
+/** @type {Map<string, object>} */
+const intentSequenceCache = new Map();
 /** @type {Map<string, {mode: "add"|"edit", deviceId?: string}>} */
 const hoursEditorState = new Map();
 /** Catalog Rejected filter (default off). */
@@ -3720,7 +3724,9 @@ function wheelDeltaYPx(event) {
 
 /**
  * Fold-first wheel accounting for a pane scrollport. Returns true when the
- * delta was consumed by player collapse/expand (caller should not scroll).
+ * delta was handled here (caller should not scroll). Leftover past the fold
+ * boundary is applied to pane.scrollTop so the same gesture continues into
+ * table scroll instead of feeling like resistance.
  * @param {HTMLElement} pane
  * @param {WheelEvent} event
  */
@@ -3732,16 +3738,35 @@ function applyFocusPaneWheelFold(pane, event) {
   const home = paneScrollHomeTop(activeFocusTab);
   const atHome = pane.scrollTop <= home + 1;
 
+  // Past home: keep fully collapsed; do not steal wheel for fold.
+  if (!atHome) {
+    if (playerCollapseScrollPx < PLAYER_COLLAPSE_FULL_RANGE_PX) {
+      setPlayerCollapseDepthPx(PLAYER_COLLAPSE_FULL_RANGE_PX);
+    }
+    return false;
+  }
+
   if (dy > 0 && playerCollapseScrollPx < PLAYER_COLLAPSE_FULL_RANGE_PX) {
+    const room = PLAYER_COLLAPSE_FULL_RANGE_PX - playerCollapseScrollPx;
+    const fold = Math.min(dy, room);
+    const leftover = dy - fold;
     event.preventDefault();
-    setPlayerCollapseDepthPx(playerCollapseScrollPx + dy);
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + fold);
+    if (leftover > 0) {
+      pane.scrollTop += leftover;
+    }
     paneCollapseLastScrollTop = pane.scrollTop;
     return true;
   }
 
-  if (dy < 0 && atHome && playerCollapseScrollPx > 0) {
+  if (dy < 0 && playerCollapseScrollPx > 0) {
+    const expand = Math.max(dy, -playerCollapseScrollPx);
+    const leftover = dy - expand;
     event.preventDefault();
-    setPlayerCollapseDepthPx(playerCollapseScrollPx + dy);
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + expand);
+    if (leftover < 0) {
+      pane.scrollTop += leftover;
+    }
     paneCollapseLastScrollTop = pane.scrollTop;
     return true;
   }
@@ -3806,10 +3831,13 @@ function syncPlayerCollapseFromActivePane() {
     playerCollapseScrollPx > 0 &&
     paneCollapseLastScrollTop <= home + 1
   ) {
-    // Rare: scroll engine reported upward delta while pinned at home.
-    setPlayerCollapseDepthPx(playerCollapseScrollPx + delta);
-    el.scrollTop = home;
-    paneCollapseLastScrollTop = home;
+    // Upward delta while at/near home: expand first, then let leftover
+    // scroll above home (Playlog past −2) in the same gesture.
+    const expand = Math.max(delta, -playerCollapseScrollPx);
+    const leftover = delta - expand;
+    setPlayerCollapseDepthPx(playerCollapseScrollPx + expand);
+    el.scrollTop = home + leftover;
+    paneCollapseLastScrollTop = el.scrollTop;
     return;
   }
 
@@ -6317,13 +6345,10 @@ function fillPlaylogCacheCell(cell, item) {
 }
 
 /**
- * Patch Playlog cache/download cells from a Cache `/api/files` snapshot.
- * Used on throttled CACHE progress notices so we do not full-refetch `/api/playlog`.
+ * Patch Playlog + Intent-sequence cache/download cells from a Cache `/api/files`
+ * snapshot. Used on throttled CACHE progress notices so we do not full-refetch.
  */
 function patchPlaylogCacheFromFiles(data) {
-  const playlogBody = document.getElementById("playlog-body");
-  if (!playlogBody) return;
-
   const byId = new Map();
   for (const group of data.groups || []) {
     for (const file of group.mixes || []) {
@@ -6348,18 +6373,40 @@ function patchPlaylogCacheFromFiles(data) {
   }
   if (!byId.size) return;
 
-  for (const tr of playlogBody.querySelectorAll("tr.playlog-row[data-mix-id]")) {
-    const mixId = tr.dataset.mixId;
-    const info = byId.get(mixId);
-    if (!info) continue;
-    const cell = tr.querySelector(".playlog-cache-cell");
-    if (!cell) continue;
-    fillPlaylogCacheCell(cell, {
-      ...info,
-      offset: Number(tr.dataset.offset) || 0,
-      rejected: tr.classList.contains("mix-rejected"),
-      soft_rejected: tr.classList.contains("playlog-soft-rejected"),
-    });
+  const playlogBody = document.getElementById("playlog-body");
+  if (playlogBody) {
+    for (const tr of playlogBody.querySelectorAll("tr.playlog-row[data-mix-id]")) {
+      const mixId = tr.dataset.mixId;
+      const info = byId.get(mixId);
+      if (!info) continue;
+      const cell = tr.querySelector(".playlog-cache-cell");
+      if (!cell) continue;
+      fillPlaylogCacheCell(cell, {
+        ...info,
+        offset: Number(tr.dataset.offset) || 0,
+        rejected: tr.classList.contains("mix-rejected"),
+        soft_rejected: tr.classList.contains("playlog-soft-rejected"),
+      });
+    }
+  }
+
+  const intentBody = document.getElementById("intent-table-body");
+  if (intentBody) {
+    for (const tr of intentBody.querySelectorAll(
+      "tr.intent-seq-row[data-mix-id]",
+    )) {
+      const mixId = tr.dataset.mixId;
+      const info = byId.get(mixId);
+      if (!info) continue;
+      const cell = tr.querySelector(".playlog-cache-cell");
+      if (!cell) continue;
+      fillPlaylogCacheCell(cell, {
+        ...info,
+        offset: Number(tr.dataset.offset) || 1,
+        rejected: tr.classList.contains("mix-rejected"),
+        soft_rejected: tr.classList.contains("intent-seq-soft-rejected"),
+      });
+    }
   }
 }
 
@@ -7939,13 +7986,23 @@ function renderIntentSeqCover(entry) {
   return cell;
 }
 
-function toggleIntentSequence(intentId) {
+async function toggleIntentSequence(intentId) {
   if (expandedIntentSequences.has(intentId)) {
     expandedIntentSequences.delete(intentId);
   } else {
     expandedIntentSequences.add(intentId);
+    if (!intentSequenceCache.has(intentId)) {
+      try {
+        const seqRes = await fetch(`/api/intents/${intentId}/sequence`);
+        if (seqRes.ok) {
+          intentSequenceCache.set(intentId, await seqRes.json());
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
   }
-  void refreshIntents({ force: true });
+  paintIntentTable(intentListCache, intentSequenceCache);
 }
 
 function appendIntentSeqCoverEl(entry) {
@@ -7961,6 +8018,163 @@ function appendIntentSeqCoverEl(entry) {
   placeholder.className = "intent-seq-cover-placeholder";
   placeholder.setAttribute("aria-hidden", "true");
   return placeholder;
+}
+
+/**
+ * Map last assigned mix_id → devices whose assignment ends on that release.
+ * Order follows intent.device_hours when present.
+ */
+function assignmentEndsByMixId(intent, assignments) {
+  /** @type {Map<string, Array<{ deviceId: string, name: string }>>} */
+  const ends = new Map();
+  const hoursOrder = (intent.device_hours || []).map((dh) => String(dh.device_id));
+  const sorted = [...(assignments || [])].sort((a, b) => {
+    const ia = hoursOrder.indexOf(String(a.device_id));
+    const ib = hoursOrder.indexOf(String(b.device_id));
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+  });
+  for (const asg of sorted) {
+    const mixIds = asg.mix_ids || [];
+    if (!mixIds.length) continue;
+    const last = String(mixIds[mixIds.length - 1]);
+    const list = ends.get(last) || [];
+    list.push({
+      deviceId: String(asg.device_id),
+      name: asg.device_name || deviceName(asg.device_id),
+    });
+    ends.set(last, list);
+  }
+  return ends;
+}
+
+/**
+ * Assignment-end overlay matching the tab sketch:
+ * continuous baseline through the row, label in a raised tab with
+ * outward concave corners where the line meets the sides
+ * (`────╯ tab ╰────`).
+ */
+function appendIntentSeqAssignEndOverlay(nameCell, devices) {
+  const includesLocal = devices.some(
+    (d) => localDeviceId && d.deviceId === String(localDeviceId),
+  );
+  const wrap = document.createElement("div");
+  wrap.className = includesLocal
+    ? "intent-seq-assign-end intent-seq-assign-end-local"
+    : "intent-seq-assign-end intent-seq-assign-end-peer";
+  wrap.setAttribute(
+    "aria-label",
+    `Assignment ends: ${devices.map((d) => d.name).join(", ")}`,
+  );
+
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "intent-seq-assign-end-svg");
+  svg.setAttribute("aria-hidden", "true");
+
+  const baseline = document.createElementNS(svgNS, "line");
+  baseline.setAttribute("class", "intent-seq-assign-end-baseline");
+
+  const fill = document.createElementNS(svgNS, "path");
+  fill.setAttribute("class", "intent-seq-assign-end-tab-fill");
+
+  const stroke = document.createElementNS(svgNS, "path");
+  stroke.setAttribute("class", "intent-seq-assign-end-tab-stroke");
+  stroke.setAttribute("fill", "none");
+
+  svg.appendChild(fill);
+  svg.appendChild(baseline);
+  svg.appendChild(stroke);
+
+  const label = document.createElement("span");
+  label.className = "intent-seq-assign-end-label";
+  label.textContent = `↑ ${devices.map((d) => d.name).join(" · ")} ↑`;
+
+  wrap.appendChild(svg);
+  wrap.appendChild(label);
+  nameCell.appendChild(wrap);
+
+  const layout = () => layoutIntentSeqAssignEnd(wrap);
+  // Double rAF: label metrics are reliable after the row has been laid out.
+  requestAnimationFrame(() => requestAnimationFrame(layout));
+}
+
+/** Draw continuous baseline + raised tab path around the measured label. */
+function layoutIntentSeqAssignEnd(wrap) {
+  if (!wrap.isConnected) return;
+  const svg = wrap.querySelector(".intent-seq-assign-end-svg");
+  const label = wrap.querySelector(".intent-seq-assign-end-label");
+  const baseline = wrap.querySelector(".intent-seq-assign-end-baseline");
+  const fill = wrap.querySelector(".intent-seq-assign-end-tab-fill");
+  const stroke = wrap.querySelector(".intent-seq-assign-end-tab-stroke");
+  if (!svg || !label || !baseline || !fill || !stroke) return;
+
+  const W = Math.max(1, wrap.clientWidth);
+  const H = Math.max(1, wrap.clientHeight);
+  const padX = 5;
+  const r = 7; // bottom fillet (horizontal → 45°)
+  const topR = 9; // top fillet (45° → horizontal)
+  const lr = label.getBoundingClientRect();
+  const wr = wrap.getBoundingClientRect();
+  const tabL = Math.max(r + 1, lr.left - wr.left - padX);
+  const tabR = Math.min(W - r - 1, lr.right - wr.left + padX);
+  if (tabR <= tabL + 2 * r) return;
+
+  // Baseline at the bottom of the overlay; tab rises above it into the row.
+  const y = H - 0.5;
+  const labelTop = Math.max(0, lr.top - wr.top);
+  const top = Math.max(0.5, labelTop - 1);
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", String(W));
+  svg.setAttribute("height", String(H));
+
+  baseline.setAttribute("x1", "0");
+  baseline.setAttribute("y1", String(y));
+  baseline.setAttribute("x2", String(W));
+  baseline.setAttribute("y2", String(y));
+
+  // Both fillets are 45° arcs (not full quarters), with a 45° diagonal between:
+  //        ╭────────╮
+  //   ─────╯        ╰─────
+  const k = Math.SQRT1_2; // cos/sin 45°
+  // Bottom-left: arc horizontal → 45°.
+  const left45x = tabL - r + r * k;
+  const left45y = y - r + r * k;
+  const right45x = tabR + r - r * k;
+  const right45y = y - r + r * k;
+
+  // Top-left: 45° arc from diagonal onto the flat top (tangent 45° → 0°).
+  // Join sits on the diagonal; end is the start of the flat top.
+  const leftJoinY = top + topR * (1 - k);
+  const leftJoinX = left45x + (left45y - leftJoinY);
+  const topL = leftJoinX + topR * k;
+  // Top-right mirror.
+  const rightJoinY = top + topR * (1 - k);
+  const rightJoinX = right45x - (right45y - rightJoinY);
+  const topRight = rightJoinX - topR * k;
+
+  // If top span collapses, pull the flat ends apart slightly.
+  let flatL = topL;
+  let flatR = topRight;
+  if (flatR - flatL < 2) {
+    const mid = (tabL + tabR) / 2;
+    flatL = mid - 1;
+    flatR = mid + 1;
+  }
+
+  const d = [
+    `M ${tabL - r},${y}`,
+    `A ${r} ${r} 0 0 0 ${left45x},${left45y}`,
+    `L ${leftJoinX},${leftJoinY}`,
+    `A ${topR} ${topR} 0 0 1 ${flatL},${top}`,
+    `L ${flatR},${top}`,
+    `A ${topR} ${topR} 0 0 1 ${rightJoinX},${rightJoinY}`,
+    `L ${right45x},${right45y}`,
+    `A ${r} ${r} 0 0 0 ${tabR + r},${y}`,
+  ].join(" ");
+
+  fill.setAttribute("d", `${d} Z`);
+  stroke.setAttribute("d", d);
 }
 
 function appendIntentSequenceRows(frag, intent, seq) {
@@ -7981,11 +8195,20 @@ function appendIntentSequenceRows(frag, intent, seq) {
 
   const liveCurrentMixId =
     lastPlayerIntentId === intent.id ? currentMixId : null;
+  const assignEnds = assignmentEndsByMixId(intent, seq.assignments || []);
 
   for (const entry of entries) {
     const tr = document.createElement("tr");
     tr.className = "intent-seq-row";
     tr.dataset.intentId = intent.id;
+    if (entry.mix_id) tr.dataset.mixId = entry.mix_id;
+    const isLiveCurrent =
+      Boolean(entry.mix_id) &&
+      liveCurrentMixId != null &&
+      entry.mix_id === liveCurrentMixId;
+    tr.dataset.offset = isLiveCurrent ? "0" : "1";
+    if (entry.rejected) tr.classList.add("mix-rejected");
+    if (entry.soft_rejected) tr.classList.add("intent-seq-soft-rejected");
     const dropPending =
       Boolean(entry.mix_id) && isSequenceDropPending(intent.id, entry.mix_id);
     if (dropPending) {
@@ -8016,18 +8239,47 @@ function appendIntentSequenceRows(frag, intent, seq) {
 
     const nameCell = document.createElement("td");
     nameCell.className = "intent-seq-name-cell";
+    const nameMain = document.createElement("div");
+    nameMain.className = "intent-seq-name-main";
     const artist = entry.artist || "Unknown";
     const title = entry.title || entry.mix_id || "—";
-    nameCell.textContent = `${artist} - ${title}`;
+    nameMain.textContent = `${artist} - ${title}`;
+    nameCell.appendChild(nameMain);
     tr.appendChild(nameCell);
 
-    const actions = document.createElement("td");
-    actions.className = "intent-actions-cell intent-seq-length-cell muted";
-    actions.textContent =
+    const side = document.createElement("td");
+    side.className = "intent-actions-cell intent-seq-side-cell";
+    const stack = document.createElement("div");
+    stack.className = "intent-seq-side-stack";
+    const lengthLine = document.createElement("div");
+    lengthLine.className = "intent-seq-length muted";
+    lengthLine.textContent =
       entry.duration_seconds != null
         ? formatDuration(entry.duration_seconds)
         : "—";
-    tr.appendChild(actions);
+    const cacheLine = document.createElement("div");
+    fillPlaylogCacheCell(cacheLine, {
+      cache_status: entry.cache_status || "pending",
+      downloaded_bytes: entry.downloaded_bytes,
+      total_bytes: entry.total_bytes,
+      size_bytes: entry.size_bytes,
+      offset: isLiveCurrent ? 0 : 1,
+      rejected: Boolean(entry.rejected),
+      soft_rejected: Boolean(entry.soft_rejected),
+    });
+    stack.appendChild(lengthLine);
+    stack.appendChild(cacheLine);
+    side.appendChild(stack);
+    tr.appendChild(side);
+
+    if (entry.mix_id) {
+      const endDevices = assignEnds.get(String(entry.mix_id));
+      if (endDevices?.length) {
+        tr.classList.add("intent-seq-row-assign-end");
+        // Hosted in the name cell; CSS positions against the row so it spans full width.
+        appendIntentSeqAssignEndOverlay(nameCell, endDevices);
+      }
+    }
 
     frag.appendChild(tr);
   }
@@ -8261,45 +8513,26 @@ function appendIntentAssignmentRows(
   return specs.length > 0;
 }
 
-async function refreshIntents({ force = false } = {}) {
+/**
+ * Paint the Intents table from already-fetched lists (no network).
+ * @param {object[]} allIntents
+ * @param {Map<string, object|null>} seqByIntentId
+ */
+function paintIntentTable(allIntents, seqByIntentId) {
   const body = document.getElementById("intent-table-body");
   if (!body) return;
-  if (!force && focusInside(body)) return;
-  await refreshIntentArtistOptions();
-  const res = await fetch("/api/intents");
-  const data = await res.json();
   if (editComposer) {
     editComposer.destroy();
     editComposer = null;
   }
   if (
     editingIntentId &&
-    !(data.intents || []).some((intent) => intent.id === editingIntentId)
+    !(allIntents || []).some((intent) => intent.id === editingIntentId)
   ) {
     editingIntentId = null;
   }
 
-  const allIntents = data.intents || [];
-  const intents = allIntents.filter(intentMatchesListFilters);
-  const seqByIntentId = new Map();
-  if (intents.length) {
-    const seqResults = await Promise.all(
-      intents.map(async (intent) => {
-        try {
-          const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
-          if (!seqRes.ok) return [intent.id, null];
-          return [intent.id, await seqRes.json()];
-        } catch (err) {
-          console.error(err);
-          return [intent.id, null];
-        }
-      }),
-    );
-    for (const [id, seq] of seqResults) {
-      seqByIntentId.set(id, seq);
-    }
-  }
-
+  const intents = (allIntents || []).filter(intentMatchesListFilters);
   const frag = document.createDocumentFragment();
   let pendingEditFocus = null;
 
@@ -8315,7 +8548,7 @@ async function refreshIntents({ force = false } = {}) {
       intentListFilterPlatforms.length ||
       intentNameFilter.trim();
     td.textContent =
-      !allIntents.length
+      !(allIntents || []).length
         ? "No intents yet"
         : filtersActive
           ? "No intents match filters"
@@ -8333,7 +8566,9 @@ async function refreshIntents({ force = false } = {}) {
       seq && !isEditing
         ? {
             expanded: seqExpanded,
-            onToggle: () => toggleIntentSequence(intent.id),
+            onToggle: () => {
+              void toggleIntentSequence(intent.id);
+            },
           }
         : null;
     let assignments = [];
@@ -8538,6 +8773,43 @@ async function refreshIntents({ force = false } = {}) {
   body.replaceChildren(frag);
   if (intentPane) intentPane.scrollTop = savedPaneScroll;
   pendingEditFocus?.focusName();
+}
+
+async function refreshIntents({ force = false } = {}) {
+  const body = document.getElementById("intent-table-body");
+  if (!body) return;
+  if (!force && focusInside(body)) return;
+  await refreshIntentArtistOptions();
+  const res = await fetch("/api/intents");
+  const data = await res.json();
+
+  const allIntents = data.intents || [];
+  intentListCache = allIntents;
+  const intents = allIntents.filter(intentMatchesListFilters);
+  const seqByIntentId = new Map();
+  if (intents.length) {
+    const seqResults = await Promise.all(
+      intents.map(async (intent) => {
+        try {
+          const seqRes = await fetch(`/api/intents/${intent.id}/sequence`);
+          if (!seqRes.ok) return [intent.id, null];
+          return [intent.id, await seqRes.json()];
+        } catch (err) {
+          console.error(err);
+          return [intent.id, null];
+        }
+      }),
+    );
+    for (const [id, seq] of seqResults) {
+      seqByIntentId.set(id, seq);
+    }
+  }
+  intentSequenceCache.clear();
+  for (const [id, seq] of seqByIntentId) {
+    if (seq) intentSequenceCache.set(id, seq);
+  }
+
+  paintIntentTable(allIntents, intentSequenceCache);
   await refreshPlayerIntents();
 }
 

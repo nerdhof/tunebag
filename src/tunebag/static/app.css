@@ -2300,9 +2300,114 @@ button:disabled {
   min-width: 0;
 }
 
-#intent-table .intent-seq-length-cell {
-  font-variant-numeric: tabular-nums;
+#intent-table .intent-seq-name-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+#intent-table .intent-seq-side-cell {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Inner stack keeps the actions column shrink-to-fit (flex on <td> stretched it). */
+#intent-table .intent-seq-side-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  vertical-align: middle;
+}
+
+#intent-table .intent-seq-length {
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+#intent-table .intent-seq-side-cell .playlog-cache-cell {
+  font-weight: 400;
+}
+
+@media (min-width: 40.01rem) {
+  #intent-table .intent-seq-side-stack {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.45rem;
+  }
+}
+
+/* Assignment-end tab: continuous baseline, label in a tab rising above it. */
+#intent-table .intent-seq-row.intent-seq-row-assign-end {
+  position: relative;
+}
+
+#intent-table .intent-seq-row.intent-seq-row-assign-end > td {
+  position: static;
+  /* Room for the tab to sit above the baseline without spilling into the next row. */
+  padding-bottom: 0.15rem;
+}
+
+#intent-table .intent-seq-assign-end {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 1.25rem;
+  font-size: 0.68rem;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  user-select: none;
+  z-index: 1;
+  overflow: hidden;
+}
+
+#intent-table .intent-seq-assign-end-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: inherit;
+}
+
+#intent-table .intent-seq-assign-end-baseline,
+#intent-table .intent-seq-assign-end-tab-stroke {
+  stroke: currentColor;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+#intent-table .intent-seq-assign-end-tab-fill {
+  fill: var(--card);
+}
+
+#intent-table .intent-seq-assign-end-tab-stroke {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#intent-table .intent-seq-assign-end-label {
+  position: relative;
+  z-index: 1;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 0.35rem 0.14rem;
+}
+
+#intent-table .intent-seq-assign-end-local {
+  color: var(--accent);
+}
+
+#intent-table .intent-seq-assign-end-peer {
+  color: var(--muted);
 }
 
 #intent-table .intent-cover-placeholder {
@@ -3559,45 +3664,55 @@ button.seq-drop-action.confirm-pending {
   max-width: none;
 }
 
-#playlog-table .playlog-cache-cell {
+#playlog-table .playlog-cache-cell,
+#intent-table .playlog-cache-cell {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 #playlog-table .playlog-cache-cached,
-#playlog-table .playlog-cache-current {
+#playlog-table .playlog-cache-current,
+#intent-table .playlog-cache-cached,
+#intent-table .playlog-cache-current {
   color: var(--cache-stat-cached);
   font-weight: 400;
 }
 
-#playlog-table .playlog-cache-loading {
+#playlog-table .playlog-cache-loading,
+#intent-table .playlog-cache-loading {
   color: var(--cache-stat-loading);
 }
 
-#playlog-table .playlog-cache-pending {
+#playlog-table .playlog-cache-pending,
+#intent-table .playlog-cache-pending {
   color: var(--cache-stat-pending);
 }
 
-#playlog-table .playlog-cache-past {
+#playlog-table .playlog-cache-past,
+#intent-table .playlog-cache-past {
   color: inherit;
 }
 
-#playlog-table .playlog-cache-rejected {
+#playlog-table .playlog-cache-rejected,
+#intent-table .playlog-cache-rejected {
   color: var(--stat-reject);
 }
 
-#playlog-table .playlog-cache-progress {
+#playlog-table .playlog-cache-progress,
+#intent-table .playlog-cache-progress {
   position: relative;
   display: inline-block;
   min-width: 5.5rem;
 }
 
-#playlog-table .playlog-cache-progress-label {
+#playlog-table .playlog-cache-progress-label,
+#intent-table .playlog-cache-progress-label {
   position: relative;
   z-index: 1;
 }
 
-#playlog-table .playlog-cache-progress-track {
+#playlog-table .playlog-cache-progress-track,
+#intent-table .playlog-cache-progress-track {
   position: absolute;
   left: 0;
   right: 0;
@@ -3608,7 +3723,8 @@ button.seq-drop-action.confirm-pending {
   overflow: hidden;
 }
 
-#playlog-table .playlog-cache-progress-fill {
+#playlog-table .playlog-cache-progress-fill,
+#intent-table .playlog-cache-progress-fill {
   height: 100%;
   background: var(--cache-stat-loading);
 }

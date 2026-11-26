@@ -621,6 +621,60 @@ class DeviceAgent:
                 return True
         return False
 
+    def cache_ui_snapshot(
+        self,
+    ) -> tuple[set[UUID], dict[UUID, dict[str, Any]], datetime]:
+        """Local File ids, download progress, and clock for companion cache cells."""
+        local_ids = self._local_file_ids()
+        with self._download_lock:
+            downloads = {
+                mix_id: {
+                    "downloaded_bytes": int(progress["downloaded_bytes"]),
+                    "total_bytes": progress["total_bytes"],
+                }
+                for mix_id, progress in self._downloads.items()
+            }
+        return local_ids, downloads, self._clock()
+
+    def release_cache_ui_fields(
+        self,
+        mix: Mix,
+        *,
+        local_ids: set[UUID],
+        downloads: dict[UUID, dict[str, Any]],
+        now: datetime,
+        offset: int = 1,
+    ) -> dict[str, Any]:
+        """Cache / Reject fields shared by Playlog and Intent sequence rows."""
+        mix_id = mix.id
+        if mix_id in local_ids:
+            status = "cached"
+        elif mix_id in downloads:
+            status = "loading"
+        elif offset < 0:
+            status = "absent"
+        else:
+            status = "pending"
+        soft = is_soft_rejected(
+            rejected=mix.rejected,
+            rejected_at=mix.rejected_at,
+            now=now,
+        )
+        fields: dict[str, Any] = {
+            "cache_status": status,
+            "rejected": mix.rejected,
+            "soft_rejected": soft,
+        }
+        if status == "cached":
+            size = self._local_file_size(mix_id)
+            if size is not None:
+                fields["size_bytes"] = size
+        elif status == "loading":
+            progress = downloads[mix_id]
+            fields["downloaded_bytes"] = int(progress["downloaded_bytes"])
+            fields["total_bytes"] = progress["total_bytes"]
+        return fields
+
     def _playlog_row(
         self,
         mix: Mix,
@@ -632,21 +686,17 @@ class DeviceAgent:
         now: datetime,
     ) -> dict[str, Any]:
         mix_id = mix.id
-        if mix_id in local_ids:
-            status = "cached"
-        elif mix_id in downloads:
-            status = "loading"
-        elif offset < 0:
-            status = "absent"
-        else:
-            status = "pending"
+        cache_fields = self.release_cache_ui_fields(
+            mix,
+            local_ids=local_ids,
+            downloads=downloads,
+            now=now,
+            offset=offset,
+        )
+        status = cache_fields["cache_status"]
         artist = self.catalog.artists.get(mix.artist_id)
         artist_name = artist.name if artist is not None else "Unknown"
-        soft = is_soft_rejected(
-            rejected=mix.rejected,
-            rejected_at=mix.rejected_at,
-            now=now,
-        )
+        soft = cache_fields["soft_rejected"]
         assignment = self.assignment(intent_id)
         in_assignment = assignment is not None and mix_id in assignment.mix_ids
         retained = self._is_playlog_previous_retained(mix_id)
@@ -691,15 +741,9 @@ class DeviceAgent:
                 else None
             ),
         }
-        if status == "cached":
-            size = self._local_file_size(mix_id)
-            if size is not None:
-                entry["size_bytes"] = size
-        elif status == "loading":
-            progress = downloads[mix_id]
-            entry["downloaded_bytes"] = int(progress["downloaded_bytes"])
-            total = progress["total_bytes"]
-            entry["total_bytes"] = total
+        for key in ("size_bytes", "downloaded_bytes", "total_bytes"):
+            if key in cache_fields:
+                entry[key] = cache_fields[key]
         return entry
 
     def playlog(
