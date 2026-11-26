@@ -3308,6 +3308,7 @@ button.seq-drop-action.confirm-pending {
 }
 
 #playlog-table .playlog-current {
+  --playlog-current-bg: color-mix(in srgb, var(--accent) 14%, var(--card));
   font-weight: 600;
 }
 
@@ -3318,16 +3319,16 @@ button.seq-drop-action.confirm-pending {
   top: var(--playlog-thead-h, 0px);
   bottom: 0;
   z-index: 3;
-  background: var(--card);
+  background: var(--playlog-current-bg);
 }
 
-/* Swipe tint must win over sticky current’s solid card fill. */
+/* Swipe tint must win over sticky current’s solid fill. */
 #playlog-table .playlog-row.playlog-current.playlog-swipe-preview-drop > td,
 #playlog-table .playlog-row.playlog-current.playlog-swipe-armed-drop > td {
   background: color-mix(
     in srgb,
     var(--stat-reject) calc(var(--playlog-swipe-progress, 1) * 32%),
-    var(--card)
+    var(--playlog-current-bg)
   );
 }
 
@@ -3336,7 +3337,7 @@ button.seq-drop-action.confirm-pending {
   background: color-mix(
     in srgb,
     var(--stat-tagged) calc(var(--playlog-swipe-progress, 1) * 32%),
-    var(--card)
+    var(--playlog-current-bg)
   );
 }
 
