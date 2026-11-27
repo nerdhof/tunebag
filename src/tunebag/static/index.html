@@ -479,7 +479,7 @@
           hidden
         >
           <div class="focus-toolbar">
-            <div class="focus-toolbar-filters">
+            <div class="focus-toolbar-filters catalog-toolbar">
               <div class="name-filter">
                 <input
                   id="cache-name-filter"
@@ -499,6 +499,16 @@
                   ×
                 </button>
               </div>
+              <div
+                id="cache-status-filters"
+                class="cache-status-filters"
+                title="Show these cache states (none = any)"
+              ></div>
+              <div
+                id="cache-source-filters"
+                class="catalog-source-filters"
+                title="Show releases from these sources (none = any)"
+              ></div>
               <label
                 class="metered-toggle"
                 title="Simulate a metered link: origin downloads stay at current + one ahead"
@@ -513,12 +523,11 @@
               <table id="cache-table">
                 <thead>
                   <tr>
-                    <th>Artist</th>
+                    <th class="cache-num-col" aria-label="#">#</th>
+                    <th class="cache-cover-col" aria-label="Cover"></th>
                     <th>Release</th>
-                    <th>Length</th>
-                    <th>Size</th>
-                    <th>Status</th>
-                    <th>Action</th>
+                    <th class="cache-length-col">Length</th>
+                    <th class="cache-status-col">Status</th>
                   </tr>
                 </thead>
                 <tbody id="cache-body"></tbody>

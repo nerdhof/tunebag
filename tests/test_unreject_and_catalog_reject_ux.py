@@ -355,12 +355,27 @@ def test_name_filter_ui_contract_on_intents_catalog_cache() -> None:
     assert "cacheNameFilter" in js
     assert "mountCacheNameFilter" in js
     assert "resetCacheNameFilter" in js
+    assert "mountCacheFilters" in js
+    assert "resetCacheFilters" in js
+    assert "fileMatchesCacheFilters" in js
+    assert "cacheFilterStatuses" in js
+    assert "cacheFilterPlatforms" in js
     assert "NAME_FILTER_DEBOUNCE_MS" in js
     assert "matchesNameFilter(cacheNameFilter, file.title, file.artist)" in js
+    assert "fileMatchesCacheFilters(file)" in js
     assert "No cache rows match this filter" in js
-    # Cache name filter precedes metered toggle in the Filters row
+    assert 'id="cache-status-filters"' in html
+    assert 'id="cache-source-filters"' in html
+    assert ".cache-status-filters" in css
+    # Cache name → status → platform → metered in the Filters row
     cache_pane = html[html.index('id="cache"') : html.index('id="peers"')]
     assert cache_pane.index('id="cache-name-filter"') < cache_pane.index(
+        'id="cache-status-filters"'
+    )
+    assert cache_pane.index('id="cache-status-filters"') < cache_pane.index(
+        'id="cache-source-filters"'
+    )
+    assert cache_pane.index('id="cache-source-filters"') < cache_pane.index(
         'id="metered-toggle"'
     )
 

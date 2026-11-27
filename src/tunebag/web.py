@@ -572,6 +572,8 @@ def create_app(agent: DeviceAgent) -> FastAPI:
                             "title": mix["title"],
                             "duration_seconds": mix["duration_seconds"],
                             "status": mix["status"],
+                            "platform": mix["platform"],
+                            "has_cover": bool(mix.get("has_cover")),
                             **(
                                 {"size_bytes": mix["size_bytes"]}
                                 if "size_bytes" in mix

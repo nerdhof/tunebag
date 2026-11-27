@@ -2878,13 +2878,33 @@ button.seq-drop-action.confirm-pending {
   line-height: 1;
 }
 
-.catalog-source-filters {
+.catalog-source-filters,
+.cache-status-filters {
   flex: 0 0 auto;
 }
 
-.catalog-source-filters .source-toggles {
+.catalog-source-filters .source-toggles,
+.cache-status-filters .source-toggles {
   gap: 0.25rem;
   flex-wrap: nowrap;
+}
+
+.cache-status-filters .source-toggle[data-status="cached"][aria-pressed="true"] {
+  color: var(--cache-stat-cached);
+  border-color: color-mix(in srgb, var(--cache-stat-cached) 55%, transparent);
+  background: color-mix(in srgb, var(--cache-stat-cached) 12%, transparent);
+}
+
+.cache-status-filters .source-toggle[data-status="loading"][aria-pressed="true"] {
+  color: var(--cache-stat-loading);
+  border-color: color-mix(in srgb, var(--cache-stat-loading) 55%, transparent);
+  background: color-mix(in srgb, var(--cache-stat-loading) 12%, transparent);
+}
+
+.cache-status-filters .source-toggle[data-status="pending"][aria-pressed="true"] {
+  color: var(--cache-stat-pending);
+  border-color: color-mix(in srgb, var(--cache-stat-pending) 55%, transparent);
+  background: color-mix(in srgb, var(--cache-stat-pending) 12%, transparent);
 }
 
 .catalog-star-filters {
@@ -3665,7 +3685,8 @@ button.seq-drop-action.confirm-pending {
 }
 
 #playlog-table .playlog-cache-cell,
-#intent-table .playlog-cache-cell {
+#intent-table .playlog-cache-cell,
+#cache-table .playlog-cache-cell {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -3673,46 +3694,55 @@ button.seq-drop-action.confirm-pending {
 #playlog-table .playlog-cache-cached,
 #playlog-table .playlog-cache-current,
 #intent-table .playlog-cache-cached,
-#intent-table .playlog-cache-current {
+#intent-table .playlog-cache-current,
+#cache-table .playlog-cache-cached,
+#cache-table .playlog-cache-current {
   color: var(--cache-stat-cached);
   font-weight: 400;
 }
 
 #playlog-table .playlog-cache-loading,
-#intent-table .playlog-cache-loading {
+#intent-table .playlog-cache-loading,
+#cache-table .playlog-cache-loading {
   color: var(--cache-stat-loading);
 }
 
 #playlog-table .playlog-cache-pending,
-#intent-table .playlog-cache-pending {
+#intent-table .playlog-cache-pending,
+#cache-table .playlog-cache-pending {
   color: var(--cache-stat-pending);
 }
 
 #playlog-table .playlog-cache-past,
-#intent-table .playlog-cache-past {
+#intent-table .playlog-cache-past,
+#cache-table .playlog-cache-past {
   color: inherit;
 }
 
 #playlog-table .playlog-cache-rejected,
-#intent-table .playlog-cache-rejected {
+#intent-table .playlog-cache-rejected,
+#cache-table .playlog-cache-rejected {
   color: var(--stat-reject);
 }
 
 #playlog-table .playlog-cache-progress,
-#intent-table .playlog-cache-progress {
+#intent-table .playlog-cache-progress,
+#cache-table .playlog-cache-progress {
   position: relative;
   display: inline-block;
   min-width: 5.5rem;
 }
 
 #playlog-table .playlog-cache-progress-label,
-#intent-table .playlog-cache-progress-label {
+#intent-table .playlog-cache-progress-label,
+#cache-table .playlog-cache-progress-label {
   position: relative;
   z-index: 1;
 }
 
 #playlog-table .playlog-cache-progress-track,
-#intent-table .playlog-cache-progress-track {
+#intent-table .playlog-cache-progress-track,
+#cache-table .playlog-cache-progress-track {
   position: absolute;
   left: 0;
   right: 0;
@@ -3724,7 +3754,8 @@ button.seq-drop-action.confirm-pending {
 }
 
 #playlog-table .playlog-cache-progress-fill,
-#intent-table .playlog-cache-progress-fill {
+#intent-table .playlog-cache-progress-fill,
+#cache-table .playlog-cache-progress-fill {
   height: 100%;
   background: var(--cache-stat-loading);
 }
@@ -3838,6 +3869,8 @@ span.star-rating-star {
 
 #cache-table {
   width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
   /* separate: sticky thead works reliably across browsers */
   border-collapse: separate;
   border-spacing: 0;
@@ -4007,48 +4040,59 @@ span.star-rating-star {
   display: none;
 }
 
-#cache-table .cache-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 8rem;
-  max-width: 12rem;
+#cache-table .cache-num-col,
+#cache-table .cache-num-cell {
+  width: 2.4rem;
+  padding-left: 0.35rem;
+  padding-right: 0.2rem;
+  text-align: left;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
 }
 
-#cache-table .cache-progress-label {
-  font-size: 0.8rem;
-  color: var(--muted);
+#cache-table .cache-cover-col,
+#cache-table .cache-cover-cell {
+  width: 2.75rem;
+  padding-left: 0.25rem;
+  padding-right: 0.35rem;
+  vertical-align: middle;
+}
+
+#cache-table .cache-cover,
+#cache-table .cache-cover-placeholder {
+  display: block;
+  width: var(--control-height);
+  height: var(--control-height);
+  border-radius: 0.15rem;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+#cache-table .cache-cover {
+  object-fit: cover;
+}
+
+#cache-table .cache-release-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-#cache-table .cache-progress-track {
-  position: relative;
-  height: 0.45rem;
-  border-radius: 999px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--muted) 30%, var(--bg));
+/* Fixed widths under table-layout:fixed — `width: 1%` no longer shrink-wraps. */
+#cache-table .cache-length-col,
+#cache-table .cache-length-cell {
+  width: 5.5rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
 }
 
-#cache-table .cache-progress-fill {
-  height: 100%;
-  width: 0;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 0.2s ease-out;
-}
-
-#cache-table .cache-progress-track.indeterminate .cache-progress-fill {
-  width: 35%;
-  animation: cache-progress-indeterminate 1.2s ease-in-out infinite;
-}
-
-@keyframes cache-progress-indeterminate {
-  0% {
-    transform: translateX(-120%);
-  }
-  100% {
-    transform: translateX(320%);
-  }
+#cache-table .cache-status-col,
+#cache-table .cache-status-cell {
+  width: 6.75rem;
+  text-align: right;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 /* —— About / concepts —— */

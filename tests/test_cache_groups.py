@@ -91,6 +91,9 @@ def test_cache_groups_partial_fill_cached_vs_pending(tmp_path: Path) -> None:
     assert [m["id"] for m in group["mixes"]] == listening_order
     assert [m["status"] for m in group["mixes"]] == ["cached", "cached", "pending"]
     by_id = {m["id"]: m for m in group["mixes"]}
+    for mix in group["mixes"]:
+        assert mix["has_cover"] is False
+        assert mix["platform"] == Platform.SOUNDCLOUD.value
     for mix_id in cached_ids:
         assert by_id[mix_id]["size_bytes"] == agent._local_file_size(mix_id)
     assert "size_bytes" not in by_id[pending_id]

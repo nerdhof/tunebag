@@ -38,6 +38,10 @@ let intentListFilterPlatforms = [];
 let intentNameFilter = "";
 /** Cache name filter (title or artist substring); empty = any. */
 let cacheNameFilter = "";
+/** Cache status filter (cached/loading/pending); empty = any. */
+let cacheFilterStatuses = [];
+/** Cache platform filter; empty = any. */
+let cacheFilterPlatforms = [];
 /** @type {ReturnType<typeof setTimeout> | null} */
 let catalogNameFilterTimer = null;
 /** @type {ReturnType<typeof setTimeout> | null} */
@@ -109,8 +113,6 @@ const BTN = {
   save: "✓",
   cancel: "×",
   sync: "⇄",
-  setCurrent: "◉",
-  clearCurrent: "○",
   play: "▶",
   pause: "⏸",
   resume: "▶",
@@ -4349,48 +4351,6 @@ function formatCacheSummary(summary) {
   return `${count}, ${duration}, ${size}`;
 }
 
-function renderDownloadProgress(file) {
-  const wrap = document.createElement("div");
-  wrap.className = "cache-progress";
-  const downloaded = Number(file.downloaded_bytes) || 0;
-  const total =
-    file.total_bytes == null || file.total_bytes === ""
-      ? null
-      : Number(file.total_bytes);
-  const known = total != null && Number.isFinite(total) && total > 0;
-
-  const label = document.createElement("span");
-  label.className = "cache-progress-label";
-  label.textContent = known
-    ? `${formatMb(downloaded)} / ${formatMb(total)}`
-    : downloaded > 0
-      ? formatMb(downloaded)
-      : "downloading…";
-  wrap.appendChild(label);
-
-  const track = document.createElement("div");
-  track.className = "cache-progress-track";
-  track.setAttribute("role", "progressbar");
-  track.setAttribute("aria-valuemin", "0");
-  if (known) {
-    const pct = Math.max(0, Math.min(100, (downloaded / total) * 100));
-    track.setAttribute("aria-valuemax", "100");
-    track.setAttribute("aria-valuenow", String(Math.round(pct)));
-    const fill = document.createElement("div");
-    fill.className = "cache-progress-fill";
-    fill.style.width = `${pct}%`;
-    track.appendChild(fill);
-  } else {
-    track.classList.add("indeterminate");
-    track.setAttribute("aria-valuetext", "download in progress");
-    const fill = document.createElement("div");
-    fill.className = "cache-progress-fill";
-    track.appendChild(fill);
-  }
-  wrap.appendChild(track);
-  return wrap;
-}
-
 function setCacheGroupExpanded(groupKey, expanded) {
   const header = document.querySelector(
     `#cache-body .cache-intent-header[data-group-id="${CSS.escape(groupKey)}"]`,
@@ -5035,6 +4995,92 @@ function mountCacheNameFilter() {
   });
 }
 
+const CACHE_STATUS_FILTERS = [
+  { key: "cached", label: "✓", title: "Cached" },
+  { key: "loading", label: "←", title: "Downloading" },
+  { key: "pending", label: "⋮", title: "Pending" },
+];
+
+function mountCacheFilters() {
+  mountCacheNameFilter();
+
+  const statusRoot = document.getElementById("cache-status-filters");
+  if (statusRoot) {
+    statusRoot.replaceChildren();
+    const toggles = document.createElement("div");
+    toggles.className = "source-toggles";
+    toggles.setAttribute("role", "group");
+    toggles.setAttribute("aria-label", "Cache status");
+    for (const { key, label, title } of CACHE_STATUS_FILTERS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "source-toggle";
+      btn.dataset.status = key;
+      btn.setAttribute("aria-pressed", "false");
+      btn.title = title;
+      btn.setAttribute("aria-label", title);
+      btn.textContent = label;
+      toggles.appendChild(btn);
+    }
+    statusRoot.appendChild(toggles);
+    cacheFilterStatuses = [];
+
+    function readStatuses() {
+      return Array.from(toggles.querySelectorAll(".source-toggle"))
+        .filter((btn) => btn.getAttribute("aria-pressed") === "true")
+        .map((btn) => btn.dataset.status)
+        .filter(Boolean);
+    }
+
+    toggles.addEventListener("click", async (event) => {
+      const btn = event.target.closest(".source-toggle");
+      if (!btn || !toggles.contains(btn)) return;
+      const pressed = btn.getAttribute("aria-pressed") === "true";
+      btn.setAttribute("aria-pressed", pressed ? "false" : "true");
+      cacheFilterStatuses = readStatuses();
+      await refreshFiles({ force: true });
+    });
+  }
+
+  const sourcesRoot = document.getElementById("cache-source-filters");
+  if (sourcesRoot) {
+    sourcesRoot.replaceChildren();
+    const platformsRoot = document.createElement("div");
+    platformsRoot.className = "source-toggles";
+    platformsRoot.setAttribute("role", "group");
+    platformsRoot.setAttribute("aria-label", "Cache sources");
+    for (const platform of DEFAULT_INTENT_PLATFORMS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "source-toggle";
+      btn.dataset.platform = platform;
+      btn.setAttribute("aria-pressed", "false");
+      btn.title = PLATFORM_LABELS[platform] || platform;
+      btn.setAttribute("aria-label", PLATFORM_LABELS[platform] || platform);
+      btn.innerHTML = PLATFORM_SVG[platform] || "";
+      platformsRoot.appendChild(btn);
+    }
+    sourcesRoot.appendChild(platformsRoot);
+    cacheFilterPlatforms = [];
+
+    function readPlatforms() {
+      return Array.from(platformsRoot.querySelectorAll(".source-toggle"))
+        .filter((btn) => btn.getAttribute("aria-pressed") === "true")
+        .map((btn) => btn.dataset.platform)
+        .filter(Boolean);
+    }
+
+    platformsRoot.addEventListener("click", async (event) => {
+      const btn = event.target.closest(".source-toggle");
+      if (!btn || !platformsRoot.contains(btn)) return;
+      const pressed = btn.getAttribute("aria-pressed") === "true";
+      btn.setAttribute("aria-pressed", pressed ? "false" : "true");
+      cacheFilterPlatforms = readPlatforms();
+      await refreshFiles({ force: true });
+    });
+  }
+}
+
 function resetCacheNameFilter() {
   cacheNameFilter = "";
   const nameInput = document.getElementById("cache-name-filter");
@@ -5044,6 +5090,49 @@ function resetCacheNameFilter() {
     clearTimeout(cacheNameFilterTimer);
     cacheNameFilterTimer = null;
   }
+}
+
+function resetCacheFilters() {
+  resetCacheNameFilter();
+  cacheFilterStatuses = [];
+  cacheFilterPlatforms = [];
+  const statusRoot = document.getElementById("cache-status-filters");
+  if (statusRoot) {
+    for (const btn of statusRoot.querySelectorAll(".source-toggle")) {
+      btn.setAttribute("aria-pressed", "false");
+    }
+  }
+  const sourcesRoot = document.getElementById("cache-source-filters");
+  if (sourcesRoot) {
+    for (const btn of sourcesRoot.querySelectorAll(".source-toggle")) {
+      btn.setAttribute("aria-pressed", "false");
+    }
+  }
+}
+
+/** @param {{ status?: string, platform?: string }} file */
+function fileMatchesCacheFilters(file) {
+  if (
+    cacheFilterStatuses.length &&
+    !cacheFilterStatuses.includes(file.status)
+  ) {
+    return false;
+  }
+  if (
+    cacheFilterPlatforms.length &&
+    !cacheFilterPlatforms.includes(file.platform)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function cacheFiltersActive() {
+  return Boolean(
+    cacheNameFilter.trim() ||
+      cacheFilterStatuses.length ||
+      cacheFilterPlatforms.length,
+  );
 }
 
 async function refreshMixes({ force = false } = {}) {
@@ -6408,6 +6497,21 @@ function patchPlaylogCacheFromFiles(data) {
       });
     }
   }
+
+  const cacheBody = document.getElementById("cache-body");
+  if (cacheBody) {
+    for (const tr of cacheBody.querySelectorAll("tr.cache-mix-row[data-mix-id]")) {
+      const mixId = tr.dataset.mixId;
+      const info = byId.get(mixId);
+      if (!info) continue;
+      const cell = tr.querySelector(".playlog-cache-cell");
+      if (!cell) continue;
+      fillPlaylogCacheCell(cell, {
+        ...info,
+        offset: Number(tr.dataset.offset) || 1,
+      });
+    }
+  }
 }
 
 async function playlogPlayMix(mixId) {
@@ -7218,10 +7322,11 @@ async function refreshFilesNow({ force = false } = {}) {
   );
   body.innerHTML = "";
   const groups = Array.isArray(data.groups) ? data.groups : [];
+  const CACHE_COL_COUNT = 5;
   if (!groups.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 6;
+    td.colSpan = CACHE_COL_COUNT;
     td.className = "muted";
     td.textContent =
       "No assigned audio yet — create an intent with hours, or use Fill now on an Intent";
@@ -7233,10 +7338,18 @@ async function refreshFilesNow({ force = false } = {}) {
 
   let paintedGroups = 0;
   for (const group of groups) {
-    const visibleMixes = (group.mixes || []).filter((file) =>
-      matchesNameFilter(cacheNameFilter, file.title, file.artist),
-    );
-    if (!visibleMixes.length) continue;
+    const mixes = group.mixes || [];
+    const visible = [];
+    for (let i = 0; i < mixes.length; i += 1) {
+      const file = mixes[i];
+      if (
+        matchesNameFilter(cacheNameFilter, file.title, file.artist) &&
+        fileMatchesCacheFilters(file)
+      ) {
+        visible.push({ file, seq: i + 1 });
+      }
+    }
+    if (!visible.length) continue;
     paintedGroups += 1;
     const groupKey = cacheGroupKey(group);
     const expanded = expandedCacheIntents.has(groupKey);
@@ -7250,7 +7363,7 @@ async function refreshFilesNow({ force = false } = {}) {
     header.setAttribute("role", "button");
 
     const intentCell = document.createElement("td");
-    intentCell.colSpan = 6;
+    intentCell.colSpan = CACHE_COL_COUNT;
     const foldMain = document.createElement("div");
     foldMain.className = "cache-intent-fold-main";
     const intentLabel = document.createElement("span");
@@ -7281,91 +7394,72 @@ async function refreshFilesNow({ force = false } = {}) {
     });
     body.appendChild(header);
 
-    for (const file of visibleMixes) {
+    for (const { file, seq } of visible) {
       const tr = document.createElement("tr");
       tr.className = "cache-mix-row";
       tr.dataset.groupId = groupKey;
+      tr.dataset.mixId = file.id;
+      const isCurrent = currentMixId === file.id;
+      tr.dataset.offset = isCurrent ? "0" : "1";
       tr.hidden = !expanded;
 
-      const artist = document.createElement("td");
-      artist.textContent = file.artist || "Unknown";
-      tr.appendChild(artist);
+      const numCell = document.createElement("td");
+      numCell.className = "cache-num-cell";
+      numCell.textContent = String(seq);
+      tr.appendChild(numCell);
 
-      const title = document.createElement("td");
-      title.textContent = file.title || "";
-      tr.appendChild(title);
+      const coverCell = document.createElement("td");
+      coverCell.className = "cache-cover-cell";
+      if (file.id && file.has_cover) {
+        const img = document.createElement("img");
+        img.className = "cache-cover";
+        img.alt = "";
+        img.decoding = "async";
+        img.src = `/api/mixes/${file.id}/cover`;
+        coverCell.appendChild(img);
+      } else {
+        const placeholder = document.createElement("span");
+        placeholder.className = "cache-cover-placeholder";
+        placeholder.setAttribute("aria-hidden", "true");
+        coverCell.appendChild(placeholder);
+      }
+      tr.appendChild(coverCell);
+
+      const releaseCell = document.createElement("td");
+      releaseCell.className = "cache-release-cell";
+      const artist = file.artist || "Unknown";
+      const title = file.title || "";
+      const releaseLabel = title ? `${artist} - ${title}` : artist;
+      releaseCell.textContent = releaseLabel;
+      releaseCell.title = releaseLabel;
+      tr.appendChild(releaseCell);
 
       const length = document.createElement("td");
+      length.className = "cache-length-cell muted";
       length.textContent = formatDuration(file.duration_seconds || 0);
       tr.appendChild(length);
 
-      const size = document.createElement("td");
-      size.textContent =
-        file.size_bytes != null && Number(file.size_bytes) > 0
-          ? formatBytes(file.size_bytes)
-          : "—";
-      tr.appendChild(size);
-
       const statusCell = document.createElement("td");
-      const isCurrent = currentMixId === file.id;
-      if (file.status === "loading") {
-        statusCell.appendChild(renderDownloadProgress(file));
-      } else {
-        statusCell.textContent =
-          (file.status || "") + (isCurrent ? " · current" : "");
-      }
+      statusCell.className = "cache-status-cell";
+      const cacheLine = document.createElement("div");
+      fillPlaylogCacheCell(cacheLine, {
+        cache_status: file.status || "pending",
+        downloaded_bytes: file.downloaded_bytes,
+        total_bytes: file.total_bytes,
+        size_bytes: file.size_bytes,
+        offset: isCurrent ? 0 : 1,
+      });
+      statusCell.appendChild(cacheLine);
       tr.appendChild(statusCell);
-
-      const actionCell = document.createElement("td");
-      if (file.status === "cached") {
-        const currentBtn = document.createElement("button");
-        currentBtn.type = "button";
-        if (isCurrent) {
-          setSymbolButton(currentBtn, BTN.clearCurrent, "Clear current");
-        } else {
-          setSymbolButton(currentBtn, BTN.setCurrent, "Set current");
-        }
-        currentBtn.addEventListener("click", async (event) => {
-          event.stopPropagation();
-          try {
-            const res = await fetch("/api/current-mix", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ mix_id: isCurrent ? null : file.id }),
-            });
-            const bodyJson = await res.json().catch(() => ({}));
-            if (!res.ok) {
-              showNotice(
-                bodyJson.detail || "Could not set current release",
-                "error",
-              );
-              return;
-            }
-            currentMixId = bodyJson.current_mix_id || null;
-            showNotice(
-              currentMixId
-                ? "Current release set · metered cap uses this + one ahead"
-                : "Current release cleared · metered cap uses assignment head",
-              "ok",
-            );
-            await refreshFiles();
-          } catch (err) {
-            showNotice("Current release request failed", "error");
-            console.error(err);
-          }
-        });
-        actionCell.appendChild(currentBtn);
-      }
-      tr.appendChild(actionCell);
       body.appendChild(tr);
     }
   }
   if (!paintedGroups) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 6;
+    td.colSpan = CACHE_COL_COUNT;
     td.className = "muted";
-    td.textContent = cacheNameFilter.trim()
+    td.textContent = cacheFiltersActive()
       ? "No cache rows match this filter"
       : "No assigned audio yet — create an intent with hours, or use Fill now on an Intent";
     tr.appendChild(td);
@@ -9620,8 +9714,8 @@ function connectViewNotices() {
   resetCatalogFilters();
   mountIntentListFilters();
   resetIntentListFilters();
-  mountCacheNameFilter();
-  resetCacheNameFilter();
+  mountCacheFilters();
+  resetCacheFilters();
   await refreshHealth();
   await refreshActivity();
   await refreshPairing();

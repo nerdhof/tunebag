@@ -1115,6 +1115,8 @@ class DeviceAgent:
                     "title": display_title(mix.title, artist=artist_name),
                     "duration_seconds": duration,
                     "status": status,
+                    "platform": mix.platform.value,
+                    "has_cover": self.has_cover(mix_id),
                 }
                 if status == "cached":
                     size = self._local_file_size(mix_id)
@@ -1163,6 +1165,8 @@ class DeviceAgent:
                 "title": display_title(mix.title, artist=artist_name),
                 "duration_seconds": duration,
                 "status": "cached",
+                "platform": mix.platform.value,
+                "has_cover": self.has_cover(mix_id),
             }
             size = self._local_file_size(mix_id)
             if size is not None:
