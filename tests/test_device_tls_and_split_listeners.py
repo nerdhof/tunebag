@@ -108,7 +108,8 @@ def test_ui_app_does_not_serve_event_pull(tmp_path: Path) -> None:
     assert ui.post("/api/events/pull", json={"cursors": {}}).status_code == 404
     assert ui.post("/api/prove", json={"nonce": "n"}).status_code == 404
 
-    assert peer.post("/api/events/pull", json={"cursors": {}}).status_code == 200
+    # Issue 02: Event pull hard-cuts without a trusted Peer client cert.
+    assert peer.post("/api/events/pull", json={"cursors": {}}).status_code == 401
     assert peer.post("/api/prove", json={"nonce": "n"}).status_code == 200
     assert "signature" in peer.post("/api/prove", json={"nonce": "n"}).json()
 

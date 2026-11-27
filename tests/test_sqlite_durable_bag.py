@@ -20,6 +20,7 @@ from tunebag.durable_store import (
 )
 from tunebag.events import Event, EventLog, EventType
 from tunebag.pairing import PersistedIdentity, generate_identity, save_persisted_identity
+from tunebag.peer_mtls import TEST_CLIENT_CERT_HEADER
 from tunebag.projection import PROJECTION_VERSION, CatalogState
 from tunebag.source import FakeSource
 from tunebag.web import create_peer_app
@@ -197,7 +198,10 @@ def test_cursor_pull_returns_only_newer_author_events(tmp_path: Path) -> None:
     )
     app = create_peer_app(laptop)
     client = TestClient(app)
-    response = client.post("/api/events/pull", json={"cursors": cursors})
+    headers = {TEST_CLIENT_CERT_HEADER: phone.tls_cert_pem}
+    response = client.post(
+        "/api/events/pull", json={"cursors": cursors}, headers=headers
+    )
     assert response.status_code == 200
     assert "application/x-ndjson" in response.headers["content-type"]
     lines = [line for line in response.text.splitlines() if line.strip()]
@@ -209,7 +213,7 @@ def test_cursor_pull_returns_only_newer_author_events(tmp_path: Path) -> None:
     )
     assert any(event.type is EventType.MIX_ADDED for event in events)
 
-    full = client.get("/api/events")
+    full = client.get("/api/events", headers=headers)
     assert full.status_code == 200
     full_lines = [line for line in full.text.splitlines() if line.strip()]
     assert len(full_lines) >= len(lines)

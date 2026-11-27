@@ -13,7 +13,7 @@ from uuid import UUID
 
 import httpx
 import qrcode
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +28,7 @@ from tunebag.agent import (
 )
 from tunebag.domain import Artist, Mix, Platform, ReleaseKind, StarDistribution, Stars
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
+from tunebag.peer_mtls import require_trusted_peer_cert
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
 from tunebag.title_display import display_title
 from tunebag.ui_notices import UIViewNotice
@@ -1262,10 +1263,14 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 def create_peer_app(agent: DeviceAgent) -> FastAPI:
     """HTTPS Peer listener routes (Event pull, prove, pairing guest hits, yield).
 
-    File HEAD/GET land in issue 03; mTLS client auth hard-cut in issue 02.
+    Event pull / sync / yield require a trusted Peer mTLS client cert (issue 02).
+    File HEAD/GET land in issue 03.
     """
     app = FastAPI(title="Tunebag Peer", version=__version__)
     app.state.agent = agent
+
+    def _require_peer_meet(request: Request) -> str:
+        return require_trusted_peer_cert(request, agent)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -1283,8 +1288,9 @@ def create_peer_app(agent: DeviceAgent) -> FastAPI:
         return agent.pairing_payload()
 
     @app.get("/api/events")
-    def events() -> StreamingResponse:
+    def events(request: Request) -> StreamingResponse:
         """Full Event log as NDJSON (one Event JSON object per line)."""
+        _require_peer_meet(request)
 
         def generate() -> Iterator[str]:
             for event in agent.iter_events():
@@ -1293,14 +1299,32 @@ def create_peer_app(agent: DeviceAgent) -> FastAPI:
         return StreamingResponse(generate(), media_type="application/x-ndjson")
 
     @app.post("/api/events/pull")
-    def events_pull(body: EventsPullBody) -> StreamingResponse:
-        """Events after per-author cursors as NDJSON."""
+    def events_pull(request: Request, body: EventsPullBody) -> StreamingResponse:
+        """Events after per-author cursors as NDJSON (mTLS Peer meet required)."""
+        _require_peer_meet(request)
 
         def generate() -> Iterator[str]:
             for event in agent.iter_events_after_cursors(body.cursors):
                 yield event.model_dump_json() + "\n"
 
         return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/api/sync")
+    def peer_sync(request: Request) -> dict:
+        """Peer nudge: run catalog sync (no fill). Requires mTLS Peer meet."""
+        _require_peer_meet(request)
+        try:
+            agent.sync(fill=False)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"peer sync failed: {exc}") from exc
+        agent.request_fill()
+        return {
+            "ok": True,
+            "mixes": len(agent.mixes()),
+            "peers": len(agent.peers()),
+            "files": len(agent.files()),
+            "fill_in_progress": agent.fill_in_progress,
+        }
 
     @app.post("/api/prove")
     def prove(body: ProveBody) -> dict:
@@ -1339,8 +1363,9 @@ def create_peer_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/player/yield")
-    def player_yield() -> dict:
+    def player_yield(request: Request) -> dict:
         """Peer takeover: pause only if this Device is currently playing."""
+        _require_peer_meet(request)
         yielded = agent.yield_playback()
         return {
             "ok": True,

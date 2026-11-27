@@ -11,6 +11,10 @@ from tunebag import __version__
 from tunebag.agent import DeviceAgent
 from tunebag.device_tls import write_tls_files
 from tunebag.discovery import DISCOVERY_REFRESH_SECONDS, MdnsLanDiscovery
+from tunebag.peer_mtls import (
+    build_peer_server_ssl_context,
+    install_uvicorn_client_cert_scope,
+)
 from tunebag.web import create_peer_app, create_ui_app
 from tunebag.ytdlp_fetch import YtdlpCookies
 
@@ -57,26 +61,35 @@ def _run_peer_listener(
 ) -> None:
     """Serve the Peer HTTPS listener in a background thread.
 
-    Issue 01 encrypts the Peer channel with the Device TLS cert and accepts an
-    optional client cert (TOFU window). Issue 02 hard-cuts Event pull to pinned
-    trusted Peer certs (CERT_REQUIRED + CA of pins).
+    CERT_OPTIONAL so pairing TOFU stays reachable; Event pull / sync / yield
+    require a client cert pinned to a trusted Peer (app-level 401 hard cut).
     """
-    import ssl
-
     import uvicorn
 
+    install_uvicorn_client_cert_scope()
     cert_path, key_path = write_tls_files(
         agent.data_dir / "tls",
         cert_pem=agent.tls_cert_pem,
         key_pem=agent.tls_key_pem,
     )
+    trusted = [
+        peer.tls_cert_pem
+        for peer in agent.peers()
+        if peer.tls_cert_pem
+    ]
+    ssl_ctx = build_peer_server_ssl_context(
+        cert_file=cert_path,
+        key_file=key_path,
+        trusted_client_pems=trusted,
+    )
+    agent.bind_peer_ssl_context(ssl_ctx)
     config = uvicorn.Config(
         create_peer_app(agent),
         host=host,
         port=peer_port,
         ssl_certfile=str(cert_path),
         ssl_keyfile=str(key_path),
-        ssl_cert_reqs=int(ssl.CERT_OPTIONAL),
+        ssl_context_factory=lambda _cfg, _default: ssl_ctx,
         log_level="info",
     )
     server = uvicorn.Server(config)

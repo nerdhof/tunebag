@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import secrets
+import ssl
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -60,6 +61,7 @@ from tunebag.catalog_journal import CatalogJournal
 from tunebag.durable_store import open_durable_store
 from tunebag.events import Event, EventLog, EventType
 from tunebag.device_tls import tls_cert_fingerprint as fingerprint_from_tls_cert
+from tunebag.device_tls import write_tls_files
 from tunebag.pairing import (
     PIN_MAX_ATTEMPTS,
     PIN_TTL_SECONDS,
@@ -75,6 +77,11 @@ from tunebag.pairing import (
     pins_equal,
     resolve_store_identity,
     sas_for_session,
+)
+from tunebag.peer_mtls import (
+    add_trusted_client_ca,
+    mtls_httpx_client,
+    tofu_httpx_client,
 )
 from tunebag.player import AudioPlayer, default_player
 from tunebag.playback import (
@@ -240,6 +247,8 @@ class DeviceAgent:
         self._peer_urls: dict[UUID, str] = (
             self._store.load_locator_hints() if self._store is not None else {}
         )
+        # Live Peer listener SSLContext (CERT_OPTIONAL + CA of pins); set by serve.
+        self._peer_ssl_context: ssl.SSLContext | None = None
         self._pair_candidates: dict[str, dict[str, Any]] = {}
         # Ephemeral pairing session (host and/or guest view); never persisted.
         self._pairing_session: dict[str, Any] | None = None
@@ -2989,7 +2998,7 @@ class DeviceAgent:
             return True
         if locator.startswith("inproc://"):
             return False
-        if not self._ensure_http_peer_proved(locator, public_key_pem):
+        if not self._ensure_http_peer_meet(locator, peer_id):
             return False
         self.remember_peer_url(peer_id, locator)
         self.request_sync(fill=False)
@@ -3588,8 +3597,8 @@ class DeviceAgent:
                 peer = self.catalog.devices.get(peer_id)
                 if peer is None:
                     continue
-                # HTTP Locators have no durable socket: challenge on every pull.
-                if not self._ensure_http_peer_proved(url, peer.public_key_pem):
+                # HTTP Locators: mTLS pin meet is the gate (replaces /api/prove).
+                if not self._ensure_http_peer_meet(url, peer_id):
                     continue
                 label = peer.name
                 before = len(self._journal._seen_event_ids)
@@ -3884,9 +3893,20 @@ class DeviceAgent:
                 },
             )
             peer = self.catalog.devices[peer.id]
+            self._extend_peer_client_ca(tls_cert_pem)
         if url := payload.get("url"):
             self.remember_peer_url(peer.id, url)
         return peer
+
+    def bind_peer_ssl_context(self, ctx: ssl.SSLContext) -> None:
+        """Attach the live Peer listener SSLContext for post-pair CA updates."""
+        self._peer_ssl_context = ctx
+
+    def _extend_peer_client_ca(self, cert_pem: str) -> None:
+        """Add a newly trusted Peer cert to the live mTLS CA (if listening)."""
+        if self._peer_ssl_context is None:
+            return
+        add_trusted_client_ca(self._peer_ssl_context, cert_pem)
 
     def accepts_peer_tls_cert(self, peer_id: UUID, cert_pem: str) -> bool:
         """True when cert matches the pinned Device TLS fingerprint for peer_id."""
@@ -3932,20 +3952,69 @@ class DeviceAgent:
         self._proved_agents.add(key)
         return True
 
-    def _ensure_http_peer_proved(self, url: str, public_key_pem: str) -> bool:
-        """Challenge an HTTP Locator before Event log sync (every pull)."""
-        nonce = secrets.token_urlsafe(32)
+    def _ensure_http_peer_meet(self, url: str, peer_id: UUID) -> bool:
+        """mTLS pin meet for an HTTP Locator (replaces /api/prove as the gate).
+
+        Proves mutual auth by POSTing an authenticated Event pull (empty cursors).
+        """
+        peer = self.catalog.devices.get(peer_id)
+        if peer is None or not peer.tls_cert_pem or not peer.tls_cert_fingerprint:
+            self.note(
+                f"meet failed ({url}): missing peer TLS pin",
+                level=logging.WARNING,
+            )
+            return False
         try:
-            signature = self._http_prove(url, nonce)
+            with self._http_mtls_client(url, peer_id=peer_id) as client:
+                response = client.post(
+                    f"{url.rstrip('/')}/api/events/pull",
+                    json={"cursors": {}},
+                )
+                response.raise_for_status()
         except Exception as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            self.note(f"meet proof failed ({url}): {exc}", level=logging.WARNING)
-            return False
-        if not self._verify_possession(nonce, signature, public_key_pem):
-            self.note(f"meet proof failed ({url})", level=logging.WARNING)
+            self.note(f"mTLS meet failed ({url}): {exc}", level=logging.WARNING)
             return False
         return True
+
+    def _peer_id_for_url(self, peer_url: str) -> UUID | None:
+        normalized = peer_url.rstrip("/")
+        for peer_id, url in list(self._peer_urls.items()):
+            if str(url).rstrip("/") == normalized:
+                return peer_id
+        return None
+
+    def _http_mtls_client(
+        self, peer_url: str, *, peer_id: UUID | None = None
+    ) -> httpx.Client:
+        """Client that presents Device TLS cert and verifies the peer pin."""
+        resolved = peer_id if peer_id is not None else self._peer_id_for_url(peer_url)
+        peer = self.catalog.devices.get(resolved) if resolved is not None else None
+        trust_pem = peer.tls_cert_pem if peer is not None else None
+        if not trust_pem:
+            raise ValueError(f"no pinned TLS cert for peer at {peer_url}")
+        cert_path, key_path = write_tls_files(
+            self.data_dir / "tls",
+            cert_pem=self.tls_cert_pem,
+            key_pem=self.tls_key_pem,
+        )
+        return mtls_httpx_client(
+            trust_pem=trust_pem,
+            client_cert=cert_path,
+            client_key=key_path,
+            timeout=_HTTP_TIMEOUT,
+        )
+
+    def _http_plain_or_tofu_client(self, peer_url: str) -> httpx.Client:
+        """Pairing / prove: pin when known, else TOFU (verify=False)."""
+        peer_id = self._peer_id_for_url(peer_url)
+        peer = self.catalog.devices.get(peer_id) if peer_id is not None else None
+        if peer is not None and peer.tls_cert_pem:
+            return self._http_mtls_client(peer_url, peer_id=peer_id)
+        if peer_url.lower().startswith("https://"):
+            return tofu_httpx_client(timeout=_HTTP_TIMEOUT)
+        return httpx.Client(timeout=_HTTP_TIMEOUT)
 
     def _append_and_apply(self, event_type: EventType, payload: dict[str, Any]) -> Event:
         event = self._journal.append_local(event_type, payload)
@@ -3959,7 +4028,7 @@ class DeviceAgent:
     def _schedule_auto_sync(self) -> None:
         """Pull on this device and nudge trusted reachable peers to pull too.
 
-        Each side's ``sync`` still runs the key-proof meet gate before ingest.
+        Each side's ``sync`` still runs the mTLS (or in-proc prove) meet gate.
         Nested under ``_defer_auto_sync``, only the outermost exit schedules once.
         Local ``request_sync`` and in-proc peers stay on this thread; HTTP nudges
         run in the background so blackholed Locators cannot stall play/skip.
@@ -4026,9 +4095,9 @@ class DeviceAgent:
             raise
 
     def _http_nudge_sync(self, peer_url: str) -> None:
-        """Best-effort: ask the HTTP peer to run its own pull sync."""
+        """Best-effort: ask the HTTP peer to run its own pull sync (mTLS)."""
         try:
-            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            with self._http_mtls_client(peer_url) as client:
                 response = client.post(f"{peer_url.rstrip('/')}/api/sync")
                 response.raise_for_status()
         except Exception as exc:
@@ -4126,9 +4195,9 @@ class DeviceAgent:
             raise
 
     def _http_request_yield(self, peer_url: str, *, label: str) -> None:
-        """Best-effort: POST /api/player/yield on an HTTP Peer Locator."""
+        """Best-effort: POST /api/player/yield on an HTTP Peer Locator (mTLS)."""
         try:
-            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            with self._http_mtls_client(peer_url) as client:
                 response = client.post(f"{peer_url.rstrip('/')}/api/player/yield")
                 response.raise_for_status()
                 yielded = bool(response.json().get("yielded"))
@@ -4308,19 +4377,19 @@ class DeviceAgent:
         return True
 
     def _http_fetch_pairing(self, peer_url: str) -> dict[str, Any]:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_plain_or_tofu_client(peer_url) as client:
             response = client.get(f"{peer_url.rstrip('/')}/api/pairing")
             response.raise_for_status()
             return response.json()
 
     def _http_pair_status(self, peer_url: str) -> dict[str, Any]:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_plain_or_tofu_client(peer_url) as client:
             response = client.get(f"{peer_url.rstrip('/')}/api/pair/session")
             response.raise_for_status()
             return response.json()
 
     def _http_pair_join(self, peer_url: str, body: dict[str, Any]) -> dict[str, Any]:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_plain_or_tofu_client(peer_url) as client:
             response = client.post(
                 f"{peer_url.rstrip('/')}/api/pair/session/join",
                 json=body,
@@ -4331,7 +4400,7 @@ class DeviceAgent:
             return response.json()
 
     def _http_pair_confirm(self, peer_url: str, body: dict[str, Any]) -> dict[str, Any]:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_plain_or_tofu_client(peer_url) as client:
             response = client.post(
                 f"{peer_url.rstrip('/')}/api/pair/session/confirm",
                 json=body,
@@ -4342,7 +4411,7 @@ class DeviceAgent:
             return response.json()
 
     def _http_pair_cancel(self, peer_url: str, session_id: str) -> None:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_plain_or_tofu_client(peer_url) as client:
             response = client.post(
                 f"{peer_url.rstrip('/')}/api/pair/session/cancel",
                 json={"session_id": session_id},
@@ -4350,7 +4419,7 @@ class DeviceAgent:
             response.raise_for_status()
 
     def _http_prove(self, peer_url: str, nonce: str) -> str:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_plain_or_tofu_client(peer_url) as client:
             response = client.post(
                 f"{peer_url.rstrip('/')}/api/prove",
                 json={"nonce": nonce},
@@ -4362,9 +4431,9 @@ class DeviceAgent:
         return signature
 
     def _http_fetch_events(self, peer_url: str) -> list[Event]:
-        """Pull peer events via POST cursors + NDJSON (falls back to GET NDJSON)."""
+        """Pull peer events via POST cursors + NDJSON over mTLS Peer meet."""
         cursors = self.event_cursors()
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        with self._http_mtls_client(peer_url) as client:
             response = client.post(
                 f"{peer_url.rstrip('/')}/api/events/pull",
                 json={"cursors": cursors},
