@@ -715,6 +715,20 @@ def _apply_device_paired(
         d.public_key_pem == public_key_pem for d in state.devices.values()
     ):
         return
+    tls_fp = payload.get("tls_cert_fingerprint")
+    tls_pem = payload.get("tls_cert_pem")
+    if isinstance(tls_fp, str) and tls_fp:
+        pinned_fp: str | None = tls_fp
+    elif existing is not None:
+        pinned_fp = existing.tls_cert_fingerprint
+    else:
+        pinned_fp = None
+    if isinstance(tls_pem, str) and tls_pem:
+        pinned_pem: str | None = tls_pem
+    elif existing is not None:
+        pinned_pem = existing.tls_cert_pem
+    else:
+        pinned_pem = None
     # Idempotent upsert by device id (and by public key when already trusted).
     state.add_device(
         Device(
@@ -723,6 +737,8 @@ def _apply_device_paired(
             public_key_pem=public_key_pem,
             priority=int(payload.get("priority", 100)),
             paired_at=(existing.paired_at if existing is not None else now),
+            tls_cert_fingerprint=pinned_fp,
+            tls_cert_pem=pinned_pem,
         )
     )
 

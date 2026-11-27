@@ -9,8 +9,9 @@ from pathlib import Path
 
 from tunebag import __version__
 from tunebag.agent import DeviceAgent
+from tunebag.device_tls import write_tls_files
 from tunebag.discovery import DISCOVERY_REFRESH_SECONDS, MdnsLanDiscovery
-from tunebag.web import create_app
+from tunebag.web import create_peer_app, create_ui_app
 from tunebag.ytdlp_fetch import YtdlpCookies
 
 
@@ -47,6 +48,47 @@ def ytdlp_cookies_from_args(args: argparse.Namespace) -> YtdlpCookies | None:
     return None
 
 
+def _run_peer_listener(
+    *,
+    agent: DeviceAgent,
+    host: str,
+    peer_port: int,
+    stop: threading.Event,
+) -> None:
+    """Serve the Peer HTTPS listener in a background thread.
+
+    Issue 01 encrypts the Peer channel with the Device TLS cert and accepts an
+    optional client cert (TOFU window). Issue 02 hard-cuts Event pull to pinned
+    trusted Peer certs (CERT_REQUIRED + CA of pins).
+    """
+    import ssl
+
+    import uvicorn
+
+    cert_path, key_path = write_tls_files(
+        agent.data_dir / "tls",
+        cert_pem=agent.tls_cert_pem,
+        key_pem=agent.tls_key_pem,
+    )
+    config = uvicorn.Config(
+        create_peer_app(agent),
+        host=host,
+        port=peer_port,
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
+        ssl_cert_reqs=int(ssl.CERT_OPTIONAL),
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+
+    def _serve() -> None:
+        try:
+            server.run()
+        finally:
+            stop.set()
+
+    threading.Thread(target=_serve, name="tunebag-peer-listener", daemon=True).start()
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="tunebag",
@@ -58,7 +100,18 @@ def main(argv: list[str] | None = None) -> None:
     serve = sub.add_parser("serve", help="Start this device's agent and web player")
     serve.add_argument("--name", required=True, help="This device's display name")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8787)
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=8787,
+        help="Cleartext UI listener port (companion browser)",
+    )
+    serve.add_argument(
+        "--peer-port",
+        type=int,
+        default=None,
+        help="HTTPS Peer mTLS listener port (default: UI port + 1)",
+    )
     serve.add_argument(
         "--priority",
         type=int,
@@ -95,12 +148,16 @@ def main(argv: list[str] | None = None) -> None:
             cookies = ytdlp_cookies_from_args(args)
         except ValueError as exc:
             parser.error(str(exc))
-        base_url = f"http://{args.host}:{args.port}"
+        peer_port = args.peer_port if args.peer_port is not None else args.port + 1
+        ui_url = f"http://{args.host}:{args.port}"
+        # Peer Locators / mDNS / paste target the HTTPS Peer listener.
+        peer_url = f"https://{args.host}:{peer_port}"
         discovery = MdnsLanDiscovery()
         agent = DeviceAgent(
             args.name,
             priority=args.priority,
-            base_url=base_url,
+            base_url=peer_url,
+            ui_url=ui_url,
             data_dir=data_dir,
             discovery=discovery,
             cookies=cookies,
@@ -114,12 +171,17 @@ def main(argv: list[str] | None = None) -> None:
         agent.request_fill()
         stop = threading.Event()
         _start_discovery_ticker(agent, stop)
-        app = create_app(agent)
-        print(f"tunebag agent {args.name!r} at {base_url}", flush=True)
+        _run_peer_listener(
+            agent=agent, host=args.host, peer_port=peer_port, stop=stop
+        )
+        ui_app = create_ui_app(agent)
+        print(f"tunebag UI {args.name!r} at {ui_url}", flush=True)
+        print(f"tunebag Peer listener at {peer_url}", flush=True)
         print(f"data_dir={data_dir}", flush=True)
         print(f"fingerprint={agent.fingerprint()}", flush=True)
+        print(f"tls_fingerprint={agent.tls_cert_fingerprint()}", flush=True)
         try:
-            uvicorn.run(app, host=args.host, port=args.port)
+            uvicorn.run(ui_app, host=args.host, port=args.port)
         finally:
             stop.set()
             discovery.withdraw()

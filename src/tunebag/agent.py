@@ -59,6 +59,7 @@ from tunebag.domain import (
 from tunebag.catalog_journal import CatalogJournal
 from tunebag.durable_store import open_durable_store
 from tunebag.events import Event, EventLog, EventType
+from tunebag.device_tls import tls_cert_fingerprint as fingerprint_from_tls_cert
 from tunebag.pairing import (
     PIN_MAX_ATTEMPTS,
     PIN_TTL_SECONDS,
@@ -180,6 +181,7 @@ class DeviceAgent:
         *,
         priority: int = 100,
         base_url: str | None = None,
+        ui_url: str | None = None,
         identity: DeviceIdentity | None = None,
         source: Source | None = None,
         cookies: YtdlpCookies | None = None,
@@ -214,7 +216,10 @@ class DeviceAgent:
             public_key_pem=self._identity.public_key_pem,
             priority=priority,
         )
+        # base_url is the Peer Locator (HTTPS Peer listener). ui_url is the
+        # cleartext companion UI listener (not advertised to Peers).
         self.base_url = base_url
+        self.ui_url = ui_url
         self.source = (
             source if source is not None else default_source(cookies=cookies)
         )
@@ -469,6 +474,17 @@ class DeviceAgent:
     def private_key_pem(self) -> str:
         return self._identity.private_key_pem
 
+    @property
+    def tls_cert_pem(self) -> str:
+        return self._identity.tls_cert_pem
+
+    @property
+    def tls_key_pem(self) -> str:
+        return self._identity.tls_key_pem
+
+    def tls_cert_fingerprint(self) -> str:
+        return fingerprint_from_tls_cert(self.tls_cert_pem)
+
     def fingerprint(self) -> str:
         return fingerprint_from_key(self.public_key_pem)
 
@@ -483,6 +499,8 @@ class DeviceAgent:
             device_id=str(self.device.id),
             priority=self.device.priority,
             url=self.base_url,
+            tls_cert_pem=self.tls_cert_pem,
+            tls_cert_fingerprint=self.tls_cert_fingerprint(),
         )
 
     def pairing_session_open(self) -> bool:
@@ -2444,6 +2462,8 @@ class DeviceAgent:
                 host_public_key_pem=host_payload["public_key_pem"],
                 guest_public_key_pem=self.public_key_pem,
                 guest_nonce=guest_nonce,
+                host_tls_cert_fingerprint=host_payload.get("tls_cert_fingerprint"),
+                guest_tls_cert_fingerprint=self.tls_cert_fingerprint(),
             )
             signature = base64.b64encode(self._private_key.sign(transcript)).decode(
                 "ascii"
@@ -2496,6 +2516,8 @@ class DeviceAgent:
             host_public_key_pem=host_payload["public_key_pem"],
             guest_public_key_pem=self.public_key_pem,
             guest_nonce=guest_nonce,
+            host_tls_cert_fingerprint=host_payload.get("tls_cert_fingerprint"),
+            guest_tls_cert_fingerprint=self.tls_cert_fingerprint(),
         )
         signature = base64.b64encode(self._private_key.sign(transcript)).decode("ascii")
         result = self._http_pair_join(
@@ -2563,6 +2585,8 @@ class DeviceAgent:
             host_public_key_pem=self.public_key_pem,
             guest_public_key_pem=guest_payload["public_key_pem"],
             guest_nonce=nonce,
+            host_tls_cert_fingerprint=self.tls_cert_fingerprint(),
+            guest_tls_cert_fingerprint=guest_payload.get("tls_cert_fingerprint"),
         )
         try:
             _load_public_key(guest_payload["public_key_pem"]).verify(
@@ -2669,6 +2693,8 @@ class DeviceAgent:
             host_public_key_pem=self.public_key_pem,
             guest_public_key_pem=guest_payload["public_key_pem"],
             role="guest",
+            host_tls_cert_fingerprint=self.tls_cert_fingerprint(),
+            guest_tls_cert_fingerprint=guest_payload.get("tls_cert_fingerprint"),
         )
         try:
             _load_public_key(guest_payload["public_key_pem"]).verify(
@@ -2713,6 +2739,8 @@ class DeviceAgent:
             host_public_key_pem=host_payload["public_key_pem"],
             guest_public_key_pem=self.public_key_pem,
             role="guest",
+            host_tls_cert_fingerprint=host_payload.get("tls_cert_fingerprint"),
+            guest_tls_cert_fingerprint=self.tls_cert_fingerprint(),
         )
         signature = base64.b64encode(self._private_key.sign(transcript)).decode("ascii")
         host_agent = session.get("host_agent")
@@ -3804,21 +3832,45 @@ class DeviceAgent:
         claimed = payload.get("fingerprint") or payload.get("short_code")
         if claimed and str(claimed).upper() != expected:
             raise ValueError("fingerprint does not match public key")
+        tls_cert_pem = payload.get("tls_cert_pem")
+        claimed_tls_fp = payload.get("tls_cert_fingerprint")
+        if not isinstance(tls_cert_pem, str) or not tls_cert_pem:
+            raise ValueError("pairing payload missing Device TLS cert")
+        computed_tls_fp = fingerprint_from_tls_cert(tls_cert_pem)
+        if (
+            isinstance(claimed_tls_fp, str)
+            and claimed_tls_fp
+            and claimed_tls_fp != computed_tls_fp
+        ):
+            raise ValueError("tls_cert_fingerprint does not match tls_cert_pem")
+        claimed_tls_fp = computed_tls_fp
         existing = self.catalog.devices.get(peer_id)
         if existing is None:
             existing = next(
                 (d for d in self.catalog.devices.values() if d.public_key_pem == public_key_pem),
                 None,
             )
+        # Re-meet after trust: presented TLS cert must match the pinned fingerprint.
+        if (
+            existing is not None
+            and existing.tls_cert_fingerprint
+            and existing.tls_cert_fingerprint != claimed_tls_fp
+        ):
+            raise ValueError(
+                "peer Device TLS cert does not match pinned fingerprint; re-pair required"
+            )
         self.catalog.unpaired_device_ids.discard(peer_id)
-        if existing is not None:
+        if existing is not None and existing.tls_cert_fingerprint:
             peer = existing
         else:
+            # New trust, or upgrade a pre-TLS peer with a TOFU pin.
             peer = Device(
                 id=peer_id,
                 name=name,
                 public_key_pem=public_key_pem,
                 priority=priority,
+                tls_cert_fingerprint=claimed_tls_fp,
+                tls_cert_pem=tls_cert_pem,
             )
             self._append_and_apply(
                 EventType.DEVICE_PAIRED,
@@ -3827,12 +3879,24 @@ class DeviceAgent:
                     "name": peer.name,
                     "public_key_pem": peer.public_key_pem,
                     "priority": peer.priority,
+                    "tls_cert_fingerprint": peer.tls_cert_fingerprint,
+                    "tls_cert_pem": peer.tls_cert_pem,
                 },
             )
             peer = self.catalog.devices[peer.id]
         if url := payload.get("url"):
             self.remember_peer_url(peer.id, url)
         return peer
+
+    def accepts_peer_tls_cert(self, peer_id: UUID, cert_pem: str) -> bool:
+        """True when cert matches the pinned Device TLS fingerprint for peer_id."""
+        peer = self.catalog.devices.get(peer_id)
+        if peer is None or not peer.tls_cert_fingerprint:
+            return False
+        try:
+            return fingerprint_from_tls_cert(cert_pem) == peer.tls_cert_fingerprint
+        except ValueError:
+            return False
 
     def _trusts_public_key(self, public_key_pem: str) -> bool:
         return any(d.public_key_pem == public_key_pem for d in self.peers())

@@ -22,7 +22,7 @@ from tunebag.events import Event, EventLog, EventType
 from tunebag.pairing import PersistedIdentity, generate_identity, save_persisted_identity
 from tunebag.projection import PROJECTION_VERSION, CatalogState
 from tunebag.source import FakeSource
-from tunebag.web import create_app
+from tunebag.web import create_peer_app
 
 
 def _artist_payload(artist_id) -> dict:
@@ -46,6 +46,8 @@ def test_migrates_jsonl_and_sidecars_then_renames_aside(tmp_path: Path) -> None:
             device_id=device_id,
             private_key_pem=identity.private_key_pem,
             public_key_pem=identity.public_key_pem,
+            tls_cert_pem=identity.tls_cert_pem,
+            tls_key_pem=identity.tls_key_pem,
         ),
     )
     peer_id = uuid4()
@@ -193,7 +195,7 @@ def test_cursor_pull_returns_only_newer_author_events(tmp_path: Path) -> None:
         platform_id="only-1",
         artist_name="DJ Only",
     )
-    app = create_app(laptop)
+    app = create_peer_app(laptop)
     client = TestClient(app)
     response = client.post("/api/events/pull", json={"cursors": cursors})
     assert response.status_code == 200

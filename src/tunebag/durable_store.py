@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
 
+from tunebag.device_tls import generate_device_tls_material
 from tunebag.events import Event
 from tunebag.pairing import PersistedIdentity
 
@@ -21,6 +22,8 @@ LOCATOR_HINTS_JSON = "locator_hints.json"
 META_DEVICE_ID = "device_id"
 META_PRIVATE_KEY_PEM = "private_key_pem"
 META_PUBLIC_KEY_PEM = "public_key_pem"
+META_TLS_CERT_PEM = "tls_cert_pem"
+META_TLS_KEY_PEM = "tls_key_pem"
 META_PROJECTION_VERSION = "projection_version"
 META_SNAPSHOT_TIP_ROWID = "snapshot_tip_rowid"
 
@@ -139,11 +142,27 @@ class DurableStore:
         public_pem = self.get_meta(META_PUBLIC_KEY_PEM)
         if not device_id or not private_pem or not public_pem:
             return None
-        return PersistedIdentity(
+        tls_cert = self.get_meta(META_TLS_CERT_PEM)
+        tls_key = self.get_meta(META_TLS_KEY_PEM)
+        identity = PersistedIdentity(
             device_id=UUID(device_id),
             private_key_pem=private_pem,
             public_key_pem=public_pem,
+            tls_cert_pem=tls_cert or "",
+            tls_key_pem=tls_key or "",
         )
+        if not tls_cert or not tls_key:
+            tls = generate_device_tls_material(common_name=f"tunebag:{device_id}")
+            identity = PersistedIdentity(
+                device_id=UUID(device_id),
+                private_key_pem=private_pem,
+                public_key_pem=public_pem,
+                tls_cert_pem=tls.cert_pem,
+                tls_key_pem=tls.key_pem,
+            )
+            # Persist the upgrade so a second load does not mint a new cert.
+            self.save_identity(identity)
+        return identity
 
     def save_identity(self, identity: PersistedIdentity) -> None:
         with self._lock, self.write_txn():
@@ -151,6 +170,8 @@ class DurableStore:
                 (META_DEVICE_ID, str(identity.device_id)),
                 (META_PRIVATE_KEY_PEM, identity.private_key_pem),
                 (META_PUBLIC_KEY_PEM, identity.public_key_pem),
+                (META_TLS_CERT_PEM, identity.tls_cert_pem),
+                (META_TLS_KEY_PEM, identity.tls_key_pem),
             ):
                 self._conn.execute(
                     "INSERT INTO meta(key, value) VALUES(?, ?) "
@@ -353,10 +374,19 @@ class DurableStore:
         identity: PersistedIdentity | None = None
         if identity_path.is_file():
             raw = json.loads(identity_path.read_text(encoding="utf-8"))
+            device_id = UUID(raw["device_id"])
+            tls_cert = raw.get("tls_cert_pem")
+            tls_key = raw.get("tls_key_pem")
+            if not tls_cert or not tls_key:
+                tls = generate_device_tls_material(common_name=f"tunebag:{device_id}")
+                tls_cert = tls.cert_pem
+                tls_key = tls.key_pem
             identity = PersistedIdentity(
-                device_id=UUID(raw["device_id"]),
+                device_id=device_id,
                 private_key_pem=raw["private_key_pem"],
                 public_key_pem=raw["public_key_pem"],
+                tls_cert_pem=tls_cert,
+                tls_key_pem=tls_key,
             )
 
         hints: dict[UUID, str] = {}
@@ -384,6 +414,8 @@ class DurableStore:
                     (META_DEVICE_ID, str(identity.device_id)),
                     (META_PRIVATE_KEY_PEM, identity.private_key_pem),
                     (META_PUBLIC_KEY_PEM, identity.public_key_pem),
+                    (META_TLS_CERT_PEM, identity.tls_cert_pem),
+                    (META_TLS_KEY_PEM, identity.tls_key_pem),
                 ):
                     self._conn.execute(
                         "INSERT INTO meta(key, value) VALUES(?, ?) "

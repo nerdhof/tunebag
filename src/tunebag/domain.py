@@ -249,6 +249,10 @@ class Device(BaseModel):
     public_key_pem: str
     priority: int = 100  # lower = preferred fetcher; laptop default ahead of phone
     paired_at: datetime = Field(default_factory=datetime.utcnow)
+    # Pinned at pairing TOFU; None for the local Device or pre-TLS peers.
+    tls_cert_fingerprint: str | None = None
+    # TOFU'd peer cert PEM (for mTLS CA); local Device keeps material on identity.
+    tls_cert_pem: str | None = None
 
 
 class Playhead(BaseModel):

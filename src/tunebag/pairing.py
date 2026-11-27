@@ -18,6 +18,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from tunebag.device_tls import (
+    generate_device_tls_material,
+    tls_cert_fingerprint as fingerprint_from_tls_cert,
+)
+
 # Crockford base32 (no I, L, O, U) for PINs / fingerprints / SAS.
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 PIN_LENGTH = 8
@@ -32,15 +37,19 @@ class DeviceIdentity:
     name: str
     private_key_pem: str
     public_key_pem: str
+    tls_cert_pem: str
+    tls_key_pem: str
 
 
 @dataclass(frozen=True)
 class PersistedIdentity:
-    """Local Device identity on disk: device_id + keypair (never replicated)."""
+    """Local Device identity on disk: device_id + keys + Device TLS cert."""
 
     device_id: UUID
     private_key_pem: str
     public_key_pem: str
+    tls_cert_pem: str
+    tls_key_pem: str
 
 
 def generate_identity(name: str) -> DeviceIdentity:
@@ -58,17 +67,54 @@ def generate_identity(name: str) -> DeviceIdentity:
         )
         .decode()
     )
-    return DeviceIdentity(name=name, private_key_pem=private_pem, public_key_pem=public_pem)
+    # CN uses the display name for first mint; upgrades use device_id (stable).
+    tls = generate_device_tls_material(common_name=f"tunebag:{name}")
+    return DeviceIdentity(
+        name=name,
+        private_key_pem=private_pem,
+        public_key_pem=public_pem,
+        tls_cert_pem=tls.cert_pem,
+        tls_key_pem=tls.key_pem,
+    )
+
+
+def _ensure_tls_fields(
+    *,
+    device_id: UUID,
+    private_key_pem: str,
+    public_key_pem: str,
+    tls_cert_pem: str | None,
+    tls_key_pem: str | None,
+) -> PersistedIdentity:
+    """Upgrade pre-TLS identity bags by generating Device TLS material once."""
+    if tls_cert_pem and tls_key_pem:
+        return PersistedIdentity(
+            device_id=device_id,
+            private_key_pem=private_key_pem,
+            public_key_pem=public_key_pem,
+            tls_cert_pem=tls_cert_pem,
+            tls_key_pem=tls_key_pem,
+        )
+    tls = generate_device_tls_material(common_name=f"tunebag:{device_id}")
+    return PersistedIdentity(
+        device_id=device_id,
+        private_key_pem=private_key_pem,
+        public_key_pem=public_key_pem,
+        tls_cert_pem=tls.cert_pem,
+        tls_key_pem=tls.key_pem,
+    )
 
 
 def load_persisted_identity(path: Path) -> PersistedIdentity | None:
     if not path.is_file():
         return None
     raw = json.loads(path.read_text())
-    return PersistedIdentity(
+    return _ensure_tls_fields(
         device_id=UUID(raw["device_id"]),
         private_key_pem=raw["private_key_pem"],
         public_key_pem=raw["public_key_pem"],
+        tls_cert_pem=raw.get("tls_cert_pem"),
+        tls_key_pem=raw.get("tls_key_pem"),
     )
 
 
@@ -80,6 +126,8 @@ def save_persisted_identity(path: Path, identity: PersistedIdentity) -> None:
                 "device_id": str(identity.device_id),
                 "private_key_pem": identity.private_key_pem,
                 "public_key_pem": identity.public_key_pem,
+                "tls_cert_pem": identity.tls_cert_pem,
+                "tls_key_pem": identity.tls_key_pem,
             },
             indent=2,
             sort_keys=True,
@@ -97,11 +145,16 @@ def resolve_persisted_identity(
     """Load identity from data_dir if present; otherwise create and persist."""
     loaded = load_persisted_identity(path)
     if loaded is not None:
+        # Persist upgraded TLS material when migrating a pre-TLS identity.json.
+        if "tls_cert_pem" not in json.loads(path.read_text()):
+            save_persisted_identity(path, loaded)
         return (
             DeviceIdentity(
                 name=name,
                 private_key_pem=loaded.private_key_pem,
                 public_key_pem=loaded.public_key_pem,
+                tls_cert_pem=loaded.tls_cert_pem,
+                tls_key_pem=loaded.tls_key_pem,
             ),
             loaded.device_id,
         )
@@ -113,6 +166,8 @@ def resolve_persisted_identity(
             device_id=device_id,
             private_key_pem=resolved.private_key_pem,
             public_key_pem=resolved.public_key_pem,
+            tls_cert_pem=resolved.tls_cert_pem,
+            tls_key_pem=resolved.tls_key_pem,
         ),
     )
     return resolved, device_id
@@ -127,11 +182,16 @@ def resolve_store_identity(
     """Load identity from a DurableStore if present; otherwise create and persist."""
     loaded = store.load_identity()
     if loaded is not None:
+        # Upgrade bags that predate Device TLS cert material.
+        if store.get_meta("tls_cert_pem") is None:
+            store.save_identity(loaded)
         return (
             DeviceIdentity(
                 name=name,
                 private_key_pem=loaded.private_key_pem,
                 public_key_pem=loaded.public_key_pem,
+                tls_cert_pem=loaded.tls_cert_pem,
+                tls_key_pem=loaded.tls_key_pem,
             ),
             loaded.device_id,
         )
@@ -142,6 +202,8 @@ def resolve_store_identity(
             device_id=device_id,
             private_key_pem=resolved.private_key_pem,
             public_key_pem=resolved.public_key_pem,
+            tls_cert_pem=resolved.tls_cert_pem,
+            tls_key_pem=resolved.tls_key_pem,
         )
     )
     return resolved, device_id
@@ -229,6 +291,8 @@ def pairing_payload(
     fingerprint: str | None = None,
     short_code: str | None = None,
     url: str | None = None,
+    tls_cert_pem: str | None = None,
+    tls_cert_fingerprint: str | None = None,
 ) -> dict:
     fp = fingerprint or short_code or fingerprint_from_key(public_key_pem)
     payload = {
@@ -245,6 +309,11 @@ def pairing_payload(
         payload["priority"] = priority
     if url is not None:
         payload["url"] = url
+    if tls_cert_pem is not None:
+        payload["tls_cert_pem"] = tls_cert_pem
+        payload["tls_cert_fingerprint"] = (
+            tls_cert_fingerprint or fingerprint_from_tls_cert(tls_cert_pem)
+        )
     return payload
 
 
@@ -274,19 +343,28 @@ def join_transcript(
     host_public_key_pem: str,
     guest_public_key_pem: str,
     guest_nonce: str,
+    host_tls_cert_fingerprint: str | None = None,
+    guest_tls_cert_fingerprint: str | None = None,
 ) -> bytes:
     host_raw = public_key_raw_bytes(host_public_key_pem)
     guest_raw = public_key_raw_bytes(guest_public_key_pem)
-    return b"|".join(
-        [
-            b"tunebag-pair-join-v1",
-            session_id.encode("utf-8"),
-            normalize_pin(pin).encode("ascii"),
-            host_raw,
-            guest_raw,
-            guest_nonce.encode("utf-8"),
-        ]
-    )
+    parts = [
+        b"tunebag-pair-join-v1",
+        session_id.encode("utf-8"),
+        normalize_pin(pin).encode("ascii"),
+        host_raw,
+        guest_raw,
+        guest_nonce.encode("utf-8"),
+    ]
+    # TOFU Device TLS pins into the signed join when both sides present them.
+    if host_tls_cert_fingerprint and guest_tls_cert_fingerprint:
+        parts.extend(
+            [
+                host_tls_cert_fingerprint.encode("ascii"),
+                guest_tls_cert_fingerprint.encode("ascii"),
+            ]
+        )
+    return b"|".join(parts)
 
 
 def confirm_transcript(
@@ -295,18 +373,26 @@ def confirm_transcript(
     host_public_key_pem: str,
     guest_public_key_pem: str,
     role: str,
+    host_tls_cert_fingerprint: str | None = None,
+    guest_tls_cert_fingerprint: str | None = None,
 ) -> bytes:
     host_raw = public_key_raw_bytes(host_public_key_pem)
     guest_raw = public_key_raw_bytes(guest_public_key_pem)
-    return b"|".join(
-        [
-            b"tunebag-pair-confirm-v1",
-            session_id.encode("utf-8"),
-            host_raw,
-            guest_raw,
-            role.encode("ascii"),
-        ]
-    )
+    parts = [
+        b"tunebag-pair-confirm-v1",
+        session_id.encode("utf-8"),
+        host_raw,
+        guest_raw,
+        role.encode("ascii"),
+    ]
+    if host_tls_cert_fingerprint and guest_tls_cert_fingerprint:
+        parts.extend(
+            [
+                host_tls_cert_fingerprint.encode("ascii"),
+                guest_tls_cert_fingerprint.encode("ascii"),
+            ]
+        )
+    return b"|".join(parts)
 
 
 def sas_for_session(

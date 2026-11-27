@@ -224,7 +224,9 @@ class TagBody(BaseModel):
     tag: str = ""
 
 
-def create_app(agent: DeviceAgent) -> FastAPI:
+def create_ui_app(agent: DeviceAgent) -> FastAPI:
+    """Cleartext companion UI listener — no Peer Event pull / File bytes."""
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
@@ -358,31 +360,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
         """Force a LAN browse; returns the same payload as GET /api/peers."""
         agent.refresh_discovery()
         return _peers_payload()
-
-    @app.get("/api/events")
-    def events() -> StreamingResponse:
-        """Full Event log as NDJSON (one Event JSON object per line)."""
-
-        def generate() -> Iterator[str]:
-            for event in agent.iter_events():
-                yield event.model_dump_json() + "\n"
-
-        return StreamingResponse(generate(), media_type="application/x-ndjson")
-
-    @app.post("/api/events/pull")
-    def events_pull(body: EventsPullBody) -> StreamingResponse:
-        """Events after per-author cursors as NDJSON."""
-
-        def generate() -> Iterator[str]:
-            for event in agent.iter_events_after_cursors(body.cursors):
-                yield event.model_dump_json() + "\n"
-
-        return StreamingResponse(generate(), media_type="application/x-ndjson")
-
-    @app.post("/api/prove")
-    def prove(body: ProveBody) -> dict:
-        """Challenge–response: sign a meet nonce with this Device's private key."""
-        return {"signature": agent.prove_possession(body.nonce)}
 
     @app.get("/api/activity")
     def activity() -> dict:
@@ -845,16 +822,6 @@ def create_app(agent: DeviceAgent) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "playing": agent.is_playing()}
 
-    @app.post("/api/player/yield")
-    def player_yield() -> dict:
-        """Peer takeover: pause only if this Device is currently playing."""
-        yielded = agent.yield_playback()
-        return {
-            "ok": True,
-            "yielded": yielded,
-            "playing": agent.is_playing(),
-        }
-
     @app.post("/api/player/pause")
     def player_pause(body: PauseBody = PauseBody()) -> dict:
         try:
@@ -1287,5 +1254,102 @@ def create_app(agent: DeviceAgent) -> FastAPI:
     return app
 
 
-# Default app for import without CLI name wiring.
-app = create_app(DeviceAgent("tunebag"))
+def create_app(agent: DeviceAgent) -> FastAPI:
+    """Back-compat alias: companion UI listener."""
+    return create_ui_app(agent)
+
+
+def create_peer_app(agent: DeviceAgent) -> FastAPI:
+    """HTTPS Peer listener routes (Event pull, prove, pairing guest hits, yield).
+
+    File HEAD/GET land in issue 03; mTLS client auth hard-cut in issue 02.
+    """
+    app = FastAPI(title="Tunebag Peer", version=__version__)
+    app.state.agent = agent
+
+    @app.get("/api/health")
+    def health() -> dict:
+        return {
+            "ok": True,
+            "version": __version__,
+            "device": agent.name,
+            "device_id": str(agent.device_id),
+            "listener": "peer",
+        }
+
+    @app.get("/api/pairing")
+    def pairing() -> dict:
+        """Public identity for discovery / TOFU (includes Device TLS cert)."""
+        return agent.pairing_payload()
+
+    @app.get("/api/events")
+    def events() -> StreamingResponse:
+        """Full Event log as NDJSON (one Event JSON object per line)."""
+
+        def generate() -> Iterator[str]:
+            for event in agent.iter_events():
+                yield event.model_dump_json() + "\n"
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/api/events/pull")
+    def events_pull(body: EventsPullBody) -> StreamingResponse:
+        """Events after per-author cursors as NDJSON."""
+
+        def generate() -> Iterator[str]:
+            for event in agent.iter_events_after_cursors(body.cursors):
+                yield event.model_dump_json() + "\n"
+
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/api/prove")
+    def prove(body: ProveBody) -> dict:
+        """Challenge–response: sign a meet nonce with this Device's private key."""
+        return {"signature": agent.prove_possession(body.nonce)}
+
+    @app.get("/api/pair/session")
+    def pair_session_status(include_pin: bool = False) -> dict:
+        return agent.pairing_session_status(include_pin=include_pin)
+
+    @app.post("/api/pair/session/join")
+    def pair_session_join(body: PairJoinBody) -> dict:
+        """Host endpoint: guest joins with PIN + signature."""
+        try:
+            return agent.receive_pair_join(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/pair/session/confirm")
+    def pair_session_confirm(body: PairConfirmBody) -> dict:
+        """Guest posts signed confirm to host."""
+        try:
+            return agent.receive_pair_confirm(
+                {"session_id": body.session_id, "signature": body.signature}
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/pair/session/cancel")
+    def pair_session_cancel(body: PairCancelBody) -> dict:
+        try:
+            if body.session_id:
+                return agent.receive_pair_cancel(body.session_id)
+            raise ValueError("session_id required")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/player/yield")
+    def player_yield() -> dict:
+        """Peer takeover: pause only if this Device is currently playing."""
+        yielded = agent.yield_playback()
+        return {
+            "ok": True,
+            "yielded": yielded,
+            "playing": agent.is_playing(),
+        }
+
+    return app
+
+
+# Default app for import without CLI name wiring (UI listener).
+app = create_ui_app(DeviceAgent("tunebag"))

@@ -41,6 +41,8 @@ def _impostor_claiming(victim: DeviceAgent, *, data_dir: Path, source: FakeSourc
             device_id=victim.device_id,
             private_key_pem=attacker_keys.private_key_pem,
             public_key_pem=victim.public_key_pem,
+            tls_cert_pem=attacker_keys.tls_cert_pem,
+            tls_key_pem=attacker_keys.tls_key_pem,
         ),
     )
     return DeviceAgent(
