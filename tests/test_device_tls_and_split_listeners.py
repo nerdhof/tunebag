@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+import socket
+import ssl
+import threading
+import time
 from pathlib import Path
 
+import httpx
+import uvicorn
 from fastapi.testclient import TestClient
 
 from tunebag.agent import DeviceAgent
-from tunebag.web import create_app, create_peer_app
+from tunebag.device_tls import tls_cert_fingerprint, write_tls_files
+from tunebag.web import create_app, create_peer_app, create_ui_app
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_listening(host: str, port: int, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise TimeoutError(f"{host}:{port} did not accept connections")
 
 
 def test_device_tls_cert_survives_restart(tmp_path: Path) -> None:
@@ -106,3 +130,76 @@ def test_ui_loads_without_client_cert(tmp_path: Path) -> None:
     assert health.json()["ok"] is True
     # Locators advertise the Peer HTTPS URL, not the UI listener.
     assert agent.pairing_payload()["url"] == "https://127.0.0.1:9443"
+
+
+def test_peer_https_listener_serves_pairing_with_device_tls(tmp_path: Path) -> None:
+    """Live Peer HTTPS listener presents the Device TLS cert (issue 01 wire seam)."""
+    host = "127.0.0.1"
+    peer_port = _free_port()
+    ui_port = _free_port()
+    peer_url = f"https://{host}:{peer_port}"
+    ui_url = f"http://{host}:{ui_port}"
+    agent = DeviceAgent(
+        "laptop",
+        data_dir=tmp_path / "laptop",
+        base_url=peer_url,
+        ui_url=ui_url,
+    )
+    cert_path, key_path = write_tls_files(
+        agent.data_dir / "tls",
+        cert_pem=agent.tls_cert_pem,
+        key_pem=agent.tls_key_pem,
+    )
+
+    peer_config = uvicorn.Config(
+        create_peer_app(agent),
+        host=host,
+        port=peer_port,
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
+        ssl_cert_reqs=int(ssl.CERT_OPTIONAL),
+        log_level="warning",
+    )
+    ui_config = uvicorn.Config(
+        create_ui_app(agent),
+        host=host,
+        port=ui_port,
+        log_level="warning",
+    )
+    peer_server = uvicorn.Server(peer_config)
+    ui_server = uvicorn.Server(ui_config)
+    peer_thread = threading.Thread(target=peer_server.run, daemon=True)
+    ui_thread = threading.Thread(target=ui_server.run, daemon=True)
+    peer_thread.start()
+    ui_thread.start()
+    try:
+        _wait_listening(host, peer_port)
+        _wait_listening(host, ui_port)
+
+        # UI: cleartext, no client cert.
+        with httpx.Client(timeout=5.0) as ui_client:
+            ui_health = ui_client.get(f"{ui_url}/api/health")
+            assert ui_health.status_code == 200
+            assert ui_health.json()["ok"] is True
+            assert ui_client.post(
+                f"{ui_url}/api/events/pull", json={"cursors": {}}
+            ).status_code == 404
+
+        # Peer: HTTPS with the Device TLS cert; client trusts that cert PEM.
+        ctx = ssl.create_default_context(cadata=agent.tls_cert_pem)
+        ctx.check_hostname = False
+        with httpx.Client(verify=ctx, timeout=5.0) as peer_client:
+            pairing = peer_client.get(f"{peer_url}/api/pairing")
+            assert pairing.status_code == 200
+            body = pairing.json()
+            assert body["url"] == peer_url
+            assert body["tls_cert_fingerprint"] == agent.tls_cert_fingerprint()
+            assert tls_cert_fingerprint(body["tls_cert_pem"]) == agent.tls_cert_fingerprint()
+            prove = peer_client.post(f"{peer_url}/api/prove", json={"nonce": "wire"})
+            assert prove.status_code == 200
+            assert "signature" in prove.json()
+    finally:
+        peer_server.should_exit = True
+        ui_server.should_exit = True
+        peer_thread.join(timeout=5)
+        ui_thread.join(timeout=5)

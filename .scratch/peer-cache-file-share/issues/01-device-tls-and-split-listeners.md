@@ -15,4 +15,4 @@
 ## Comments
 
 - Spec: `.scratch/peer-cache-file-share/spec.md`. ADR-0011.
-- Implemented: Device TLS in identity bag; `create_ui_app` / `create_peer_app`; CLI `--peer-port` (HTTPS) + `--port` (UI); pairing payload + DEVICE_PAIRED pin; join/confirm transcripts include TLS fps. Issue 02 still owns CERT_REQUIRED hard-cut on Event pull.
+- Implemented: Device TLS in identity bag; `create_ui_app` / `create_peer_app`; CLI `--peer-port` (HTTPS) + `--port` (UI); pairing payload + DEVICE_PAIRED pin; join/confirm transcripts include TLS fps. Live uvicorn HTTPS Peer + cleartext UI smoke test covers wire cert presentation. Issue 02 still owns CERT_REQUIRED hard-cut on Event pull.
