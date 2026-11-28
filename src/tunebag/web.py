@@ -27,6 +27,7 @@ from tunebag.agent import (
     DeviceHoursSpec,
 )
 from tunebag.domain import Artist, Mix, Platform, ReleaseKind, StarDistribution, Stars
+from tunebag.http_peer_bytes import TRACK_COUNT_HEADER
 from tunebag.pairing import fingerprint_from_key, payload_to_qr_text
 from tunebag.peer_mtls import require_trusted_peer_cert
 from tunebag.source import DEFAULT_MIN_DURATION_SECONDS
@@ -1261,10 +1262,10 @@ def create_app(agent: DeviceAgent) -> FastAPI:
 
 
 def create_peer_app(agent: DeviceAgent) -> FastAPI:
-    """HTTPS Peer listener routes (Event pull, prove, pairing guest hits, yield).
+    """HTTPS Peer listener routes (Event pull, File HEAD/GET, pairing, yield).
 
-    Event pull / sync / yield require a trusted Peer mTLS client cert (issue 02).
-    File HEAD/GET land in issue 03.
+    Event pull / sync / yield / File routes require a trusted Peer mTLS client
+    cert (issues 02–03). Pairing / prove stay open for TOFU.
     """
     app = FastAPI(title="Tunebag Peer", version=__version__)
     app.state.agent = agent
@@ -1372,6 +1373,49 @@ def create_peer_app(agent: DeviceAgent) -> FastAPI:
             "yielded": yielded,
             "playing": agent.is_playing(),
         }
+
+    @app.head("/api/files/{mix_id}")
+    def file_head(request: Request, mix_id: UUID) -> Response:
+        """Completeness probe: 200 only for complete Mix or complete Album."""
+        _require_peer_meet(request)
+        mix = agent.catalog.mixes.get(mix_id)
+        if mix is None:
+            raise HTTPException(status_code=404, detail="file not present")
+        if mix.kind is ReleaseKind.ALBUM:
+            tracks = agent.album_track_bytes(mix_id)
+            if tracks is None:
+                raise HTTPException(status_code=404, detail="file not present")
+            return Response(
+                status_code=200,
+                headers={TRACK_COUNT_HEADER: str(len(tracks))},
+            )
+        if agent.file_bytes(mix_id) is None:
+            raise HTTPException(status_code=404, detail="file not present")
+        return Response(status_code=200)
+
+    @app.get("/api/files/{mix_id}")
+    def file_get(request: Request, mix_id: UUID) -> Response:
+        """Mix blob bytes. Albums use ``/tracks/{index}`` (complete-only)."""
+        _require_peer_meet(request)
+        mix = agent.catalog.mixes.get(mix_id)
+        if mix is None or mix.kind is ReleaseKind.ALBUM:
+            raise HTTPException(status_code=404, detail="mix file not present")
+        data = agent.file_bytes(mix_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="mix file not present")
+        return Response(content=data, media_type="application/octet-stream")
+
+    @app.get("/api/files/{mix_id}/tracks/{index}")
+    def file_album_track(request: Request, mix_id: UUID, index: int) -> Response:
+        """One Album track when the Album is complete on this Device."""
+        _require_peer_meet(request)
+        tracks = agent.album_track_bytes(mix_id)
+        if tracks is None or index < 0 or index >= len(tracks):
+            raise HTTPException(status_code=404, detail="album track not present")
+        return Response(
+            content=tracks[index],
+            media_type="application/octet-stream",
+        )
 
     return app
 
